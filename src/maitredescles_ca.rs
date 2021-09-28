@@ -1,6 +1,8 @@
 use std::error::Error;
 use std::sync::Arc;
 
+use log::{debug, error, info, trace, warn};
+
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::certificats::ValidateurX509;
 use millegrilles_common_rust::constantes::*;

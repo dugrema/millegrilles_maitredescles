@@ -105,7 +105,7 @@ async fn build_run(gestionnaires: Vec<&'static TypeGestionnaire>) {
             for g in gestionnaires.clone() {
                 let (
                     routing_g,
-                    futures_g
+                    futures_g,
                 ) = match g {
                     TypeGestionnaire::CA(g) => {
                         g.preparer_threads(middleware.clone()).await.expect("gestionnaire")
