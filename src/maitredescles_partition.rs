@@ -24,6 +24,9 @@ const NOM_Q_VOLATILS_GLOBAL: &str = "MaitreDesCles/volatils";
 // const NOM_Q_VOLATILS: &str = "MaitreDesCles_CA/volatils";
 // const NOM_Q_TRIGGERS: &str = "MaitreDesCles_CA/triggers";
 
+const REQUETE_CERTIFICAT_MAITREDESCLES: &str = "certMaitreDesCles";
+const REQUETE_DECHIFFRAGE: &str = "dechiffrage";
+
 #[derive(Clone, Debug)]
 pub struct GestionnaireMaitreDesClesPartition {
     pub nom_partition: String,
@@ -73,40 +76,69 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
     }
 
     fn preparer_queues(&self) -> Vec<QueueType> {
+        let mut rk_dechiffrage = Vec::new();
+        let mut rk_commande_cle = Vec::new();
         let mut rk_volatils = Vec::new();
 
-        // RK 3.protege seulement
-        let requetes_protegees: Vec<&str> = vec![
-            // REQUETE_DERNIER_HORAIRE,
-        ];
-        for req in requetes_protegees {
-            rk_volatils.push(ConfigRoutingExchange {routing_key: format!("requete.{}.{}", DOMAINE_NOM, req), exchange: Securite::L3Protege});
-        }
+        let nom_domaine_partition = format!("{}_{}", DOMAINE_NOM, self.nom_partition);
 
+        // Requetes sur tous les exchanges
+        // let requetes_protegees: Vec<&str> = vec![
+        //     REQUETE_CERTIFICAT_MAITREDESCLES,
+        //     REQUETE_DECHIFFRAGE,
+        // ];
         let commandes: Vec<&str> = vec![
-            // COMMANDE_DECLENCHER_BACKUP_QUOTIDIEN,
+            COMMANDE_SAUVEGARDER_CLE,
         ];
-        for commande in commandes {
-            rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, commande), exchange: Securite::L4Secure});
+
+        let nom_partition = self.nom_partition.as_str();
+
+        for sec in [Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure] {
+            rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE), exchange: sec.clone() });
+            rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_CERTIFICAT_MAITREDESCLES), exchange: sec.clone() });
+
+            for commande in &commandes {
+                rk_commande_cle.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, commande), exchange: sec.clone()});
+            }
         }
 
         let mut queues = Vec::new();
 
-        // Queue de messages volatils (requete, commande, evenements)
+        // Queue de messages dechiffrage - taches partagees entre toutes les partitions
         queues.push(QueueType::ExchangeQueue (
             ConfigQueue {
-                nom_queue: self.get_q_volatils(),
-                routing_keys: rk_volatils,
+                nom_queue: NOM_Q_DECHIFFRAGE.into(),
+                routing_keys: rk_dechiffrage,
                 ttl: 300000.into(),
                 durable: false,
             }
         ));
 
+        // Queue commande de sauvegarde de cle
+        queues.push(QueueType::ExchangeQueue (
+            ConfigQueue {
+                nom_queue: format!("MaitreDesCles_{}/sauvegarder", self.nom_partition),
+                routing_keys: rk_commande_cle,
+                ttl: None,
+                durable: true,
+            }
+        ));
+
+        // Queue volatils
+        queues.push(QueueType::ExchangeQueue (
+            ConfigQueue {
+                nom_queue: format!("MaitreDesCles_{}/volatils", self.nom_partition),
+                routing_keys: rk_volatils,
+                ttl: None,
+                durable: true,
+            }
+        ));
+
         let mut rk_transactions = Vec::new();
-        // rk_transactions.push(ConfigRoutingExchange {
-        //     routing_key: format!("transaction.{}.{}", DOMAINE_NOM, TRANSACTION_CATALOGUE_HORAIRE).into(),
-        //     exchange: Securite::L3Protege
-        // });
+        rk_transactions.push(ConfigRoutingExchange {
+            routing_key: format!("transaction.{}.{}.{}", DOMAINE_NOM, nom_partition, TRANSACTION_CLE).into(),
+            exchange: Securite::L4Secure
+        });
 
         // Queue de transactions
         queues.push(QueueType::ExchangeQueue (
@@ -119,7 +151,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
         ));
 
         // Queue de triggers
-        queues.push(QueueType::Triggers (format!("MaitreDesCles_{}", self.nom_partition)));
+        queues.push(QueueType::Triggers (format!("MaitreDesCles.{}", self.nom_partition)));
 
         queues
     }
@@ -146,11 +178,11 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
     }
 
     async fn entretien<M>(&self, middleware: Arc<M>) where M: Middleware + 'static {
-        todo!()
+        entretien(middleware).await
     }
 
     async fn traiter_cedule<M>(self: &'static Self, middleware: &M, trigger: MessageValideAction) -> Result<(), Box<dyn Error>> where M: Middleware + 'static {
-        todo!()
+        traiter_cedule(middleware, trigger).await
     }
 
     async fn aiguillage_transaction<M, T>(&self, middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String> where M: ValidateurX509 + GenerateurMessages + MongoDao, T: Transaction {

@@ -19,8 +19,8 @@ use millegrilles_common_rust::tokio::spawn;
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::transactions::resoumettre_transactions;
 
-use crate::maitredescles_ca::{GESTIONNAIRE_MAITREDESCLES_CA, GestionnaireMaitreDesClesCa};
-use crate::maitredescles_partition::{GestionnaireMaitreDesClesPartition};
+use crate::maitredescles_ca::GestionnaireMaitreDesClesCa;
+use crate::maitredescles_partition::GestionnaireMaitreDesClesPartition;
 
 const DUREE_ATTENTE: u64 = 20000;
 
@@ -51,12 +51,6 @@ pub async fn run() {
 }
 
 async fn build_run(gestionnaires: Vec<&'static TypeGestionnaire>) {
-
-    // let gestionnaires = unsafe {
-    //     let mut vec_gestionnaires = Vec::new();
-    //     vec_gestionnaires.extend(&GESTIONNAIRES);
-    //     vec_gestionnaires
-    // };
 
     // Recuperer configuration des Q de tous les domaines
     let queues = {
@@ -106,22 +100,9 @@ async fn build_run(gestionnaires: Vec<&'static TypeGestionnaire>) {
     {
         let mut map_senders: HashMap<String, Sender<TypeMessage>> = HashMap::new();
 
-        // ** Wiring global **
-
-        // Creer consommateurs MQ globaux pour rediriger messages recus vers Q internes appropriees
-        futures.push(spawn(
-            consommer( middleware.clone(), rx_messages_verifies, map_senders.clone())
-        ));
-        futures.push(spawn(
-            consommer( middleware.clone(), rx_triggers, map_senders.clone())
-        ));
-
-        // ** Thread d'entretien **
-        futures.push(spawn(entretien(middleware.clone(), rx_entretien, gestionnaires.clone())));
-
         // ** Domaines **
         {
-            for g in gestionnaires {
+            for g in gestionnaires.clone() {
                 let (
                     routing_g,
                     futures_g
@@ -138,6 +119,19 @@ async fn build_run(gestionnaires: Vec<&'static TypeGestionnaire>) {
                 map_senders.extend(routing_g);    // Deplacer vers mapping global
             }
         }
+
+        // ** Wiring global **
+
+        // Creer consommateurs MQ globaux pour rediriger messages recus vers Q internes appropriees
+        futures.push(spawn(
+            consommer( middleware.clone(), rx_messages_verifies, map_senders.clone())
+        ));
+        futures.push(spawn(
+            consommer( middleware.clone(), rx_triggers, map_senders.clone())
+        ));
+
+        // ** Thread d'entretien **
+        futures.push(spawn(entretien(middleware.clone(), rx_entretien, gestionnaires.clone())));
 
         // Thread ecoute et validation des messages
         for f in future_recevoir_messages {
@@ -177,6 +171,8 @@ where
 
     let mut prochain_entretien_transactions = chrono::Utc::now();
     let intervalle_entretien_transactions = chrono::Duration::minutes(5);
+
+    info!("domaines_maitredescles.entretien : Debut thread");
 
     loop {
         let maintenant = chrono::Utc::now();
@@ -242,7 +238,7 @@ where
     }
 
     // panic!("Forcer fermeture");
-
+    info!("domaines_maitredescles.entretien : Fin thread");
 }
 
 async fn consommer(
@@ -250,7 +246,7 @@ async fn consommer(
     mut rx: Receiver<TypeMessage>,
     map_senders: HashMap<String, Sender<TypeMessage>>
 ) {
-    info!("consommer: Mapping senders core : {:?}", map_senders.keys());
+    info!("domaines_maitredescles.consommer : Debut thread, mapping : {:?}", map_senders.keys());
 
     while let Some(message) = rx.recv().await {
         match &message {
@@ -290,4 +286,6 @@ async fn consommer(
             TypeMessage::Regeneration => (),   // Rien a faire
         }
     }
+
+    info!("domaines_maitredescles.consommer: Fin thread : {:?}", map_senders.keys());
 }

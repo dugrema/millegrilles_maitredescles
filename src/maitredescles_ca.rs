@@ -27,8 +27,8 @@ const NOM_Q_VOLATILS: &str = "MaitreDesCles_CA/volatils";
 const NOM_Q_TRIGGERS: &str = "MaitreDesCles_CA/triggers";
 const NOM_Q_PREFIXE: &str = "MaitreDesCles_CA";
 
-pub const GESTIONNAIRE_MAITREDESCLES_CA: GestionnaireMaitreDesClesCa = GestionnaireMaitreDesClesCa {};
-
+const REQUETE_CLES_NON_DECHIFFRABLES: &str = "clesNonDechiffrables";
+const REQUETE_COMPTER_CLES_NON_DECHIFFRABLES: &str = "compterClesNonDechiffrables";
 
 #[derive(Clone, Debug)]
 pub struct GestionnaireMaitreDesClesCa {}
@@ -80,11 +80,11 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesCa {
     }
 
     async fn entretien<M>(&self, middleware: Arc<M>) where M: Middleware + 'static {
-        todo!()
+        entretien(middleware).await
     }
 
     async fn traiter_cedule<M>(self: &'static Self, middleware: &M, trigger: MessageValideAction) -> Result<(), Box<dyn Error>> where M: Middleware + 'static {
-        todo!()
+        traiter_cedule(middleware, trigger).await
     }
 
     async fn aiguillage_transaction<M, T>(&self, middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String> where M: ValidateurX509 + GenerateurMessages + MongoDao, T: Transaction {
@@ -94,20 +94,30 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesCa {
 
 pub fn preparer_queues() -> Vec<QueueType> {
     let mut rk_volatils = Vec::new();
+    let mut rk_sauvegarder_cle = Vec::new();
 
-    // RK 3.protege seulement
+    // RK 3.protege et 4.secure
     let requetes_protegees: Vec<&str> = vec![
-        // REQUETE_DERNIER_HORAIRE,
+        REQUETE_CLES_NON_DECHIFFRABLES,
+        REQUETE_COMPTER_CLES_NON_DECHIFFRABLES,
     ];
     for req in requetes_protegees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("requete.{}.{}", DOMAINE_NOM, req), exchange: Securite::L3Protege});
+        rk_volatils.push(ConfigRoutingExchange {routing_key: format!("requete.{}.{}", DOMAINE_NOM, req), exchange: Securite::L4Secure});
     }
 
-    let commandes: Vec<&str> = vec![
-        // COMMANDE_DECLENCHER_BACKUP_QUOTIDIEN,
-    ];
-    for commande in commandes {
-        rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, commande), exchange: Securite::L4Secure});
+    // Capturer les commandes "sauver cle" sur tous les exchanges pour toutes les partitions
+    // Va creer la transaction locale CA si approprie
+    for sec in [Securite::L1Public, Securite::L2Prive] {
+        rk_sauvegarder_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.*.{}", DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE), exchange: sec });
+    }
+
+    for sec in [Securite::L3Protege, Securite::L4Secure] {
+        // Conserver sauver cle pour
+        rk_sauvegarder_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.*.{}", DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE), exchange: sec.clone() });
+
+        // Capturer commande sauvegarder cle CA sur 3.protege et 4.secure
+        rk_sauvegarder_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE), exchange: sec });
     }
 
     let mut queues = Vec::new();
@@ -123,10 +133,20 @@ pub fn preparer_queues() -> Vec<QueueType> {
     ));
 
     let mut rk_transactions = Vec::new();
-    // rk_transactions.push(ConfigRoutingExchange {
-    //     routing_key: format!("transaction.{}.{}", DOMAINE_NOM, TRANSACTION_CATALOGUE_HORAIRE).into(),
-    //     exchange: Securite::L3Protege
-    // });
+    rk_transactions.push(ConfigRoutingExchange {
+        routing_key: format!("transaction.{}.{}", DOMAINE_NOM, TRANSACTION_CLE).into(),
+        exchange: Securite::L4Secure
+    });
+
+    // Queue commande de sauvegarde de cle
+    queues.push(QueueType::ExchangeQueue (
+        ConfigQueue {
+            nom_queue: String::from("MaitreDesCles_CA/sauvegarder"),
+            routing_keys: rk_sauvegarder_cle,
+            ttl: None,
+            durable: true,
+        }
+    ));
 
     // Queue de transactions
     queues.push(QueueType::ExchangeQueue (
@@ -139,7 +159,8 @@ pub fn preparer_queues() -> Vec<QueueType> {
     ));
 
     // Queue de triggers pour Pki
-    queues.push(QueueType::Triggers (NOM_Q_PREFIXE.into()));
+    queues.push(QueueType::Triggers (DOMAINE_NOM.into()));
 
     queues
 }
+
