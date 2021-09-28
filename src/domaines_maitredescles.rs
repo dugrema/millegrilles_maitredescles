@@ -28,6 +28,7 @@ const DUREE_ATTENTE: u64 = 20000;
 static mut GESTIONNAIRES: [TypeGestionnaire; 2] = [TypeGestionnaire::None, TypeGestionnaire::None];
 
 /// Enum pour distinger les types de gestionnaires.
+#[derive(Clone, Debug)]
 enum TypeGestionnaire {
     CA(Arc<GestionnaireMaitreDesClesCa>),
     Partition(Arc<GestionnaireMaitreDesClesPartition>),
@@ -36,13 +37,11 @@ enum TypeGestionnaire {
 
 pub async fn run() {
 
-    // Inserer les gestionnaires dans la variable static
-    unsafe {
+    // Inserer les gestionnaires dans la variable static - permet d'obtenir lifetime 'static
+    let gestionnaires = unsafe {
         GESTIONNAIRES[0] = TypeGestionnaire::CA(Arc::new(GestionnaireMaitreDesClesCa{}));
         GESTIONNAIRES[1] = TypeGestionnaire::Partition(Arc::new(GestionnaireMaitreDesClesPartition::new("DUMMY")));
-    }
 
-    let gestionnaires = unsafe {
         let mut vec_gestionnaires = Vec::new();
         vec_gestionnaires.extend(&GESTIONNAIRES);
         vec_gestionnaires

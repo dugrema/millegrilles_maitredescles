@@ -13,7 +13,7 @@ use millegrilles_common_rust::mongo_dao::MongoDao;
 use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange, QueueType};
 use millegrilles_common_rust::recepteur_messages::MessageValideAction;
 use millegrilles_common_rust::transactions::{TraiterTransaction, Transaction, TransactionImpl};
-use crate::maitredescles_commun::DOMAINE_NOM;
+use crate::maitredescles_commun::*;
 
 // pub const NOM_COLLECTION_CLES: &str = "MaitreDesCles_CA/cles";
 // pub const NOM_COLLECTION_TRANSACTIONS: &str = "MaitreDesCles_CA";
@@ -125,7 +125,8 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
     }
 
     async fn preparer_index_mongodb_custom<M>(&self, middleware: &M) -> Result<(), String> where M: MongoDao {
-        todo!()
+        let nom_collection_cles = format!("MaitreDesCles_{}/cles", self.nom_partition);
+        preparer_index_mongodb_custom(middleware, nom_collection_cles.as_str()).await
     }
 
     async fn consommer_requete<M>(&self, middleware: &M, message: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>> where M: Middleware + 'static {
