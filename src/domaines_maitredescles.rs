@@ -19,17 +19,62 @@ use millegrilles_common_rust::tokio::spawn;
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::transactions::resoumettre_transactions;
 
-use crate::maitredescles_ca::GESTIONNAIRE_MAITREDESCLES_CA;
-use crate::maitredescles_partition::GESTIONNAIRE_MAITREDESCLES_PARTITION;
+use crate::maitredescles_ca::{GESTIONNAIRE_MAITREDESCLES_CA, GestionnaireMaitreDesClesCa};
+use crate::maitredescles_partition::{GestionnaireMaitreDesClesPartition};
 
 const DUREE_ATTENTE: u64 = 20000;
 
-pub async fn build() {
+// Creer espace static pour conserver les gestionnaires
+static mut GESTIONNAIRES: [TypeGestionnaire; 2] = [TypeGestionnaire::None, TypeGestionnaire::None];
+
+/// Enum pour distinger les types de gestionnaires.
+enum TypeGestionnaire {
+    CA(Arc<GestionnaireMaitreDesClesCa>),
+    Partition(Arc<GestionnaireMaitreDesClesPartition>),
+    None
+}
+
+pub async fn run() {
+
+    // Inserer les gestionnaires dans la variable static
+    unsafe {
+        GESTIONNAIRES[0] = TypeGestionnaire::CA(Arc::new(GestionnaireMaitreDesClesCa{}));
+        GESTIONNAIRES[1] = TypeGestionnaire::Partition(Arc::new(GestionnaireMaitreDesClesPartition::new("DUMMY")));
+    }
+
+    let gestionnaires = unsafe {
+        let mut vec_gestionnaires = Vec::new();
+        vec_gestionnaires.extend(&GESTIONNAIRES);
+        vec_gestionnaires
+    };
+
+    build_run(gestionnaires).await
+}
+
+async fn build_run(gestionnaires: Vec<&'static TypeGestionnaire>) {
+
+    // let gestionnaires = unsafe {
+    //     let mut vec_gestionnaires = Vec::new();
+    //     vec_gestionnaires.extend(&GESTIONNAIRES);
+    //     vec_gestionnaires
+    // };
 
     // Recuperer configuration des Q de tous les domaines
-    let mut queues: Vec<QueueType> = Vec::new();
-    queues.extend(GESTIONNAIRE_MAITREDESCLES_CA.preparer_queues());
-    queues.extend(GESTIONNAIRE_MAITREDESCLES_PARTITION.preparer_queues());
+    let queues = {
+        let mut queues: Vec<QueueType> = Vec::new();
+        for g in gestionnaires.clone() {
+            match g {
+                TypeGestionnaire::CA(g) => {
+                    queues.extend(g.preparer_queues());
+                },
+                TypeGestionnaire::Partition(g) => {
+                    queues.extend(g.preparer_queues());
+                },
+                TypeGestionnaire::None => ()
+            }
+        }
+        queues
+    };
 
     // Listeners de connexion MQ
     let (tx_entretien, rx_entretien) = mpsc::channel(1);
@@ -62,25 +107,6 @@ pub async fn build() {
     {
         let mut map_senders: HashMap<String, Sender<TypeMessage>> = HashMap::new();
 
-        // ** Domaines **
-
-        // Preparer domaine MaitreDesCles CA si variable ENV MAITREDESCLES_CA=1
-        let (
-            routing_pki,
-            futures_pki
-        ) = GESTIONNAIRE_MAITREDESCLES_CA.preparer_threads(middleware.clone()).await.expect("core pki");
-        futures.extend(futures_pki);        // Deplacer vers futures globaux
-        map_senders.extend(routing_pki);    // Deplacer vers mapping global
-
-        // Preparer domaine MaitreDesCles partition en utilisant le hachage de la
-        // cle publique comme nom de partition
-        let (
-            routing_topologie,
-            futures_topologie
-        ) = GESTIONNAIRE_MAITREDESCLES_PARTITION.preparer_threads(middleware.clone()).await.expect("core topologie");
-        futures.extend(futures_topologie);        // Deplacer vers futures globaux
-        map_senders.extend(routing_topologie);    // Deplacer vers mapping global
-
         // ** Wiring global **
 
         // Creer consommateurs MQ globaux pour rediriger messages recus vers Q internes appropriees
@@ -88,11 +114,31 @@ pub async fn build() {
             consommer( middleware.clone(), rx_messages_verifies, map_senders.clone())
         ));
         futures.push(spawn(
-            consommer( middleware.clone(), rx_triggers, map_senders)
+            consommer( middleware.clone(), rx_triggers, map_senders.clone())
         ));
 
         // ** Thread d'entretien **
-        futures.push(spawn(entretien(middleware.clone(), rx_entretien)));
+        futures.push(spawn(entretien(middleware.clone(), rx_entretien, gestionnaires.clone())));
+
+        // ** Domaines **
+        {
+            for g in gestionnaires {
+                let (
+                    routing_g,
+                    futures_g
+                ) = match g {
+                    TypeGestionnaire::CA(g) => {
+                        g.preparer_threads(middleware.clone()).await.expect("gestionnaire")
+                    },
+                    TypeGestionnaire::Partition(g) => {
+                        g.preparer_threads(middleware.clone()).await.expect("gestionnaire")
+                    },
+                    TypeGestionnaire::None => (HashMap::new(), FuturesUnordered::new()),
+                };
+                futures.extend(futures_g);        // Deplacer vers futures globaux
+                map_senders.extend(routing_g);    // Deplacer vers mapping global
+            }
+        }
 
         // Thread ecoute et validation des messages
         for f in future_recevoir_messages {
@@ -107,7 +153,7 @@ pub async fn build() {
 }
 
 /// Thread d'entretien
-async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>)
+async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnaires: Vec<&'static TypeGestionnaire>)
 where
     M: GenerateurMessages + ValidateurX509 + EmetteurCertificat + MongoDao,
 {
@@ -116,8 +162,17 @@ where
     // Liste de collections de transactions pour tous les domaines geres par Core
     let collections_transaction = {
         let mut coll_docs_strings = Vec::new();
-        coll_docs_strings.push(String::from(GESTIONNAIRE_MAITREDESCLES_CA.get_collection_transactions()));
-        coll_docs_strings.push(String::from(GESTIONNAIRE_MAITREDESCLES_PARTITION.get_collection_transactions()));
+        for g in gestionnaires {
+            match g {
+                TypeGestionnaire::CA(g) => {
+                    coll_docs_strings.push(String::from(g.get_collection_transactions()));
+                },
+                TypeGestionnaire::Partition(g) => {
+                    coll_docs_strings.push(String::from(g.get_collection_transactions()));
+                },
+                TypeGestionnaire::None => ()
+            }
+        }
         coll_docs_strings
     };
 

@@ -1,10 +1,11 @@
 mod domaines_maitredescles;
 mod maitredescles_partition;
 mod maitredescles_ca;
+mod maitredescles_commun;
 
 use log::{info};
 use millegrilles_common_rust::tokio as tokio;
-use crate::domaines_maitredescles::build;
+use crate::domaines_maitredescles::run;
 
 fn main() {
     env_logger::init();
@@ -15,7 +16,7 @@ fn main() {
 #[tokio::main(flavor = "current_thread")]
 // #[tokio::main(flavor = "multi_thread", worker_threads = 5)]
 async fn executer() {
-    build().await
+    run().await
 }
 
 #[cfg(test)]
