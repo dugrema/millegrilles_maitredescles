@@ -6,21 +6,24 @@ use std::sync::{Arc, Mutex};
 use log::{debug, error, info, warn};
 use millegrilles_common_rust::certificats::ValidateurX509;
 use millegrilles_common_rust::chrono as chrono;
+use millegrilles_common_rust::configuration::{charger_configuration, ConfigMessages};
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::futures::stream::FuturesUnordered;
 use millegrilles_common_rust::generateur_messages::GenerateurMessages;
 use millegrilles_common_rust::middleware::{EmetteurCertificat};
-use millegrilles_common_rust::middleware_db::preparer_middleware_db;
+use millegrilles_common_rust::middleware_db::{MiddlewareDb, preparer_middleware_db};
 use millegrilles_common_rust::mongo_dao::MongoDao;
 use millegrilles_common_rust::rabbitmq_dao::{Callback, EventMq, QueueType};
 use millegrilles_common_rust::recepteur_messages::TypeMessage;
 use millegrilles_common_rust::tokio::{sync::{mpsc, mpsc::{Receiver, Sender}}, time::{Duration as DurationTokio, timeout}};
 use millegrilles_common_rust::tokio::spawn;
+use millegrilles_common_rust::tokio::task::JoinHandle;
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::transactions::resoumettre_transactions;
 
 use crate::maitredescles_ca::GestionnaireMaitreDesClesCa;
 use crate::maitredescles_partition::GestionnaireMaitreDesClesPartition;
+use crate::maitredescles_commun::*;
 
 const DUREE_ATTENTE: u64 = 20000;
 
@@ -37,20 +40,59 @@ enum TypeGestionnaire {
 
 pub async fn run() {
 
+    // Init gestionnaires ('static)
+    let gestionnaires = charger_gestionnaires(None);
+
+    // Wiring
+    let (mut futures, _) = build(gestionnaires).await;
+
+    // Run
+    executer(futures).await
+}
+
+/// Fonction qui lit le certificat local et extrait les fingerprints idmg et de partition
+/// Conserve les gestionnaires dans la variable GESTIONNAIRES 'static
+fn charger_gestionnaires(activer_ca: Option<bool>) -> Vec<&'static TypeGestionnaire> {
+    // Charger une version simplifiee de la configuration - on veut le certificat associe a l'enveloppe privee
+    let config = charger_configuration().expect("config");
+    let enveloppe_privee = config.get_configuration_pki().get_enveloppe_privee();
+    let certificat = enveloppe_privee.enveloppe.clone();
+
+    // Trouver fingerprints cert leaf (partition) et root (CA)
+    let pem_vec = certificat.get_pem_vec();
+    let mut pem_iter = pem_vec.iter();
+
+    // Leaf - premier certificat
+    let fp_leaf = pem_iter.next().expect("leaf");
+    let partition = fp_leaf.fingerprint.as_str();
+
+    // Root - dernier certificat
+    let fp_cert_ca = pem_iter.last().expect("ca");
+    let fp_ca = fp_cert_ca.fingerprint.as_str();
+
+    info!("Configuration du maitre des cles avec CA {} et Partition {}", fp_ca, partition);
+
     // Inserer les gestionnaires dans la variable static - permet d'obtenir lifetime 'static
-    let gestionnaires = unsafe {
-        GESTIONNAIRES[0] = TypeGestionnaire::CA(Arc::new(GestionnaireMaitreDesClesCa{}));
-        GESTIONNAIRES[1] = TypeGestionnaire::Partition(Arc::new(GestionnaireMaitreDesClesPartition::new("DUMMY")));
+    unsafe {
+        match activer_ca {
+            Some(a) => {
+                if a {
+                    GESTIONNAIRES[0] = TypeGestionnaire::CA(Arc::new(GestionnaireMaitreDesClesCa { fingerprint: fp_ca.into() }));
+                }
+            },
+            None => {
+                todo!("Verifier variable d'environnement pour activer CA");
+            }
+        }
+        GESTIONNAIRES[1] = TypeGestionnaire::Partition(Arc::new(GestionnaireMaitreDesClesPartition::new(partition.into())));
 
         let mut vec_gestionnaires = Vec::new();
         vec_gestionnaires.extend(&GESTIONNAIRES);
         vec_gestionnaires
-    };
-
-    build_run(gestionnaires).await
+    }
 }
 
-async fn build_run(gestionnaires: Vec<&'static TypeGestionnaire>) {
+async fn build(gestionnaires: Vec<&'static TypeGestionnaire>) -> (FuturesUnordered<JoinHandle<()>>, Arc<MiddlewareDb>) {
 
     // Recuperer configuration des Q de tous les domaines
     let queues = {
@@ -76,7 +118,7 @@ async fn build_run(gestionnaires: Vec<&'static TypeGestionnaire>) {
         callbacks.register(Box::new(move |event| {
             debug!("Callback sur connexion a MQ, event : {:?}", event);
             let tx_ref = tx_entretien.clone();
-            let _ = spawn(async move{
+            let _ = spawn(async move {
                 match tx_ref.send(event).await {
                     Ok(_) => (),
                     Err(e) => error!("Erreur queuing via callback : {:?}", e)
@@ -124,10 +166,10 @@ async fn build_run(gestionnaires: Vec<&'static TypeGestionnaire>) {
 
         // Creer consommateurs MQ globaux pour rediriger messages recus vers Q internes appropriees
         futures.push(spawn(
-            consommer( middleware.clone(), rx_messages_verifies, map_senders.clone())
+            consommer(middleware.clone(), rx_messages_verifies, map_senders.clone())
         ));
         futures.push(spawn(
-            consommer( middleware.clone(), rx_triggers, map_senders.clone())
+            consommer(middleware.clone(), rx_triggers, map_senders.clone())
         ));
 
         // ** Thread d'entretien **
@@ -137,9 +179,12 @@ async fn build_run(gestionnaires: Vec<&'static TypeGestionnaire>) {
         for f in future_recevoir_messages {
             futures.push(f);
         }
-
     }
 
+    (futures, middleware)
+}
+
+async fn executer(mut futures: FuturesUnordered<JoinHandle<()>>) {
     info!("domaines_maitredescles: Demarrage traitement, top level threads {}", futures.len());
     let arret = futures.next().await;
     info!("domaines_maitredescles: Fermeture du contexte, task daemon terminee : {:?}", arret);
@@ -288,4 +333,75 @@ async fn consommer(
     }
 
     info!("domaines_maitredescles.consommer: Fin thread : {:?}", map_senders.keys());
+}
+
+#[cfg(test)]
+mod test_integration {
+    use std::collections::HashMap;
+    use crate::test_setup::setup;
+    use millegrilles_common_rust::middleware_db::preparer_middleware_db;
+    use millegrilles_common_rust::tokio as tokio;
+    use millegrilles_common_rust::tokio_stream::StreamExt;
+
+    use super::*;
+    use millegrilles_common_rust::backup::CatalogueHoraire;
+    use millegrilles_common_rust::chiffrage::Chiffreur;
+    use millegrilles_common_rust::formatteur_messages::MessageSerialise;
+    use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
+    use millegrilles_common_rust::mongo_dao::convertir_to_bson;
+
+    // fn init_gestionnaires(ca: bool, partition: bool) -> Vec<&'static TypeGestionnaire> {
+    //     unsafe {
+    //         if ca {
+    //             GESTIONNAIRES[0] = TypeGestionnaire::CA(Arc::new(GestionnaireMaitreDesClesCa { "CA" }));
+    //         }
+    //         if partition {
+    //             GESTIONNAIRES[1] = TypeGestionnaire::Partition(Arc::new(GestionnaireMaitreDesClesPartition::new("DUMMY")));
+    //         }
+    //
+    //         let mut vec_gestionnaires = Vec::new();
+    //         vec_gestionnaires.extend(&GESTIONNAIRES);
+    //         vec_gestionnaires
+    //     }
+    // }
+
+    #[tokio::test]
+    async fn test_sauvegarder_cle() {
+        setup("test_sauvegarder_cle");
+        let gestionnaires = charger_gestionnaires(Some(true));
+        let (mut futures, middleware) = build(gestionnaires).await;
+        futures.push(tokio::spawn(async move {
+
+            tokio::time::sleep(tokio::time::Duration::new(4, 0)).await;
+
+            // S'assurer d'avoir recu le cert de chiffrage
+            middleware.charger_certificats_chiffrage().await;
+
+            let input = b"Allo, le test";
+            let mut output = [0u8; 13];
+
+            let mut cipher = middleware.get_cipher();
+            let output_size = cipher.update(input, &mut output).expect("update");
+            let mut output_final = [0u8; 10];
+            let output_final_size = cipher.finalize(&mut output_final).expect("final");
+            let cipher_keys = cipher.get_cipher_keys().expect("keys");
+
+            let mut doc_map = HashMap::new();
+            doc_map.insert(String::from("test"), String::from("true"));
+            let commande = cipher_keys.get_commande_sauvegarder_cles(
+                DOMAINE_NOM, Some(String::from("DUMMY")), doc_map);
+
+            debug!("Commande sauvegarder cles : {:?}", commande);
+
+            let routage = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
+                .partition("DUMMY")
+                .build();
+
+            let reponse = middleware.transmettre_commande(routage, &commande, true).await.expect("commande");
+            debug!("Reponse commande cle : {:?}", reponse);
+
+        }));
+        // Execution async du test
+        futures.next().await.expect("resultat").expect("ok");
+    }
 }

@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use log::{debug, error, info, trace, warn};
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
+use millegrilles_common_rust::chiffrage::CommandeSauvegarderCle;
 use millegrilles_common_rust::constantes::Securite;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::formatteur_messages::MessageMilleGrille;
@@ -42,6 +43,15 @@ impl GestionnaireMaitreDesClesPartition {
         }
     }
 
+    /// Retourne une version tronquee du nom de partition
+    /// Utilise pour nommer certaines ressources (e.g. collections Mongo)
+    pub fn get_partition_tronquee(&self) -> String {
+        let partition = self.nom_partition.as_str();
+
+        // On utilise les 12 derniers chars du fingerprint (35..48)
+        String::from(&partition[35..])
+    }
+
     fn get_q_sauvegarder_cle(&self) -> String {
         format!("MaitreDesCles_{}/sauvegarder", self.nom_partition)
     }
@@ -63,11 +73,15 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
     fn get_nom_domaine(&self) -> String { String::from(DOMAINE_NOM) }
 
     fn get_collection_transactions(&self) -> String {
-        format!("MaitreDesCles_{}", self.nom_partition)
+        // Utiliser le nom de la partition tronquee - evite que les noms de collections deviennent
+        // trop long (cause un probleme lors de la creation d'index, max 127 chars sur path)
+        format!("MaitreDesCles_{}", self.get_partition_tronquee())
     }
 
     fn get_collections_documents(&self) -> Vec<String> {
-        vec![format!("MaitreDesCles_{}/cles", self.nom_partition)]
+        // Utiliser le nom de la partition tronquee - evite que les noms de collections deviennent
+        // trop long (cause un probleme lors de la creation d'index, max 127 chars sur path)
+        vec![format!("MaitreDesCles_{}/cles", self.get_partition_tronquee())]
     }
 
     fn get_q_transactions(&self) -> String {
@@ -164,7 +178,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
     }
 
     async fn preparer_index_mongodb_custom<M>(&self, middleware: &M) -> Result<(), String> where M: MongoDao {
-        let nom_collection_cles = format!("MaitreDesCles_{}/cles", self.nom_partition);
+        let nom_collection_cles = format!("MaitreDesCles_{}/cles", self.get_partition_tronquee());
         preparer_index_mongodb_custom(middleware, nom_collection_cles.as_str()).await
     }
 
@@ -173,7 +187,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
     }
 
     async fn consommer_commande<M>(&self, middleware: &M, message: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>> where M: Middleware + 'static {
-        todo!()
+        consommer_commande(middleware, message, self.nom_partition.as_str()).await
     }
 
     async fn consommer_transaction<M>(&self, middleware: &M, message: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>> where M: Middleware + 'static {
@@ -239,4 +253,35 @@ async fn emettre_certificat_maitredescles<M>(middleware: &M, m: MessageValideAct
 
     let message_reponse = middleware.formatter_reponse(&reponse, None)?;
     Ok(Some(message_reponse))
+}
+
+async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, nom_partition: &str)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao
+{
+    debug!("consommer_commande : {:?}", &m.message);
+
+    // Autorisation : doit etre un message via exchange
+    match m.verifier_exchanges(vec!(Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure)) {
+        true => Ok(()),
+        false => Err(format!("core_backup.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id)),
+    }?;
+
+    match m.action.as_str() {
+        // Commandes standard
+        COMMANDE_SAUVEGARDER_CLE => commande_sauvegarder_cle(middleware, m).await,
+        // Commandes inconnues
+        _ => Err(format!("core_backup.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
+    }
+}
+
+async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+where
+    M: GenerateurMessages + MongoDao,
+{
+    debug!("commande_sauvegarder_cle Consommer commande : {:?}", & m.message);
+    let commande: CommandeSauvegarderCle = m.message.get_msg().map_contenu(None)?;
+    debug!("Commande sauvegarder cle parsed : {:?}", commande);
+
+    Ok(middleware.reponse_ok()?)
 }

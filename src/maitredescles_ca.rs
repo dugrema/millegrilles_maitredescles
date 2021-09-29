@@ -4,7 +4,6 @@ use std::sync::Arc;
 use log::{debug, error, info, trace, warn};
 
 use millegrilles_common_rust::async_trait::async_trait;
-use millegrilles_common_rust::certificats::ValidateurX509;
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::formatteur_messages::MessageMilleGrille;
@@ -16,6 +15,8 @@ use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOn
 use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange, QueueType};
 use millegrilles_common_rust::recepteur_messages::MessageValideAction;
 use millegrilles_common_rust::transactions::{TraiterTransaction, Transaction, TransactionImpl};
+use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
+use millegrilles_common_rust::chiffrage::CommandeSauvegarderCle;
 
 use crate::maitredescles_commun::*;
 
@@ -33,7 +34,9 @@ const REQUETE_CLES_NON_DECHIFFRABLES: &str = "clesNonDechiffrables";
 const REQUETE_COMPTER_CLES_NON_DECHIFFRABLES: &str = "compterClesNonDechiffrables";
 
 #[derive(Clone, Debug)]
-pub struct GestionnaireMaitreDesClesCa {}
+pub struct GestionnaireMaitreDesClesCa {
+    pub fingerprint: String,
+}
 
 #[async_trait]
 impl TraiterTransaction for GestionnaireMaitreDesClesCa {
@@ -70,7 +73,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesCa {
     }
 
     async fn consommer_commande<M>(&self, middleware: &M, message: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>> where M: Middleware + 'static {
-        todo!()
+        consommer_commande(middleware, message).await
     }
 
     async fn consommer_transaction<M>(&self, middleware: &M, message: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>> where M: Middleware + 'static {
@@ -166,3 +169,33 @@ pub fn preparer_queues() -> Vec<QueueType> {
     queues
 }
 
+async fn consommer_commande<M>(middleware: &M, m: MessageValideAction)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao
+{
+    debug!("consommer_commande : {:?}", &m.message);
+
+    // Autorisation : doit etre un message via exchange
+    match m.verifier_exchanges(vec!(Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure)) {
+        true => Ok(()),
+        false => Err(format!("core_backup.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id)),
+    }?;
+
+    match m.action.as_str() {
+        // Commandes standard
+        COMMANDE_SAUVEGARDER_CLE => commande_sauvegarder_cle(middleware, m).await,
+        // Commandes inconnues
+        _ => Err(format!("core_backup.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
+    }
+}
+
+async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+where
+    M: GenerateurMessages + MongoDao,
+{
+    debug!("commande_sauvegarder_cle Consommer commande : {:?}", & m.message);
+    let commande: CommandeSauvegarderCle = m.message.get_msg().map_contenu(None)?;
+    debug!("Commande sauvegarder cle parsed : {:?}", commande);
+
+    Ok(middleware.reponse_ok()?)
+}

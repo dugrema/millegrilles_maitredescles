@@ -81,3 +81,55 @@ where M: Middleware + 'static {
 
     Ok(())
 }
+
+// #[cfg(test)]
+// mod test_integration {
+//     use std::collections::HashMap;
+//     use crate::test_setup::setup;
+//     use millegrilles_common_rust::middleware_db::preparer_middleware_db;
+//     use millegrilles_common_rust::tokio as tokio;
+//     use millegrilles_common_rust::tokio_stream::StreamExt;
+//
+//     use super::*;
+//     use millegrilles_common_rust::backup::CatalogueHoraire;
+//     use millegrilles_common_rust::chiffrage::Chiffreur;
+//     use millegrilles_common_rust::formatteur_messages::MessageSerialise;
+//     use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
+//     use millegrilles_common_rust::mongo_dao::convertir_to_bson;
+//
+//     #[tokio::test]
+//     async fn test_sauvegarder_cle() {
+//         setup("test_sauvegarder_cle");
+//         //let (middleware, _, _, mut futures) = preparer_middleware_db(Vec::new(), None);
+//         futures.push(tokio::spawn(async move {
+//
+//             tokio::time::sleep(tokio::time::Duration::new(4, 0)).await;
+//
+//             let input = b"Allo, le test";
+//             let mut output = [0u8; 13];
+//
+//             let mut cipher = middleware.get_cipher();
+//             let output_size = cipher.update(input, &mut output).expect("update");
+//             let mut output_final = [0u8; 10];
+//             let output_final_size = cipher.finalize(&mut output_final).expect("final");
+//             let cipher_keys = cipher.get_cipher_keys().expect("keys");
+//
+//             let mut doc_map = HashMap::new();
+//             doc_map.insert(String::from("test"), String::from("true"));
+//             let commande = cipher_keys.get_commande_sauvegarder_cles(
+//                 DOMAINE_NOM, Some(String::from("DUMMY")), doc_map);
+//
+//             debug!("Commande sauvegarder cles : {:?}", commande);
+//
+//             let routage = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
+//                 .partition("DUMMY")
+//                 .build();
+//
+//             let reponse = middleware.transmettre_commande(routage, &commande, true).await.expect("commande");
+//             debug!("Reponse commande cle : {:?}", reponse);
+//
+//         }));
+//         // Execution async du test
+//         futures.next().await.expect("resultat").expect("ok");
+//     }
+// }
