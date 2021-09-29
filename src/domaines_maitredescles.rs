@@ -350,13 +350,18 @@ mod test_integration {
     use millegrilles_common_rust::chiffrage::Chiffreur;
     use millegrilles_common_rust::formatteur_messages::MessageSerialise;
     use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
+    use millegrilles_common_rust::middleware::IsConfigurationPki;
     use millegrilles_common_rust::mongo_dao::convertir_to_bson;
 
     #[tokio::test]
     async fn test_sauvegarder_cle() {
         setup("test_sauvegarder_cle");
-        let gestionnaires = charger_gestionnaires(Some(true), false);
+        let gestionnaires = charger_gestionnaires(Some(false), true);
         let (mut futures, middleware) = build(gestionnaires).await;
+
+        let fingerprint_cert = middleware.get_enveloppe_privee();
+        let fingerprint = fingerprint_cert.fingerprint().to_owned();
+
         futures.push(tokio::spawn(async move {
 
             tokio::time::sleep(tokio::time::Duration::new(4, 0)).await;
@@ -376,12 +381,12 @@ mod test_integration {
             let mut doc_map = HashMap::new();
             doc_map.insert(String::from("test"), String::from("true"));
             let commande = cipher_keys.get_commande_sauvegarder_cles(
-                DOMAINE_NOM, Some(String::from("DUMMY")), doc_map);
+                "Test", None, doc_map);
 
             debug!("Commande sauvegarder cles : {:?}", commande);
 
             let routage = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
-                .partition("DUMMY")
+                .partition(fingerprint)
                 .build();
 
             let reponse = middleware.transmettre_commande(routage, &commande, true).await.expect("commande");

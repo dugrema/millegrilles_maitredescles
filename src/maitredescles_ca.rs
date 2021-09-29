@@ -225,8 +225,8 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
     let fingerprint = gestionnaire_ca.fingerprint.as_str();
     let mut doc_bson: Document = commande.clone().into();
 
-    // Sauvegarder pour partition CA, on retire la partition recue
-    let _ = doc_bson.remove("partition");
+    // // Sauvegarder pour partition CA, on retire la partition recue
+    // let _ = doc_bson.remove("partition");
 
     // Retirer cles, on re-insere la cle necessaire uniquement
     let cles = doc_bson.remove("cles");
@@ -264,8 +264,7 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
 
     if let Some(uid) = resultat.upserted_id {
         debug!("commande_sauvegarder_cle Nouvelle cle insere _id: {}, generer transaction", uid);
-        let transaction = TransactionCle::new_from_commande(
-            &commande, fingerprint, None)?;
+        let transaction = TransactionCle::new_from_commande(&commande, fingerprint)?;
         let routage = RoutageMessageAction::builder(DOMAINE_NOM, TRANSACTION_CLE)
             .exchanges(vec![Securite::L4Secure])
             .build();
@@ -273,42 +272,6 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
     }
 
     Ok(middleware.reponse_ok()?)
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct TransactionCle {
-    cle: String,
-    domaine: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    partition: Option<String>,
-    format: FormatChiffrage,
-    pub hachage_bytes: String,
-    identificateurs_document: HashMap<String, String>,
-    iv: String,
-    tag: String,
-}
-impl TransactionCle {
-    pub fn new_from_commande(commande: &CommandeSauvegarderCle, fingerprint: &str, partition: Option<String>)
-        -> Result<Self, Box<dyn Error>>
-    {
-        let cle = match commande.cles.get(fingerprint) {
-            Some(c) => c,
-            None => {
-                Err(format!("TransactionCle.new_from_commande Cle non trouvee pour fingerprint {}", fingerprint))?
-            }
-        };
-
-        Ok(TransactionCle {
-            cle: cle.to_owned(),
-            domaine: commande.domaine.clone(),
-            partition,
-            format: commande.format.clone(),
-            hachage_bytes: commande.hachage_bytes.to_owned(),
-            identificateurs_document: commande.identificateurs_document.clone(),
-            iv: commande.iv.clone(),
-            tag: commande.tag.clone(),
-        })
-    }
 }
 
 async fn aiguillage_transaction<M, T>(middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>

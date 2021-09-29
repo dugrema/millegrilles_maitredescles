@@ -1,13 +1,16 @@
+use std::collections::HashMap;
 use std::error::Error;
 use std::sync::Arc;
 
 use log::{debug, error, info, trace, warn};
+use millegrilles_common_rust::chiffrage::{CommandeSauvegarderCle, FormatChiffrage};
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::middleware::Middleware;
 use millegrilles_common_rust::mongo_dao::{ChampIndex, convertir_bson_deserializable, convertir_bson_value, convertir_to_bson, filtrer_doc_id, IndexOptions, MongoDao};
 use millegrilles_common_rust::mongodb as mongodb;
 use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOneOptions, Hint};
 use millegrilles_common_rust::recepteur_messages::MessageValideAction;
+use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::tokio::time::{Duration, sleep};
 
 pub const DOMAINE_NOM: &str = "MaitreDesCles";
@@ -80,6 +83,43 @@ where M: Middleware + 'static {
     debug!("Traiter cedule {}", DOMAINE_NOM);
 
     Ok(())
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TransactionCle {
+    cle: String,
+    domaine: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    partition: Option<String>,
+    format: FormatChiffrage,
+    pub hachage_bytes: String,
+    identificateurs_document: HashMap<String, String>,
+    iv: String,
+    tag: String,
+}
+
+impl TransactionCle {
+    pub fn new_from_commande(commande: &CommandeSauvegarderCle, fingerprint: &str)
+        -> Result<Self, Box<dyn Error>>
+    {
+        let cle = match commande.cles.get(fingerprint) {
+            Some(c) => c,
+            None => {
+                Err(format!("TransactionCle.new_from_commande Cle non trouvee pour fingerprint {}", fingerprint))?
+            }
+        };
+
+        Ok(TransactionCle {
+            cle: cle.to_owned(),
+            domaine: commande.domaine.clone(),
+            partition: commande.partition.clone(),
+            format: commande.format.clone(),
+            hachage_bytes: commande.hachage_bytes.to_owned(),
+            identificateurs_document: commande.identificateurs_document.clone(),
+            iv: commande.iv.clone(),
+            tag: commande.tag.clone(),
+        })
+    }
 }
 
 // #[cfg(test)]
