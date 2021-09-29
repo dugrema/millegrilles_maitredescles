@@ -25,6 +25,7 @@ pub const COMMANDE_SAUVEGARDER_CLE: &str = "sauvegarderCle";
 pub const TRANSACTION_CLE: &str = "cle";
 
 pub const CHAMP_HACHAGE_BYTES: &str = "hachage_bytes";
+pub const CHAMP_LISTE_HACHAGE_BYTES: &str = "liste_hachage_bytes";
 pub const CHAMP_LISTE_FINGERPRINTS: &str = "liste_fingerprints";
 pub const CHAMP_NON_DECHIFFRABLE: &str = "non_dechiffrable";
 
@@ -87,7 +88,7 @@ where M: Middleware + 'static {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionCle {
-    cle: String,
+    pub cle: String,
     domaine: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     partition: Option<String>,

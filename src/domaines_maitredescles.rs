@@ -376,7 +376,7 @@ mod test_integration {
             let input = b"Allo, le test";
             let mut output = [0u8; 13];
 
-            let mut cipher = middleware.get_cipher();
+            let mut cipher = middleware.get_cipher().expect("cipher");
             let output_size = cipher.update(input, &mut output).expect("update");
             let mut output_final = [0u8; 10];
             let output_final_size = cipher.finalize(&mut output_final).expect("final");
