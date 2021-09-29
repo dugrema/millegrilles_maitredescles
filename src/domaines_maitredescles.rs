@@ -72,17 +72,21 @@ fn charger_gestionnaires(activer_ca: Option<bool>, activer_partition: bool) -> V
 
     info!("Configuration du maitre des cles avec CA {} et Partition {}", fp_ca, partition);
 
+    // Charger valeur d'environnement au besoin
+    let flag_ca = match activer_ca {
+        Some(a) => a,
+        None => {
+            match std::env::var("MG_MAITREDESCLES_CA") {
+                Ok(val) => val.as_str() == "1",
+                Err(_) => false
+            }
+        }
+    };
+
     // Inserer les gestionnaires dans la variable static - permet d'obtenir lifetime 'static
     unsafe {
-        match activer_ca {
-            Some(a) => {
-                if a {
-                    GESTIONNAIRES[0] = TypeGestionnaire::CA(Arc::new(GestionnaireMaitreDesClesCa { fingerprint: fp_ca.into() }));
-                }
-            },
-            None => {
-                todo!("Verifier variable d'environnement pour activer CA");
-            }
+        if flag_ca {
+            GESTIONNAIRES[0] = TypeGestionnaire::CA(Arc::new(GestionnaireMaitreDesClesCa { fingerprint: fp_ca.into() }));
         }
         if activer_partition {
             GESTIONNAIRES[1] = TypeGestionnaire::Partition(Arc::new(GestionnaireMaitreDesClesPartition::new(partition.into())));
