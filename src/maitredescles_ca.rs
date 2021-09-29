@@ -246,7 +246,9 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
     doc_bson.insert(CHAMP_CREATION, Utc::now());
     doc_bson.insert(CHAMP_MODIFICATION, Utc::now());
 
-    let non_dechiffrable = commande.cles.len() < 2;
+    let nb_cles = commande.cles.len();
+    let non_dechiffrable = nb_cles < 2;
+    debug!("commande_sauvegarder_cle: On a recu {} cles, non-dechiffables (presume) : {}", nb_cles, non_dechiffrable);
     doc_bson.insert("non_dechiffrable", non_dechiffrable);
 
     let ops = doc! { "$setOnInsert": doc_bson };
