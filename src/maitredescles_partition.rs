@@ -6,7 +6,7 @@ use log::{debug, error, info, trace, warn};
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chiffrage::CommandeSauvegarderCle;
-use millegrilles_common_rust::constantes::Securite;
+use millegrilles_common_rust::constantes::{DEFAULT_Q_TTL, Securite};
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::formatteur_messages::MessageMilleGrille;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageReponse};
@@ -130,7 +130,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
             ConfigQueue {
                 nom_queue: NOM_Q_DECHIFFRAGE.into(),
                 routing_keys: rk_dechiffrage,
-                ttl: 300000.into(),
+                ttl: DEFAULT_Q_TTL.into(),
                 durable: false,
             }
         ));

@@ -41,7 +41,7 @@ enum TypeGestionnaire {
 pub async fn run() {
 
     // Init gestionnaires ('static)
-    let gestionnaires = charger_gestionnaires(None);
+    let gestionnaires = charger_gestionnaires(None, true);
 
     // Wiring
     let (mut futures, _) = build(gestionnaires).await;
@@ -52,7 +52,7 @@ pub async fn run() {
 
 /// Fonction qui lit le certificat local et extrait les fingerprints idmg et de partition
 /// Conserve les gestionnaires dans la variable GESTIONNAIRES 'static
-fn charger_gestionnaires(activer_ca: Option<bool>) -> Vec<&'static TypeGestionnaire> {
+fn charger_gestionnaires(activer_ca: Option<bool>, activer_partition: bool) -> Vec<&'static TypeGestionnaire> {
     // Charger une version simplifiee de la configuration - on veut le certificat associe a l'enveloppe privee
     let config = charger_configuration().expect("config");
     let enveloppe_privee = config.get_configuration_pki().get_enveloppe_privee();
@@ -84,7 +84,9 @@ fn charger_gestionnaires(activer_ca: Option<bool>) -> Vec<&'static TypeGestionna
                 todo!("Verifier variable d'environnement pour activer CA");
             }
         }
-        GESTIONNAIRES[1] = TypeGestionnaire::Partition(Arc::new(GestionnaireMaitreDesClesPartition::new(partition.into())));
+        if activer_partition {
+            GESTIONNAIRES[1] = TypeGestionnaire::Partition(Arc::new(GestionnaireMaitreDesClesPartition::new(partition.into())));
+        }
 
         let mut vec_gestionnaires = Vec::new();
         vec_gestionnaires.extend(&GESTIONNAIRES);
@@ -350,25 +352,10 @@ mod test_integration {
     use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
     use millegrilles_common_rust::mongo_dao::convertir_to_bson;
 
-    // fn init_gestionnaires(ca: bool, partition: bool) -> Vec<&'static TypeGestionnaire> {
-    //     unsafe {
-    //         if ca {
-    //             GESTIONNAIRES[0] = TypeGestionnaire::CA(Arc::new(GestionnaireMaitreDesClesCa { "CA" }));
-    //         }
-    //         if partition {
-    //             GESTIONNAIRES[1] = TypeGestionnaire::Partition(Arc::new(GestionnaireMaitreDesClesPartition::new("DUMMY")));
-    //         }
-    //
-    //         let mut vec_gestionnaires = Vec::new();
-    //         vec_gestionnaires.extend(&GESTIONNAIRES);
-    //         vec_gestionnaires
-    //     }
-    // }
-
     #[tokio::test]
     async fn test_sauvegarder_cle() {
         setup("test_sauvegarder_cle");
-        let gestionnaires = charger_gestionnaires(Some(true));
+        let gestionnaires = charger_gestionnaires(Some(true), false);
         let (mut futures, middleware) = build(gestionnaires).await;
         futures.push(tokio::spawn(async move {
 
@@ -399,6 +386,9 @@ mod test_integration {
 
             let reponse = middleware.transmettre_commande(routage, &commande, true).await.expect("commande");
             debug!("Reponse commande cle : {:?}", reponse);
+
+            debug!("Sleep 2 secondes pour attendre fin traitements");
+            tokio::time::sleep(tokio::time::Duration::new(2, 0)).await;
 
         }));
         // Execution async du test
