@@ -17,6 +17,7 @@ use millegrilles_common_rust::mongo_dao::MongoDao;
 use millegrilles_common_rust::mongodb::options::UpdateOptions;
 use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange, QueueType};
 use millegrilles_common_rust::recepteur_messages::MessageValideAction;
+use millegrilles_common_rust::serde::{Serialize, Deserialize};
 use millegrilles_common_rust::serde_json::json;
 use millegrilles_common_rust::transactions::{TraiterTransaction, Transaction, TransactionImpl};
 
@@ -219,10 +220,10 @@ async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, gest
 {
     debug!("Consommer requete : {:?}", &message.message);
 
-    // Autorisation : doit etre de niveau 4.secure
-    match message.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure]) {
+    // Autorisation : On accepte les requetes de tous les echanges
+    match message.verifier_exchanges(vec![Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure]) {
         true => Ok(()),
-        false => Err(format!("Trigger cedule autorisation invalide (pas 4.secure)")),
+        false => Err(format!("Trigger cedule autorisation invalide (pas d'un exchange reconnu)")),
     }?;
 
     // Note : aucune verification d'autorisation - tant que le certificat est valide (deja verifie), on repond.
@@ -231,6 +232,7 @@ async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, gest
         DOMAINE_NOM => {
             match message.action.as_str() {
                 REQUETE_CERTIFICAT_MAITREDESCLES => emettre_certificat_maitredescles(middleware, message).await,
+                REQUETE_DECHIFFRAGE => requete_dechiffrage(middleware, message, gestionnaire).await,
                 _ => {
                     error!("Message requete/action inconnue : '{}'. Message dropped.", message.action);
                     Ok(None)
@@ -397,4 +399,79 @@ async fn transaction_cle<M, T>(middleware: &M, transaction: T, gestionnaire: &Ge
     debug!("transaction_cle Resultat transaction update : {:?}", resultat);
 
     Ok(None)
+}
+
+async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesPartition)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao,
+{
+    debug!("requete_dechiffrage Consommer commande : {:?}", & m.message);
+    let requete: RequeteDechiffrage = m.message.get_msg().map_contenu(None)?;
+    debug!("requete_dechiffrage cle parsed : {:?}", requete);
+
+    let requete_autorisee = verifier_autorisation_dechiffrage(&m, &requete).await?;
+    if ! requete_autorisee {
+        debug!("requete_dechiffrage Requete {:?} de dechiffrage {} refusee", m.correlation_id, requete.hachage_bytes);
+        let refuse = json!({"ok": false, "err": "Autorisation refusee", "acces": "0.refuse"});
+        return Ok(Some(middleware.formatter_reponse(&refuse, None)?))
+    }
+
+    todo!()
+}
+
+/// Verifier si la requete de dechiffrage est valide (autorisee)
+async fn verifier_autorisation_dechiffrage(m: &MessageValideAction, requete: &RequeteDechiffrage) -> Result<bool, Box<dyn Error>> {
+    Ok(false)
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RequeteDechiffrage {
+    hachage_bytes: String,
+}
+
+#[cfg(test)]
+mod test_integration {
+    use crate::test_setup::setup;
+    use millegrilles_common_rust::tokio as tokio;
+
+    use super::*;
+    use millegrilles_common_rust::backup::CatalogueHoraire;
+    use millegrilles_common_rust::formatteur_messages::MessageSerialise;
+    use millegrilles_common_rust::generateur_messages::RoutageMessageAction;
+    use millegrilles_common_rust::middleware::IsConfigurationPki;
+    use millegrilles_common_rust::middleware_db::preparer_middleware_db;
+    use millegrilles_common_rust::mongo_dao::convertir_to_bson;
+    use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
+    use millegrilles_common_rust::recepteur_messages::TypeMessage;
+    use millegrilles_common_rust::tokio_stream::StreamExt;
+
+    #[tokio::test]
+    async fn test_requete_dechiffrage() {
+        setup("test_requete_dechiffrage");
+        let (middleware, _, _, mut futures) = preparer_middleware_db(Vec::new(), None);
+        let gestionnaire = GestionnaireMaitreDesClesPartition {fingerprint: "DUMMY".into()};
+        futures.push(tokio::spawn(async move {
+
+            let enveloppe_privee = middleware.get_enveloppe_privee();
+            let contenu = json!({CHAMP_HACHAGE_BYTES: "DUMMY"});
+            let message_mg = MessageMilleGrille::new_signer(
+                enveloppe_privee.as_ref(),
+                &contenu,
+                DOMAINE_NOM.into(),
+                REQUETE_DECHIFFRAGE.into(),
+                None,
+                None
+            ).expect("message");
+            let message = MessageSerialise::from_parsed(message_mg).expect("serialise");
+            let mva = MessageValideAction::new(
+                message, "dummy_q", "routing_key", "domaine", "action", TypeMessageOut::Requete);
+
+            let reponse = requete_dechiffrage(middleware.as_ref(), mva, &gestionnaire).await.expect("dechiffrage");
+            debug!("Reponse requete dechiffrage : {:?}", reponse);
+
+        }));
+        // Execution async du test
+        futures.next().await.expect("resultat").expect("ok");
+    }
+
 }
