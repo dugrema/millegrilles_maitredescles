@@ -423,10 +423,21 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
         }
     };
 
+    // Verifier si on a une autorisation de dechiffrage global
+    let (requete_autorisee_globalement, permission) = verifier_autorisation_dechiffrage_global(
+        middleware, &m, &requete)?;
+
+    // Rejeter si global false et permission absente
+    if ! requete_autorisee_globalement && permission.is_none() {
+        debug!("requete_dechiffrage Requete {:?} de dechiffrage {:?} refusee, permission manquante", m.correlation_id, &requete.liste_hachage_bytes);
+        let refuse = json!({"ok": false, "err": "Autorisation refusee - permission manquante", "acces": "0.refuse", "code": 0});
+        return Ok(Some(middleware.formatter_reponse(&refuse, None)?))
+    }
+
     // Trouver les cles demandees et rechiffrer
-    let mut curseur = preparer_curseur_cles(middleware, gestionnaire, &requete).await?;
+    let mut curseur = preparer_curseur_cles(middleware, gestionnaire, &requete, permission.as_ref()).await?;
     let (cles, cles_trouvees) = rechiffrer_cles(
-        middleware, &m, &requete, enveloppe_privee, certificat, &mut curseur).await?;
+        middleware, &m, &requete, enveloppe_privee, certificat, requete_autorisee_globalement, permission, &mut curseur).await?;
 
     // Preparer la reponse
     // Verifier si on a au moins une cle dans la reponse
@@ -460,22 +471,15 @@ async fn rechiffrer_cles<M>(
     requete: &RequeteDechiffrage,
     enveloppe_privee: Arc<EnveloppePrivee>,
     certificat: &EnveloppeCertificat,
+    requete_autorisee_globalement: bool,
+    permission: Option<EnveloppePermission>,
     curseur: &mut Cursor<Document>
 )
     -> Result<(HashMap<String, TransactionCle>, bool), Box<dyn Error>>
     where M: VerificateurMessage
 {
-    // Verifier si on a une autorisation de dechiffrage global
-    let (requete_autorisee_globalement, permission) = verifier_autorisation_dechiffrage_global(
-        middleware, &m, &requete)?;
-
     let mut cles: HashMap<String, TransactionCle> = HashMap::new();
     let mut cles_trouvees = false;  // Flag pour dire qu'on a matche au moins 1 cle
-
-    // Rejeter si global false et permission absente
-    if ! requete_autorisee_globalement && permission.is_none() {
-        return Ok((cles, true))  // Mettre cles_trouvees a true, indique acces refuse
-    }
 
     while let Some(rc) = curseur.next().await {
         debug!("rechiffrer_cles document {:?}", rc);
@@ -492,8 +496,10 @@ async fn rechiffrer_cles<M>(
                 let hachage_bytes = cle.hachage_bytes.clone();
 
                 // Verifier l'autorisation de dechiffrage pour cette cle
-                let requete_autorisee = requete_autorisee_globalement ||
-                    verifier_autorisation_dechiffrage_specifique(&certificat, &permission, &cle).await?;
+                let requete_autorisee = match requete_autorisee_globalement {
+                    true => true,
+                    false => verifier_autorisation_dechiffrage_specifique(&certificat, permission.as_ref(), &cle)?
+                };
                 debug!("rechiffrer_cles Autorisation rechiffrage cle {} = {}", hachage_bytes, requete_autorisee);
 
                 if requete_autorisee {
@@ -516,7 +522,12 @@ async fn rechiffrer_cles<M>(
 }
 
 /// Prepare le curseur sur les cles demandees
-async fn preparer_curseur_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition, requete: &RequeteDechiffrage)
+async fn preparer_curseur_cles<M>(
+    middleware: &M,
+    gestionnaire: &GestionnaireMaitreDesClesPartition,
+    requete: &RequeteDechiffrage,
+    permission: Option<&EnveloppePermission>
+)
     -> Result<Cursor<Document>, Box<dyn Error>>
     where M: MongoDao
 {
@@ -618,8 +629,8 @@ fn rechiffrer_cle(cle: &mut TransactionCle, privee: &EnveloppePrivee, certificat
     Ok(())
 }
 
-async fn verifier_autorisation_dechiffrage_specifique(
-    certificat_destination: &EnveloppeCertificat, permission: &Option<EnveloppePermission>, cle: &TransactionCle)
+fn verifier_autorisation_dechiffrage_specifique(
+    certificat_destination: &EnveloppeCertificat, permission: Option<&EnveloppePermission>, cle: &TransactionCle)
     -> Result<bool, Box<dyn Error>>
 {
     let domaine_cle = &cle.domaine;
@@ -631,12 +642,48 @@ async fn verifier_autorisation_dechiffrage_specifique(
         }
     }
 
-    // Verifier la permission de dechiffrage
     if let Some(p) = permission {
-        // Calculer expiration de la permission
-        let ts_courant = Utc::now().timestamp() as u32;
-        let hachage_bytes = cle.hachage_bytes.as_str();
+        // S'assurer que le hachage_bytes est inclus dans la permission
+        let regles_permission = &p.permission;
 
+        let hachage_bytes_permis = &regles_permission.liste_hachage_bytes;
+        let hachage_bytes_demande = &cle.hachage_bytes;
+        if ! hachage_bytes_permis.contains(hachage_bytes_demande) {
+            debug!("verifier_autorisation_dechiffrage_specifique Hachage_bytes {} n'est pas inclus dans la permission", hachage_bytes_demande);
+            return Ok(false)
+        }
+
+        let enveloppe_permission = p.enveloppe.as_ref();
+        if enveloppe_permission.verifier_exchanges(vec![Securite::L4Secure]) {
+            // Permission signee par un certificat 4.secure - autorisation globale
+
+            // On verifie si le certificat correspond a un des criteres mis dans la permission
+            if let Some(user_id) = &regles_permission.user_id {
+                match certificat_destination.get_user_id()? {
+                    Some(u) => {
+                        if u != user_id {
+                            debug!("verifier_autorisation_dechiffrage_specifique Mauvais user id {}", u);
+                            return Ok(false)
+                        }
+                    },
+                    None => return {
+                        debug!("verifier_autorisation_dechiffrage_specifique Certificat sans user_id (requis = {:?}), acces refuse", user_id);
+                        Ok(false)
+                    }
+                }
+            }
+
+            if let Some(domaine) = &regles_permission.domaines_permis {
+                let domaine_cle = &cle.domaine;
+                if ! domaine.contains(domaine_cle) {
+                    debug!("verifier_autorisation_dechiffrage_specifique Cle n'est pas d'un domaine permis {}", domaine_cle);
+                    return Ok(false)
+                }
+            }
+
+            // Aucune regle n'as ete rejetee, acces permis
+            return Ok(true)
+        }
     }
 
     // Reponse par defaut - acces refuse
@@ -650,6 +697,7 @@ mod ut {
     use std::thread::sleep;
     use std::time::Duration;
     use millegrilles_common_rust::certificats::{build_store_path, charger_enveloppe_privee, ValidateurX509Impl};
+    use millegrilles_common_rust::chiffrage::FormatChiffrage;
     use millegrilles_common_rust::configuration::{charger_configuration, ConfigMessages, ConfigurationMessages};
     use millegrilles_common_rust::formatteur_messages::{MessageMilleGrille, MessageSerialise};
     use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
@@ -849,6 +897,185 @@ mod ut {
         assert_eq!(true, permission.is_none());
     }
 
+    #[test]
+    fn permission_specifique_tout() {
+        setup("permission_specifique_tout");
+
+        let config = init();
+        let enveloppe_privee = config.get_configuration_pki().get_enveloppe_privee();
+
+        let path_cert = PathBuf::from("/home/mathieu/mgdev/certs/pki.nginx.cert");
+        let path_key = PathBuf::from("/home/mathieu/mgdev/certs/pki.nginx.key");
+        let (_, env_privee_autre) = charger_enveloppe_privee_part(path_cert.as_path(), path_key.as_path());
+        let enveloppe_privee_autre = Arc::new(env_privee_autre);
+        let certificat_destination = enveloppe_privee_autre.enveloppe.clone();
+
+        // Creer permission
+        let contenu_permission = PermissionDechiffrage {
+            liste_hachage_bytes: vec!["DUMMY".into()],
+            domaines_permis: None,
+            user_id: None,
+            duree: 5,
+        };
+
+        let enveloppe_permission = EnveloppePermission {
+            enveloppe: enveloppe_privee.enveloppe.clone(),
+            permission: contenu_permission,
+        };
+
+        let identificateurs_document: HashMap<String, String> = HashMap::new();
+        let cle = TransactionCle {
+            cle: "CLE".into(),
+            domaine: "domaine".into(),
+            partition: None,
+            format: FormatChiffrage::mgs2,
+            hachage_bytes: "DUMMY".into(),
+            identificateurs_document,
+            iv: "iv".into(),
+            tag: "tag".into(),
+        };
+
+        let resultat = verifier_autorisation_dechiffrage_specifique(
+            certificat_destination.as_ref(), Some(&enveloppe_permission), &cle).expect("permission");
+        debug!("permission_specifique_tout Resultat : {:?}", resultat);
+
+        assert_eq!(true, resultat);
+    }
+
+    #[test]
+    fn permission_specifique_domaine() {
+        setup("permission_specifique_domaine");
+
+        let config = init();
+        let enveloppe_privee = config.get_configuration_pki().get_enveloppe_privee();
+
+        let path_cert = PathBuf::from("/home/mathieu/mgdev/certs/pki.nginx.cert");
+        let path_key = PathBuf::from("/home/mathieu/mgdev/certs/pki.nginx.key");
+        let (_, env_privee_autre) = charger_enveloppe_privee_part(path_cert.as_path(), path_key.as_path());
+        let enveloppe_privee_autre = Arc::new(env_privee_autre);
+        let certificat_destination = enveloppe_privee_autre.enveloppe.clone();
+
+        // Creer permission
+        let contenu_permission = PermissionDechiffrage {
+            liste_hachage_bytes: vec!["DUMMY".into()],
+            domaines_permis: Some(vec!["DomaineTest".into()]),
+            user_id: None,
+            duree: 5,
+        };
+
+        let enveloppe_permission = EnveloppePermission {
+            enveloppe: enveloppe_privee.enveloppe.clone(),
+            permission: contenu_permission,
+        };
+
+        let identificateurs_document: HashMap<String, String> = HashMap::new();
+        let cle = TransactionCle {
+            cle: "CLE".into(),
+            domaine: "DomaineTest".into(),
+            partition: None,
+            format: FormatChiffrage::mgs2,
+            hachage_bytes: "DUMMY".into(),
+            identificateurs_document,
+            iv: "iv".into(),
+            tag: "tag".into(),
+        };
+
+        let resultat = verifier_autorisation_dechiffrage_specifique(
+            certificat_destination.as_ref(), Some(&enveloppe_permission), &cle).expect("permission");
+        debug!("permission_specifique_tout Resultat : {:?}", resultat);
+
+        assert_eq!(true, resultat);
+    }
+
+    #[test]
+    fn permission_specifique_domaine_refuse() {
+        setup("permission_specifique_domaine_refuse");
+
+        let config = init();
+        let enveloppe_privee = config.get_configuration_pki().get_enveloppe_privee();
+
+        let path_cert = PathBuf::from("/home/mathieu/mgdev/certs/pki.nginx.cert");
+        let path_key = PathBuf::from("/home/mathieu/mgdev/certs/pki.nginx.key");
+        let (_, env_privee_autre) = charger_enveloppe_privee_part(path_cert.as_path(), path_key.as_path());
+        let enveloppe_privee_autre = Arc::new(env_privee_autre);
+        let certificat_destination = enveloppe_privee_autre.enveloppe.clone();
+
+        // Creer permission
+        let contenu_permission = PermissionDechiffrage {
+            liste_hachage_bytes: vec!["DUMMY".into()],
+            domaines_permis: Some(vec!["DomaineTest_MAUVAIS".into()]),
+            user_id: None,
+            duree: 5,
+        };
+
+        let enveloppe_permission = EnveloppePermission {
+            enveloppe: enveloppe_privee.enveloppe.clone(),
+            permission: contenu_permission,
+        };
+
+        let identificateurs_document: HashMap<String, String> = HashMap::new();
+        let cle = TransactionCle {
+            cle: "CLE".into(),
+            domaine: "DomaineTest".into(),
+            partition: None,
+            format: FormatChiffrage::mgs2,
+            hachage_bytes: "DUMMY".into(),
+            identificateurs_document,
+            iv: "iv".into(),
+            tag: "tag".into(),
+        };
+
+        let resultat = verifier_autorisation_dechiffrage_specifique(
+            certificat_destination.as_ref(), Some(&enveloppe_permission), &cle).expect("permission");
+        debug!("permission_specifique_tout Resultat : {:?}", resultat);
+
+        assert_eq!(false, resultat);
+    }
+
+    #[test]
+    fn permission_specifique_user_id() {
+        setup("permission_specifique_user_id");
+
+        let config = init();
+        let enveloppe_privee = config.get_configuration_pki().get_enveloppe_privee();
+
+        let path_cert = PathBuf::from("/home/mathieu/mgdev/certs/pki.nginx.cert");
+        let path_key = PathBuf::from("/home/mathieu/mgdev/certs/pki.nginx.key");
+        let (_, env_privee_autre) = charger_enveloppe_privee_part(path_cert.as_path(), path_key.as_path());
+        let enveloppe_privee_autre = Arc::new(env_privee_autre);
+        let certificat_destination = enveloppe_privee_autre.enveloppe.clone();
+
+        // Creer permission
+        let contenu_permission = PermissionDechiffrage {
+            liste_hachage_bytes: vec!["DUMMY".into()],
+            domaines_permis: None,
+            user_id: Some("dummy_user".into()),
+            duree: 0,
+        };
+
+        let enveloppe_permission = EnveloppePermission {
+            enveloppe: enveloppe_privee.enveloppe.clone(),
+            permission: contenu_permission,
+        };
+
+        let identificateurs_document: HashMap<String, String> = HashMap::new();
+        let cle = TransactionCle {
+            cle: "CLE".into(),
+            domaine: "DomaineTest".into(),
+            partition: None,
+            format: FormatChiffrage::mgs2,
+            hachage_bytes: "DUMMY".into(),
+            identificateurs_document,
+            iv: "iv".into(),
+            tag: "tag".into(),
+        };
+
+        let resultat = verifier_autorisation_dechiffrage_specifique(
+            certificat_destination.as_ref(), Some(&enveloppe_permission), &cle).expect("permission");
+        debug!("permission_specifique_tout Resultat : {:?}", resultat);
+
+        assert_eq!(false, resultat);
+    }
 }
 
 #[cfg(test)]

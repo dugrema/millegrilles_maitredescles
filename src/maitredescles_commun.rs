@@ -100,12 +100,12 @@ pub struct TransactionCle {
     pub cle: String,
     pub domaine: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    partition: Option<String>,
-    format: FormatChiffrage,
+    pub partition: Option<String>,
+    pub format: FormatChiffrage,
     pub hachage_bytes: String,
-    identificateurs_document: HashMap<String, String>,
-    iv: String,
-    tag: String,
+    pub identificateurs_document: HashMap<String, String>,
+    pub iv: String,
+    pub tag: String,
 }
 
 impl TransactionCle {
@@ -136,7 +136,7 @@ impl TransactionCle {
 pub struct PermissionDechiffrage {
     pub liste_hachage_bytes: Vec<String>,
     pub domaines_permis: Option<Vec<String>>,
-    pub user_id: Option<Vec<String>>,
+    pub user_id: Option<String>,
     pub duree: u32,
 }
 
