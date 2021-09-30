@@ -3,6 +3,7 @@ use std::error::Error;
 use std::sync::Arc;
 
 use log::{debug, error, info, trace, warn};
+use millegrilles_common_rust::certificats::EnveloppeCertificat;
 use millegrilles_common_rust::chiffrage::{CommandeSauvegarderCle, FormatChiffrage};
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::middleware::Middleware;
@@ -97,7 +98,7 @@ where M: Middleware + 'static {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionCle {
     pub cle: String,
-    domaine: String,
+    pub domaine: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     partition: Option<String>,
     format: FormatChiffrage,
@@ -129,6 +130,21 @@ impl TransactionCle {
             tag: commande.tag.clone(),
         })
     }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PermissionDechiffrage {
+    pub liste_hachage_bytes: Vec<String>,
+    pub domaines_permis: Option<Vec<String>>,
+    pub user_id: Option<Vec<String>>,
+    pub duree: u32,
+}
+
+/// Permission deja validee avec un certificat
+#[derive(Clone, Debug)]
+pub struct EnveloppePermission {
+    pub enveloppe: Arc<EnveloppeCertificat>,
+    pub permission: PermissionDechiffrage,
 }
 
 // #[cfg(test)]
