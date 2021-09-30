@@ -19,22 +19,15 @@ use millegrilles_common_rust::mongodb::Cursor;
 use millegrilles_common_rust::mongodb::options::UpdateOptions;
 use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange, QueueType};
 use millegrilles_common_rust::recepteur_messages::MessageValideAction;
-use millegrilles_common_rust::serde::{Serialize, Deserialize};
+use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::json;
-use millegrilles_common_rust::transactions::{TraiterTransaction, Transaction, TransactionImpl};
 use millegrilles_common_rust::tokio_stream::StreamExt;
+use millegrilles_common_rust::transactions::{TraiterTransaction, Transaction, TransactionImpl};
 use millegrilles_common_rust::verificateur::VerificateurMessage;
 
 use crate::maitredescles_commun::*;
 
-// pub const NOM_COLLECTION_CLES: &str = "MaitreDesCles_CA/cles";
-// pub const NOM_COLLECTION_TRANSACTIONS: &str = "MaitreDesCles_CA";
-
 const NOM_Q_VOLATILS_GLOBAL: &str = "MaitreDesCles/volatils";
-
-// const NOM_Q_TRANSACTIONS: &str = "MaitreDesCles_CA/transactions";
-// const NOM_Q_VOLATILS: &str = "MaitreDesCles_CA/volatils";
-// const NOM_Q_TRIGGERS: &str = "MaitreDesCles_CA/triggers";
 
 const REQUETE_CERTIFICAT_MAITREDESCLES: &str = "certMaitreDesCles";
 const REQUETE_DECHIFFRAGE: &str = "dechiffrage";
@@ -696,6 +689,7 @@ mod ut {
     use std::path::{Path, PathBuf};
     use std::thread::sleep;
     use std::time::Duration;
+
     use millegrilles_common_rust::certificats::{build_store_path, charger_enveloppe_privee, ValidateurX509Impl};
     use millegrilles_common_rust::chiffrage::FormatChiffrage;
     use millegrilles_common_rust::configuration::{charger_configuration, ConfigMessages, ConfigurationMessages};
@@ -706,6 +700,7 @@ mod ut {
     use millegrilles_common_rust::verificateur::{ResultatValidation, ValidationOptions, VerificateurMessage};
 
     use crate::test_setup::setup;
+
     use super::*;
 
     fn init() -> ConfigurationMessages {
@@ -1080,10 +1075,6 @@ mod ut {
 
 #[cfg(test)]
 mod test_integration {
-    use crate::test_setup::setup;
-    use millegrilles_common_rust::tokio as tokio;
-
-    use super::*;
     use millegrilles_common_rust::backup::CatalogueHoraire;
     use millegrilles_common_rust::formatteur_messages::MessageSerialise;
     use millegrilles_common_rust::generateur_messages::RoutageMessageAction;
@@ -1092,6 +1083,11 @@ mod test_integration {
     use millegrilles_common_rust::mongo_dao::convertir_to_bson;
     use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
     use millegrilles_common_rust::recepteur_messages::TypeMessage;
+    use millegrilles_common_rust::tokio as tokio;
+
+    use crate::test_setup::setup;
+
+    use super::*;
 
     #[tokio::test]
     async fn test_requete_dechiffrage() {
