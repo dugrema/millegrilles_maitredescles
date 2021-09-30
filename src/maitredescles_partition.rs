@@ -15,6 +15,7 @@ use millegrilles_common_rust::formatteur_messages::MessageMilleGrille;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
 use millegrilles_common_rust::middleware::{Middleware, sauvegarder_transaction_recue};
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};
+use millegrilles_common_rust::mongodb::Cursor;
 use millegrilles_common_rust::mongodb::options::UpdateOptions;
 use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange, QueueType};
 use millegrilles_common_rust::recepteur_messages::MessageValideAction;
@@ -421,73 +422,102 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
         }
     };
 
+    // Trouver les cles demandees et rechiffrer
+    let mut curseur = preparer_curseur_cles(middleware, gestionnaire, &requete).await?;
+    let (cles, cles_trouvees) = rechiffrer_cles(
+        &m, &requete, enveloppe_privee, certificat, &mut curseur).await?;
+
+    // Preparer la reponse
+    // Verifier si on a au moins une cle dans la reponse
+    let reponse = if cles.len() > 0 {
+        let reponse = json!({
+            "acces": CHAMP_ACCES_PERMIS,
+            "code": 1,
+            "cles": cles,
+        });
+        middleware.formatter_reponse(reponse, None)?
+    } else {
+        if cles_trouvees {
+            // On a trouve des cles mais aucunes n'ont ete rechiffrees (acces refuse)
+            debug!("requete_dechiffrage Requete {:?} de dechiffrage {:?} refusee", m.correlation_id, &requete.liste_hachage_bytes);
+            let refuse = json!({"ok": false, "err": "Autorisation refusee", "acces": CHAMP_ACCES_REFUSE, "code": 0});
+            middleware.formatter_reponse(&refuse, None)?
+        } else {
+            // On n'a pas trouve de cles
+            debug!("requete_dechiffrage Requete {:?} de dechiffrage {:?}, cles inconnues", m.correlation_id, &requete.liste_hachage_bytes);
+            let inconnu = json!({"ok": false, "err": "Cles inconnues", "acces": CHAMP_ACCES_CLE_INCONNUE, "code": 4});
+            middleware.formatter_reponse(&inconnu, None)?
+        }
+    };
+
+    Ok(Some(reponse))
+}
+
+async fn rechiffrer_cles(
+    m: &MessageValideAction,
+    requete: &RequeteDechiffrage,
+    enveloppe_privee: Arc<EnveloppePrivee>,
+    certificat: &EnveloppeCertificat,
+    curseur: &mut Cursor<Document>
+)
+    -> Result<(HashMap<String, TransactionCle>, bool), Box<dyn Error>>
+{
     // Verifier si on a une autorisation de dechiffrage global
     let requete_autorisee_globalement = verifier_autorisation_dechiffrage_global(&m, &requete).await?;
 
-    let mut curseur = {
-        let filtre = doc! {CHAMP_HACHAGE_BYTES: {"$in": &requete.liste_hachage_bytes}};
-        let nom_collection = gestionnaire.get_collection_cles();
-        debug!("requete_dechiffrage Filtre cles sur collection {} : {:?}", nom_collection, filtre);
-        let collection = middleware.get_collection(nom_collection.as_str())?;
-        collection.find(filtre, None).await?
-    };
-
     let mut cles: HashMap<String, TransactionCle> = HashMap::new();
     let mut cles_trouvees = false;  // Flag pour dire qu'on a matche au moins 1 cle
+
     while let Some(rc) = curseur.next().await {
-        debug!("requete_dechiffrage document {:?}", rc);
+        debug!("rechiffrer_cles document {:?}", rc);
         cles_trouvees = true;  // On a trouve au moins une cle
         match rc {
             Ok(doc_cle) => {
                 let mut cle: TransactionCle = match convertir_bson_deserializable::<TransactionCle>(doc_cle) {
                     Ok(c) => c,
                     Err(e) => {
-                        error!("requete_dechiffrage Erreur conversion bson vers TransactionCle : {:?}", e);
+                        error!("rechiffrer_cles Erreur conversion bson vers TransactionCle : {:?}", e);
                         continue
                     }
                 };
                 let hachage_bytes = cle.hachage_bytes.clone();
 
                 let requete_autorisee = requete_autorisee_globalement || verifier_autorisation_dechiffrage_specifique(&m, &requete, &cle).await?;
-                debug!("requete_dechiffrage Autorisation rechiffrage cle {} = {}", hachage_bytes, requete_autorisee);
+                debug!("rechiffrer_cles Autorisation rechiffrage cle {} = {}", hachage_bytes, requete_autorisee);
                 if requete_autorisee {
                     match rechiffrer_cle(&mut cle, enveloppe_privee.as_ref(), certificat) {
                         Ok(()) => {
                             cles.insert(hachage_bytes, cle);
                         },
                         Err(e) => {
-                            error!("requete_dechiffrage Erreur rechiffrage cle {:?}", e);
+                            error!("rechiffrer_cles Erreur rechiffrage cle {:?}", e);
                             continue;  // Skip cette cle
                         }
                     }
                 }
             },
-            Err(e) => error!("requete_dechiffrage: Erreur lecture curseur cle : {:?}", e)
+            Err(e) => error!("rechiffrer_cles: Erreur lecture curseur cle : {:?}", e)
         }
     }
 
-    // Verifier si on a au moins une cle dans la reponse
-    if cles.len() == 0 {
-        if cles_trouvees {
-            debug!("requete_dechiffrage Requete {:?} de dechiffrage {:?} refusee", m.correlation_id, &requete.liste_hachage_bytes);
-            let refuse = json!({"ok": false, "err": "Autorisation refusee", "acces": "0.refuse", "code": 0});
-            return Ok(Some(middleware.formatter_reponse(&refuse, None)?))
-        } else {
-            // On n'a pas trouve de cles
-            debug!("requete_dechiffrage Requete {:?} de dechiffrage {:?}, cles inconnues", m.correlation_id, &requete.liste_hachage_bytes);
-            let inconnu = json!({"ok": false, "err": "Cles inconnues", "acces": "4.inconnu", "code": 4});
-            return Ok(Some(middleware.formatter_reponse(&inconnu, None)?))
-        }
-    }
-
-    let reponse = json!({
-        "cles": cles,
-    });
-
-    Ok(Some(middleware.formatter_reponse(reponse, None)?))
+    Ok((cles, cles_trouvees))
 }
 
-/// Verifier si la requete de dechiffrage est valide (autorisee)
+/// Prepare le curseur sur les cles demandees
+async fn preparer_curseur_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition, requete: &RequeteDechiffrage)
+    -> Result<Cursor<Document>, Box<dyn Error>>
+    where M: MongoDao
+{
+    let filtre = doc! {CHAMP_HACHAGE_BYTES: {"$in": &requete.liste_hachage_bytes}};
+    let nom_collection = gestionnaire.get_collection_cles();
+    debug!("requete_dechiffrage Filtre cles sur collection {} : {:?}", nom_collection, filtre);
+
+    let collection = middleware.get_collection(nom_collection.as_str())?;
+    Ok(collection.find(filtre, None).await?)
+}
+
+/// Verifier si la requete de dechiffrage est valide (autorisee) de maniere globale
+/// Les certificats 4.secure et delegations globales proprietaire donnent acces a toutes les cles
 async fn verifier_autorisation_dechiffrage_global(m: &MessageValideAction, requete: &RequeteDechiffrage) -> Result<bool, Box<dyn Error>> {
 
     let certificat = match &m.message.certificat {
@@ -501,6 +531,12 @@ async fn verifier_autorisation_dechiffrage_global(m: &MessageValideAction, reque
     // Verifier si le certificat est de niveau 4.secure
     if m.verifier_exchanges(vec![Securite::L4Secure]) {
         debug!("verifier_autorisation_dechiffrage Certificat de niveau L4Securite - toujours autorise");
+        return Ok(true)
+    }
+
+    // Verifier si le certificat est une delegation globale
+    if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+        debug!("verifier_autorisation_dechiffrage Certificat delegation globale proprietaire - toujours autorise");
         return Ok(true)
     }
 

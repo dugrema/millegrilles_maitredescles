@@ -29,6 +29,14 @@ pub const CHAMP_LISTE_HACHAGE_BYTES: &str = "liste_hachage_bytes";
 pub const CHAMP_LISTE_FINGERPRINTS: &str = "liste_fingerprints";
 pub const CHAMP_NON_DECHIFFRABLE: &str = "non_dechiffrable";
 
+pub const CHAMP_ACCES: &str = "acces";
+pub const CHAMP_ACCES_REFUSE: &str = "0.refuse";
+pub const CHAMP_ACCES_PERMIS: &str = "1.permis";
+pub const CHAMP_ACCES_ERREUR: &str = "2.erreur";
+pub const CHAMP_ACCES_CLE_INDECHIFFRABLE: &str = "3.indechiffrable";
+pub const CHAMP_ACCES_CLE_INCONNUE: &str = "4.inconnue";
+
+
 /// Creer index MongoDB
 pub async fn preparer_index_mongodb_custom<M>(middleware: &M, nom_collection_cles: &str) -> Result<(), String>
     where M: MongoDao
