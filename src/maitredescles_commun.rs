@@ -62,7 +62,6 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M, nom_collection_cle
         unique: false,
     };
     let champs_index_non_dechiffrables = vec!(
-        ChampIndex {nom_champ: String::from(CHAMP_LISTE_FINGERPRINTS), direction: 1},
         ChampIndex {nom_champ: String::from(CHAMP_NON_DECHIFFRABLE), direction: 1},
         ChampIndex {nom_champ: String::from(CHAMP_CREATION), direction: 1},
     );

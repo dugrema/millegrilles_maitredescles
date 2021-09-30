@@ -15,12 +15,14 @@ use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageM
 use millegrilles_common_rust::middleware::{Middleware, sauvegarder_transaction_recue};
 use millegrilles_common_rust::mongo_dao::{ChampIndex, convertir_bson_deserializable, convertir_bson_value, convertir_to_bson, filtrer_doc_id, IndexOptions, MongoDao};
 use millegrilles_common_rust::mongodb as mongodb;
-use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOneOptions, Hint, UpdateOptions};
+use millegrilles_common_rust::mongodb::options::{CountOptions, FindOneAndUpdateOptions, FindOneOptions, FindOptions, Hint, UpdateOptions};
 use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange, QueueType};
 use millegrilles_common_rust::recepteur_messages::MessageValideAction;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::json;
 use millegrilles_common_rust::transactions::{TraiterTransaction, Transaction, TransactionImpl};
+use millegrilles_common_rust::verificateur::VerificateurMessage;
+use millegrilles_common_rust::tokio_stream::StreamExt;
 
 use crate::maitredescles_commun::*;
 
@@ -47,8 +49,7 @@ impl TraiterTransaction for GestionnaireMaitreDesClesCa {
     async fn appliquer_transaction<M>(&self, middleware: &M, transaction: TransactionImpl) -> Result<Option<MessageMilleGrille>, String>
         where M: ValidateurX509 + GenerateurMessages + MongoDao
     {
-        // aiguillage_transaction(middleware, transaction).await
-        todo!()
+        aiguillage_transaction(middleware, transaction).await
     }
 }
 
@@ -73,7 +74,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesCa {
     }
 
     async fn consommer_requete<M>(&self, middleware: &M, message: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>> where M: Middleware + 'static {
-        todo!()
+        consommer_requete(middleware, message, &self).await
     }
 
     async fn consommer_commande<M>(&self, middleware: &M, message: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>> where M: Middleware + 'static {
@@ -171,6 +172,35 @@ pub fn preparer_queues() -> Vec<QueueType> {
     queues.push(QueueType::Triggers (DOMAINE_NOM.into()));
 
     queues
+}
+
+async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesCa) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage
+{
+    debug!("Consommer requete : {:?}", &message.message);
+
+    // Autorisation : On accepte les requetes de 3.protege ou 4.secure
+    match message.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure]) {
+        true => Ok(()),
+        false => Err(format!("Trigger cedule autorisation invalide (pas d'un exchange reconnu)")),
+    }?;
+
+    match message.domaine.as_str() {
+        DOMAINE_NOM => {
+            match message.action.as_str() {
+                REQUETE_COMPTER_CLES_NON_DECHIFFRABLES => requete_compter_cles_non_dechiffrables(middleware, message, gestionnaire).await,
+                REQUETE_CLES_NON_DECHIFFRABLES => requete_cles_non_dechiffrables(middleware, message, gestionnaire).await,
+                _ => {
+                    error!("Message requete/action inconnue : '{}'. Message dropped.", message.action);
+                    Ok(None)
+                },
+            }
+        },
+        _ => {
+            error!("Message requete/domaine inconnu : '{}'. Message dropped.", message.domaine);
+            Ok(None)
+        },
+    }
 }
 
 async fn consommer_transaction<M>(middleware: &M, m: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
@@ -316,4 +346,169 @@ async fn transaction_cle<M, T>(middleware: &M, transaction: T) -> Result<Option<
     debug!("transaction_cle Resultat transaction update : {:?}", resultat);
 
     Ok(None)
+}
+
+async fn requete_compter_cles_non_dechiffrables<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesCa)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+{
+    debug!("requete_compter_cles_non_dechiffrables Consommer commande : {:?}", & m.message);
+    // let requete: RequeteDechiffrage = m.message.get_msg().map_contenu(None)?;
+    // debug!("requete_compter_cles_non_dechiffrables cle parsed : {:?}", requete);
+
+    let filtre = doc! { CHAMP_NON_DECHIFFRABLE: true };
+    let hint = Hint::Name(INDEX_NON_DECHIFFRABLES.into());
+    // let sort_doc = doc! {
+    //     CHAMP_NON_DECHIFFRABLE: 1,
+    //     CHAMP_CREATION: 1,
+    // };
+    let opts = CountOptions::builder().hint(hint).build();
+    let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
+    let compte = collection.count_documents(filtre, opts).await?;
+
+    let reponse = json!({ "compte": compte });
+    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+}
+
+async fn requete_cles_non_dechiffrables<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesCa)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+{
+    debug!("requete_cles_non_dechiffrables Consommer commande : {:?}", & m.message);
+    let requete: RequeteClesNonDechiffrable = m.message.get_msg().map_contenu(None)?;
+    debug!("requete_cles_non_dechiffrables cle parsed : {:?}", requete);
+
+    let mut curseur = {
+        let limite_docs = match requete.limite {
+            Some(l) => l,
+            None => 1000 as u64
+        };
+        let page = match requete.page {
+            Some(p) => p,
+            None => 0 as u64
+        };
+        let start_index = page * limite_docs;
+
+        let filtre = doc! { CHAMP_NON_DECHIFFRABLE: true };
+        let hint = Hint::Name(INDEX_NON_DECHIFFRABLES.into());
+        let sort_doc = doc! {
+            CHAMP_NON_DECHIFFRABLE: 1,
+            CHAMP_CREATION: 1,
+        };
+        let opts = FindOptions::builder().hint(hint).skip(Some(start_index)).limit(Some(limite_docs as i64)).build();
+        let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
+
+        collection.find(filtre, opts).await?
+    };
+
+    let mut cles = Vec::new();
+    while let Some(d) = curseur.next().await {
+        match d {
+            Ok(doc_cle) => {
+                let rep_cle: TransactionCle = convertir_bson_deserializable(doc_cle)?;
+                cles.push(rep_cle);
+            },
+            Err(e) => error!("requete_cles_non_dechiffrables Erreur lecture doc cle : {:?}", e)
+        }
+    }
+
+    let reponse = json!({ "cles": cles });
+    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RequeteClesNonDechiffrable {
+    limite: Option<u64>,
+    page: Option<u64>,
+}
+
+#[cfg(test)]
+mod test_integration {
+    use millegrilles_common_rust::backup::CatalogueHoraire;
+    use millegrilles_common_rust::formatteur_messages::MessageSerialise;
+    use millegrilles_common_rust::generateur_messages::RoutageMessageAction;
+    use millegrilles_common_rust::middleware::IsConfigurationPki;
+    use millegrilles_common_rust::middleware_db::preparer_middleware_db;
+    use millegrilles_common_rust::mongo_dao::convertir_to_bson;
+    use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
+    use millegrilles_common_rust::recepteur_messages::TypeMessage;
+    use millegrilles_common_rust::tokio as tokio;
+
+    use crate::test_setup::setup;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_requete_compte_non_dechiffrable() {
+        setup("test_requete_compte_non_dechiffrable");
+        let (middleware, _, _, mut futures) = preparer_middleware_db(Vec::new(), None);
+        let enveloppe_privee = middleware.get_enveloppe_privee();
+        let fingerprint = enveloppe_privee.fingerprint().as_str();
+
+        let gestionnaire = GestionnaireMaitreDesClesCa {fingerprint: fingerprint.into()};
+        futures.push(tokio::spawn(async move {
+
+            let contenu = json!({});
+            let message_mg = MessageMilleGrille::new_signer(
+                enveloppe_privee.as_ref(),
+                &contenu,
+                DOMAINE_NOM.into(),
+                REQUETE_COMPTER_CLES_NON_DECHIFFRABLES.into(),
+                None,
+                None
+            ).expect("message");
+            let mut message = MessageSerialise::from_parsed(message_mg).expect("serialise");
+
+            // Injecter certificat utilise pour signer
+            message.certificat = Some(enveloppe_privee.enveloppe.clone());
+
+            let mva = MessageValideAction::new(
+                message, "dummy_q", "routing_key", "domaine", "action", TypeMessageOut::Requete);
+
+            let reponse = requete_compter_cles_non_dechiffrables(middleware.as_ref(), mva, &gestionnaire).await.expect("dechiffrage");
+            debug!("Reponse requete compte cles non dechiffrables : {:?}", reponse);
+
+        }));
+        // Execution async du test
+        futures.next().await.expect("resultat").expect("ok");
+    }
+
+    #[tokio::test]
+    async fn test_requete_cles_non_dechiffrable() {
+        setup("test_requete_cles_non_dechiffrable");
+        let (middleware, _, _, mut futures) = preparer_middleware_db(Vec::new(), None);
+        let enveloppe_privee = middleware.get_enveloppe_privee();
+        let fingerprint = enveloppe_privee.fingerprint().as_str();
+
+        let gestionnaire = GestionnaireMaitreDesClesCa {fingerprint: fingerprint.into()};
+        futures.push(tokio::spawn(async move {
+
+            let contenu = json!({
+                "limite": 5,
+                "page": 0,
+            });
+            let message_mg = MessageMilleGrille::new_signer(
+                enveloppe_privee.as_ref(),
+                &contenu,
+                DOMAINE_NOM.into(),
+                REQUETE_COMPTER_CLES_NON_DECHIFFRABLES.into(),
+                None,
+                None
+            ).expect("message");
+            let mut message = MessageSerialise::from_parsed(message_mg).expect("serialise");
+
+            // Injecter certificat utilise pour signer
+            message.certificat = Some(enveloppe_privee.enveloppe.clone());
+
+            let mva = MessageValideAction::new(
+                message, "dummy_q", "routing_key", "domaine", "action", TypeMessageOut::Requete);
+
+            let reponse = requete_cles_non_dechiffrables(middleware.as_ref(), mva, &gestionnaire).await.expect("dechiffrage");
+            debug!("Reponse requete compte cles non dechiffrables : {:?}", reponse);
+
+        }));
+        // Execution async du test
+        futures.next().await.expect("resultat").expect("ok");
+    }
+
 }
