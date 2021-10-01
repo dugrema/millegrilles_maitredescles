@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::error::Error;
 use std::fs::read_dir;
@@ -26,7 +26,7 @@ use millegrilles_common_rust::multihash::Code;
 use millegrilles_common_rust::openssl::pkey::{PKey, Private};
 use millegrilles_common_rust::openssl::rsa::Rsa;
 use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange, QueueType, TypeMessageOut};
-use millegrilles_common_rust::recepteur_messages::MessageValideAction;
+use millegrilles_common_rust::recepteur_messages::{MessageValideAction, TypeMessage};
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::json;
 use millegrilles_common_rust::tokio_stream::StreamExt;
@@ -45,8 +45,10 @@ const REQUETE_CERTIFICAT_MAITREDESCLES: &str = "certMaitreDesCles";
 const REQUETE_DECHIFFRAGE: &str = "dechiffrage";
 
 const INDEX_RECHIFFRAGE_PK: &str = "fingerprint_pk";
+const INDEX_CONFIRMATION_CA: &str = "confirmation_ca";
 
 const CHAMP_FINGERPRINT_PK: &str = "fingerprint_pk";
+const CHAMP_CONFIRMATION_CA: &str = "confirmation_ca";
 
 #[derive(Clone, Debug)]
 pub struct GestionnaireMaitreDesClesPartition {
@@ -93,6 +95,12 @@ impl GestionnaireMaitreDesClesPartition {
         where M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage + ConfigMessages
     {
         migration_cles(middleware, gestionnaire).await
+    }
+
+    pub async fn synchroniser_cles<M>(&self, middleware: &M) -> Result<(), Box<dyn Error>>
+        where M: GenerateurMessages + MongoDao + VerificateurMessage
+    {
+        synchroniser_cles(middleware, self).await
     }
 }
 
@@ -172,7 +180,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
                 nom_queue: self.get_q_sauvegarder_cle(),
                 routing_keys: rk_commande_cle,
                 ttl: None,
-                durable: true,
+                durable: false,
             }
         ));
 
@@ -181,8 +189,8 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
             ConfigQueue {
                 nom_queue: self.get_q_volatils().into(),
                 routing_keys: rk_volatils,
-                ttl: None,
-                durable: true,
+                ttl: DEFAULT_Q_TTL.into(),
+                durable: false,
             }
         ));
 
@@ -198,7 +206,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
                 nom_queue: self.get_q_transactions(),
                 routing_keys: rk_transactions,
                 ttl: None,
-                durable: true,
+                durable: false,
             }
         ));
 
@@ -211,7 +219,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
     async fn preparer_index_mongodb_custom<M>(&self, middleware: &M) -> Result<(), String> where M: MongoDao {
         let nom_collection_cles = self.get_collection_cles();
         preparer_index_mongodb_custom(middleware, nom_collection_cles.as_str()).await?;
-        preparer_index_mongodb_partition(middleware).await?;
+        preparer_index_mongodb_partition(middleware, self).await?;
 
         Ok(())
     }
@@ -245,7 +253,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
     }
 }
 
-pub async fn preparer_index_mongodb_partition<M>(middleware: &M) -> Result<(), String>
+pub async fn preparer_index_mongodb_partition<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition) -> Result<(), String>
     where M: MongoDao
 {
     // Index rechiffrage
@@ -260,6 +268,22 @@ pub async fn preparer_index_mongodb_partition<M>(middleware: &M) -> Result<(), S
         NOM_COLLECTION_RECHIFFRAGE,
         champs_index_rechiffrage,
         Some(options_unique_rechiffrage)
+    ).await?;
+
+    let collection_cles = gestionnaire.get_collection_cles();
+
+    // Index confirmation ca (table cles)
+    let options_confirmation_ca = IndexOptions {
+        nom_index: Some(String::from(INDEX_CONFIRMATION_CA)),
+        unique: false
+    };
+    let champs_index_confirmation_ca = vec!(
+        ChampIndex {nom_champ: String::from(CHAMP_CONFIRMATION_CA), direction: 1},
+    );
+    middleware.create_index(
+        collection_cles.as_ref(),
+        champs_index_confirmation_ca,
+        Some(options_confirmation_ca)
     ).await?;
 
     Ok(())
@@ -309,7 +333,7 @@ async fn migration_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesC
         }
 
         let mut document_rechiffrage = DocumentRechiffrage::new(&fingerprint_pk, fingerprint);
-        document_rechiffrage.rechiffrage_complete = rechiffrage_complete;
+        document_rechiffrage.rechiffrage_complete = true;  // Travail local complete, sync va faire le reste
 
         // Mettre a jour document de rechiffrage
         let mut doc_bson = convertir_to_bson(document_rechiffrage)?;
@@ -628,6 +652,7 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
     };
 
     doc_bson.insert("dirty", true);
+    doc_bson.insert("confirmation_ca", false);
     doc_bson.insert("cle", cle);
     doc_bson.insert(CHAMP_CREATION, Utc::now());
     doc_bson.insert(CHAMP_MODIFICATION, Utc::now());
@@ -983,6 +1008,77 @@ fn verifier_autorisation_dechiffrage_specifique(
 
     // Reponse par defaut - acces refuse
     Ok(false)
+}
+
+async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition) -> Result<(), Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + VerificateurMessage
+{
+    // Requete vers CA pour obtenir la liste des cles connues
+    let mut requete_sync = RequeteSynchroniserCles {page: 0, limite: 1000};
+    let routage_sync = RoutageMessageAction::builder(DOMAINE_NOM, REQUETE_SYNCHRONISER_CLES)
+        .exchanges(vec![Securite::L4Secure])
+        .build();
+
+    let routage_evenement_manquant = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION)
+        .exchanges(vec![Securite::L4Secure])
+        .build();
+
+    let collection = middleware.get_collection(
+        gestionnaire.get_collection_cles().as_str())?;
+
+    loop {
+        let reponse = match middleware.transmettre_requete(routage_sync.clone(), &requete_sync).await? {
+            TypeMessage::Valide(reponse) => {
+                reponse.message.get_msg().map_contenu::<ReponseSynchroniserCles>(None)?
+            },
+            _ => {
+                warn!("synchroniser_cles Mauvais type de reponse recu, on abort");
+                break
+            }
+        };
+        requete_sync.page += 1;  // Incrementer page pour prochaine requete
+
+        let liste_hachage_bytes = reponse.liste_hachage_bytes;
+        if liste_hachage_bytes.len() == 0 {
+            debug!("Traitement sync termine");
+            break
+        }
+
+        let mut cles_hashset = HashSet::new();
+        cles_hashset.extend(&liste_hachage_bytes);
+
+        debug!("Recu liste_hachage_bytes a verifier : {:?}", liste_hachage_bytes);
+        let filtre_cles = doc! { CHAMP_HACHAGE_BYTES: {"$in": &liste_hachage_bytes} };
+        let projection = doc! { CHAMP_HACHAGE_BYTES: 1 };
+        let find_options = FindOptions::builder().projection(projection).build();
+        let mut cles = collection.find(filtre_cles, Some(find_options)).await?;
+        while let Some(result_cle) = cles.next().await {
+            match result_cle {
+                Ok(cle) => {
+                    match cle.get(CHAMP_HACHAGE_BYTES) {
+                        Some(d) => {
+                            match d.as_str() {
+                                Some(d) => { cles_hashset.remove(&String::from(d)); },
+                                None => continue
+                            }
+                        },
+                        None => continue
+                    };
+                },
+                Err(e) => Err(format!("maitredescles_partition.synchroniser_cles Erreur lecture table cles : {:?}", e))?
+            }
+        }
+
+        if cles_hashset.len() > 0 {
+            debug!("Cles absentes localement : {:?}", cles_hashset);
+            // Emettre evenement pour indiquer que ces cles sont manquantes dans la partition
+            let liste_cles: Vec<String> = cles_hashset.iter().map(|m| String::from(m.as_str())).collect();
+            let evenement_cles_manquantes = ReponseSynchroniserCles { liste_hachage_bytes: liste_cles };
+            middleware.emettre_evenement(routage_evenement_manquant.clone(), &evenement_cles_manquantes).await;
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

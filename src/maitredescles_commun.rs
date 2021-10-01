@@ -21,11 +21,14 @@ pub const INDEX_NON_DECHIFFRABLES: &str = "index_non_dechiffrables";
 
 pub const NOM_Q_DECHIFFRAGE: &str = "MaitreDesCles/dechiffrage";
 
+pub const REQUETE_SYNCHRONISER_CLES: &str = "synchroniserCles";
+
 pub const COMMANDE_SAUVEGARDER_CLE: &str = "sauvegarderCle";
 
 pub const TRANSACTION_CLE: &str = "cle";
 
 pub const EVENEMENT_RESET_CLES_NON_DECHIFFRABLES: &str = "resetClesNonDechiffrables";
+pub const EVENEMENT_CLES_MANQUANTES_PARTITION: &str = "clesManquantesPartition";
 
 pub const CHAMP_HACHAGE_BYTES: &str = "hachage_bytes";
 pub const CHAMP_LISTE_HACHAGE_BYTES: &str = "liste_hachage_bytes";
@@ -39,7 +42,6 @@ pub const CHAMP_ACCES_PERMIS: &str = "1.permis";
 pub const CHAMP_ACCES_ERREUR: &str = "2.erreur";
 pub const CHAMP_ACCES_CLE_INDECHIFFRABLE: &str = "3.indechiffrable";
 pub const CHAMP_ACCES_CLE_INCONNUE: &str = "4.inconnue";
-
 
 /// Creer index MongoDB
 pub async fn preparer_index_mongodb_custom<M>(middleware: &M, nom_collection_cles: &str) -> Result<(), String>
@@ -147,4 +149,20 @@ pub struct PermissionDechiffrage {
 pub struct EnveloppePermission {
     pub enveloppe: Arc<EnveloppeCertificat>,
     pub permission: PermissionDechiffrage,
+}
+
+/// Requete utilisee pour parcourir toutes les cles du CA a partir d'une partition
+/// Permet a la partition de trouver des cles qu'elle ne connait pas et/ou confirmer au CA
+/// qu'elle est capable de dechiffrer toutes les cles.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RequeteSynchroniserCles {
+    /// Page a utiliser pour continuer la sync
+    pub page: u32,
+    /// Nombre d'elements par page
+    pub limite: u32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReponseSynchroniserCles {
+    pub liste_hachage_bytes: Vec<String>
 }

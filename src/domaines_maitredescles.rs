@@ -224,6 +224,9 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
     let mut prochain_entretien_transactions = chrono::Utc::now();
     let intervalle_entretien_transactions = chrono::Duration::minutes(5);
 
+    let mut prochain_sync = chrono::Utc::now();
+    let intervalle_sync = chrono::Duration::minutes(90);
+
     info!("domaines_maitredescles.entretien : Debut thread");
     loop {
         let maintenant = chrono::Utc::now();
@@ -287,23 +290,32 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
             debug!("domaines_maitredescles.entretien Fin emission traitement certificat local, resultat : {}", certificat_emis);
         }
 
-        // Effectuer rechiffrage si on a fait une rotation de la cle privee
-        if ! rechiffrage_complete {
-            debug!("domaines_maitredescles.entretien Verification de rotation des cles");
-            rechiffrage_complete = true;
-
-            for g in &gestionnaires {
-                match g {
-                    TypeGestionnaire::Partition(g) => {
+        for g in &gestionnaires {
+            match g {
+                TypeGestionnaire::Partition(g) => {
+                    // Effectuer rechiffrage si on a fait une rotation de la cle privee
+                    if ! rechiffrage_complete {
+                        debug!("domaines_maitredescles.entretien Verification de rotation des cles");
+                        rechiffrage_complete = true;
                         match g.migration_cles(middleware.as_ref(), g).await {
                             Ok(()) => (),
                             Err(e) => error!("entretien Erreur migration cles : {:?}", e)
                         }
-                    },
-                    _ => ()
-                }
+                    }
+
+                    if prochain_sync < maintenant {
+                        debug!("entretien Effectuer sync des cles avec le CA");
+                        prochain_sync = maintenant + intervalle_sync;
+                        match g.synchroniser_cles(middleware.as_ref()).await {
+                            Ok(()) => (),
+                            Err(e) => warn!("entretien Erreur syncrhonization cles avec CA : {:?}", e)
+                        }
+                    }
+                },
+                _ => ()
             }
         }
+
     }
 
     // panic!("Forcer fermeture");
@@ -378,7 +390,7 @@ mod test_integration {
     #[tokio::test]
     async fn test_sauvegarder_cle() {
         setup("test_sauvegarder_cle");
-        let gestionnaires = charger_gestionnaires(Some(false), true);
+        let gestionnaires = charger_gestionnaires(Some(true), false);
         let (mut futures, middleware) = build(gestionnaires).await;
 
         let fingerprint_cert = middleware.get_enveloppe_privee();

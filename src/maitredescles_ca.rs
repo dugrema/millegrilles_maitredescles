@@ -110,6 +110,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
     let requetes_protegees: Vec<&str> = vec![
         REQUETE_CLES_NON_DECHIFFRABLES,
         REQUETE_COMPTER_CLES_NON_DECHIFFRABLES,
+        REQUETE_SYNCHRONISER_CLES,
     ];
     for req in requetes_protegees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("requete.{}.{}", DOMAINE_NOM, req), exchange: Securite::L3Protege});
@@ -138,7 +139,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
             nom_queue: NOM_Q_VOLATILS.into(),
             routing_keys: rk_volatils,
             ttl: DEFAULT_Q_TTL.into(),
-            durable: false,
+            durable: true,
         }
     ));
 
@@ -190,6 +191,7 @@ async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, gest
             match message.action.as_str() {
                 REQUETE_COMPTER_CLES_NON_DECHIFFRABLES => requete_compter_cles_non_dechiffrables(middleware, message, gestionnaire).await,
                 REQUETE_CLES_NON_DECHIFFRABLES => requete_cles_non_dechiffrables(middleware, message, gestionnaire).await,
+                REQUETE_SYNCHRONISER_CLES => requete_synchronizer_cles(middleware, message, gestionnaire).await,
                 _ => {
                     error!("Message requete/action inconnue : '{}'. Message dropped.", message.action);
                     Ok(None)
@@ -422,6 +424,56 @@ struct RequeteClesNonDechiffrable {
     page: Option<u64>,
 }
 
+async fn requete_synchronizer_cles<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesCa)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+{
+    debug!("requete_synchronizer_cles Consommer requete : {:?}", & m.message);
+    let requete: RequeteSynchroniserCles = m.message.get_msg().map_contenu(None)?;
+    debug!("requete_synchronizer_cles cle parsed : {:?}", requete);
+
+    let mut curseur = {
+        let limite_docs = requete.limite;
+        let page = requete.page;
+        let start_index = page * limite_docs;
+
+        let filtre = doc! { CHAMP_NON_DECHIFFRABLE: true };
+        let hint = Hint::Keys(doc!{"_id": 1});  // Index _id
+        let sort_doc = doc! {"_id": 1};
+        let projection = doc!{CHAMP_HACHAGE_BYTES: 1};
+        let opts = FindOptions::builder()
+            .hint(hint)
+            .skip(Some(start_index as u64))
+            .limit(Some(limite_docs as i64))
+            .projection(Some(projection))
+            .build();
+        let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
+
+        collection.find(filtre, opts).await?
+    };
+
+    let mut cles = Vec::new();
+    while let Some(d) = curseur.next().await {
+        match d {
+            Ok(doc_cle) => {
+                match doc_cle.get(CHAMP_HACHAGE_BYTES) {
+                    Some(h) => {
+                        match h.as_str() {
+                            Some(h) => cles.push(h.to_owned()),
+                            None => ()
+                        }
+                    },
+                    None => ()
+                }
+            },
+            Err(e) => error!("requete_synchronizer_cles Erreur lecture doc cle : {:?}", e)
+        }
+    }
+
+    let reponse = ReponseSynchroniserCles { liste_hachage_bytes: cles };
+    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+}
+
 #[cfg(test)]
 mod test_integration {
     use millegrilles_common_rust::backup::CatalogueHoraire;
@@ -511,4 +563,41 @@ mod test_integration {
         futures.next().await.expect("resultat").expect("ok");
     }
 
+    #[tokio::test]
+    async fn test_requete_synchronizer_cles() {
+        setup("test_requete_synchronizer_cles");
+        let (middleware, _, _, mut futures) = preparer_middleware_db(Vec::new(), None);
+        let enveloppe_privee = middleware.get_enveloppe_privee();
+        let fingerprint = enveloppe_privee.fingerprint().as_str();
+
+        let gestionnaire = GestionnaireMaitreDesClesCa {fingerprint: fingerprint.into()};
+        futures.push(tokio::spawn(async move {
+
+            let contenu = json!({
+                "limite": 5,
+                "page": 0,
+            });
+            let message_mg = MessageMilleGrille::new_signer(
+                enveloppe_privee.as_ref(),
+                &contenu,
+                DOMAINE_NOM.into(),
+                REQUETE_COMPTER_CLES_NON_DECHIFFRABLES.into(),
+                None,
+                None
+            ).expect("message");
+            let mut message = MessageSerialise::from_parsed(message_mg).expect("serialise");
+
+            // Injecter certificat utilise pour signer
+            message.certificat = Some(enveloppe_privee.enveloppe.clone());
+
+            let mva = MessageValideAction::new(
+                message, "dummy_q", "routing_key", "domaine", "action", TypeMessageOut::Requete);
+
+            let reponse = requete_synchronizer_cles(middleware.as_ref(), mva, &gestionnaire).await.expect("dechiffrage");
+            debug!("test_requete_synchronizer_cles Reponse : {:?}", reponse);
+
+        }));
+        // Execution async du test
+        futures.next().await.expect("resultat").expect("ok");
+    }
 }
