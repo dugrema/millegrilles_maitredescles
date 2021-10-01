@@ -305,9 +305,10 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
 
                     if prochain_sync < maintenant {
                         debug!("entretien Effectuer sync des cles avec le CA");
-                        prochain_sync = maintenant + intervalle_sync;
                         match g.synchroniser_cles(middleware.as_ref()).await {
-                            Ok(()) => (),
+                            Ok(()) => {
+                                prochain_sync = maintenant + intervalle_sync;
+                            },
                             Err(e) => warn!("entretien Erreur syncrhonization cles avec CA : {:?}", e)
                         }
                     }
