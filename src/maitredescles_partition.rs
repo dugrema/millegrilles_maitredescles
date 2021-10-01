@@ -324,13 +324,14 @@ async fn migration_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesC
             None => false   // Rechiffrage requis, pas de cle trouvee
         };
 
-        if !rechiffrage_complete {
-            let evenement_reset = json!({"non-dechiffrable": true});
-            let routage = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_RESET_CLES_NON_DECHIFFRABLES)
-                .exchanges(vec![Securite::L3Protege])
-                .build();
-            middleware.emettre_evenement(routage, &evenement_reset).await?;
-        }
+        // Evenement reset remplace par sync avec CA
+        // if !rechiffrage_complete {
+        //     let evenement_reset = json!({"non-dechiffrable": true});
+        //     let routage = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_RESET_CLES_NON_DECHIFFRABLES)
+        //         .exchanges(vec![Securite::L3Protege])
+        //         .build();
+        //     middleware.emettre_evenement(routage, &evenement_reset).await?;
+        // }
 
         let mut document_rechiffrage = DocumentRechiffrage::new(&fingerprint_pk, fingerprint);
         document_rechiffrage.rechiffrage_complete = true;  // Travail local complete, sync va faire le reste

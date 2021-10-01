@@ -86,7 +86,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesCa {
     }
 
     async fn consommer_evenement<M>(self: &'static Self, middleware: &M, message: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>> where M: Middleware + 'static {
-        todo!()
+        consommer_evenement(middleware, message).await
     }
 
     async fn entretien<M>(&self, middleware: Arc<M>) where M: Middleware + 'static {
@@ -115,6 +115,13 @@ pub fn preparer_queues() -> Vec<QueueType> {
     for req in requetes_protegees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("requete.{}.{}", DOMAINE_NOM, req), exchange: Securite::L3Protege});
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("requete.{}.{}", DOMAINE_NOM, req), exchange: Securite::L4Secure});
+    }
+    let evenements_proteges: Vec<&str> = vec![
+        EVENEMENT_CLES_MANQUANTES_PARTITION,
+    ];
+    for evnt in evenements_proteges {
+        rk_volatils.push(ConfigRoutingExchange {routing_key: format!("evenement.{}.{}", DOMAINE_NOM, evnt), exchange: Securite::L3Protege});
+        rk_volatils.push(ConfigRoutingExchange {routing_key: format!("evenement.{}.{}", DOMAINE_NOM, evnt), exchange: Securite::L4Secure});
     }
 
     // Capturer les commandes "sauver cle" sur tous les exchanges pour toutes les partitions
@@ -204,6 +211,28 @@ async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, gest
         },
     }
 }
+
+async fn consommer_evenement<M>(middleware: &M, m: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+where
+    M: ValidateurX509 + GenerateurMessages + MongoDao,
+{
+    debug!("maitredescles_ca.consommer_evenement Consommer evenement : {:?}", &m.message);
+
+    // Autorisation : doit etre de niveau 3.protege ou 4.secure
+    match m.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure]) {
+        true => Ok(()),
+        false => Err(format!("maitredescles_ca.consommer_evenement: Evenement invalide (pas 3.protege ou 4.secure)")),
+    }?;
+
+    match m.action.as_str() {
+        EVENEMENT_CLES_MANQUANTES_PARTITION => {
+            evenement_cle_manquante(middleware, &m).await?;
+            Ok(None)
+        },
+        _ => Err(format!("maitredescles_ca.consommer_transaction: Mauvais type d'action pour une transaction : {}", m.action))?,
+    }
+}
+
 
 async fn consommer_transaction<M>(middleware: &M, m: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
 where
@@ -437,7 +466,7 @@ async fn requete_synchronizer_cles<M>(middleware: &M, m: MessageValideAction, ge
         let page = requete.page;
         let start_index = page * limite_docs;
 
-        let filtre = doc! { CHAMP_NON_DECHIFFRABLE: true };
+        let filtre = doc! {};
         let hint = Hint::Keys(doc!{"_id": 1});  // Index _id
         let sort_doc = doc! {"_id": 1};
         let projection = doc!{CHAMP_HACHAGE_BYTES: 1};
@@ -472,6 +501,24 @@ async fn requete_synchronizer_cles<M>(middleware: &M, m: MessageValideAction, ge
 
     let reponse = ReponseSynchroniserCles { liste_hachage_bytes: cles };
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+}
+
+async fn evenement_cle_manquante<M>(middleware: &M, m: &MessageValideAction) -> Result<(), Box<dyn Error>>
+    where M: ValidateurX509 + GenerateurMessages + MongoDao,
+{
+    debug!("evenement_cle_manquante Marquer cles comme non dechiffrables {:?}", &m.message);
+    let event_non_dechiffrables: ReponseSynchroniserCles = m.message.get_msg().map_contenu(None)?;
+
+    let filtre = doc! { CHAMP_HACHAGE_BYTES: { "$in": event_non_dechiffrables.liste_hachage_bytes }};
+    let ops = doc! {
+        "$set": { CHAMP_NON_DECHIFFRABLE: true },
+        "$currentDate": { CHAMP_MODIFICATION: true },
+    };
+    let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
+    let resultat_update = collection.update_many(filtre, ops, None).await?;
+    debug!("evenement_cle_manquante Resultat update : {:?}", resultat_update);
+
+    Ok(())
 }
 
 #[cfg(test)]
