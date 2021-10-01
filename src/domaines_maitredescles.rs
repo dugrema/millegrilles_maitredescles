@@ -199,7 +199,7 @@ async fn executer(mut futures: FuturesUnordered<JoinHandle<()>>) {
 
 /// Thread d'entretien
 async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnaires: Vec<&'static TypeGestionnaire>)
-    where M: GenerateurMessages + ValidateurX509 + EmetteurCertificat + MongoDao + VerificateurMessage
+    where M: GenerateurMessages + ValidateurX509 + EmetteurCertificat + MongoDao + VerificateurMessage + ConfigMessages
 {
     let mut certificat_emis = false;
 
@@ -295,7 +295,7 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
             for g in &gestionnaires {
                 match g {
                     TypeGestionnaire::Partition(g) => {
-                        match g.migration_cles(middleware.as_ref()).await {
+                        match g.migration_cles(middleware.as_ref(), g).await {
                             Ok(()) => (),
                             Err(e) => error!("entretien Erreur migration cles : {:?}", e)
                         }

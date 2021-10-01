@@ -31,6 +31,7 @@ pub const CHAMP_HACHAGE_BYTES: &str = "hachage_bytes";
 pub const CHAMP_LISTE_HACHAGE_BYTES: &str = "liste_hachage_bytes";
 pub const CHAMP_LISTE_FINGERPRINTS: &str = "liste_fingerprints";
 pub const CHAMP_NON_DECHIFFRABLE: &str = "non_dechiffrable";
+pub const CHAMP_FINGERPRINT_PK: &str = "fingerprint_pk";
 
 pub const CHAMP_ACCES: &str = "acces";
 pub const CHAMP_ACCES_REFUSE: &str = "0.refuse";

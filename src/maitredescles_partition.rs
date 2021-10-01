@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::convert::TryFrom;
 use std::error::Error;
+use std::fs::read_dir;
 use std::ops::Deref;
 use std::sync::{Arc, Mutex};
 
@@ -9,22 +11,29 @@ use millegrilles_common_rust::bson::{bson, Bson, doc, Document};
 use millegrilles_common_rust::certificats::{EnveloppeCertificat, EnveloppePrivee, ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chiffrage::{CommandeSauvegarderCle, rechiffrer_asymetrique_multibase};
 use millegrilles_common_rust::chrono::Utc;
+use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::formatteur_messages::{MessageMilleGrille, MessageSerialise};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
-use millegrilles_common_rust::middleware::{Middleware, sauvegarder_transaction_recue};
+use millegrilles_common_rust::hachages::hacher_bytes;
+use millegrilles_common_rust::middleware::{IsConfigurationPki, map_msg_to_bson, Middleware, sauvegarder_transaction, sauvegarder_transaction_recue};
 use millegrilles_common_rust::mongo_dao::{ChampIndex, convertir_bson_deserializable, convertir_bson_value, convertir_to_bson, filtrer_doc_id, IndexOptions, MongoDao};
 use millegrilles_common_rust::mongodb::Cursor;
-use millegrilles_common_rust::mongodb::options::UpdateOptions;
+use millegrilles_common_rust::mongodb::options::{FindOptions, UpdateOptions};
+use millegrilles_common_rust::multibase::Base;
+use millegrilles_common_rust::multihash::Code;
 use millegrilles_common_rust::openssl::pkey::{PKey, Private};
-use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange, QueueType};
+use millegrilles_common_rust::openssl::rsa::Rsa;
+use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange, QueueType, TypeMessageOut};
 use millegrilles_common_rust::recepteur_messages::MessageValideAction;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::json;
 use millegrilles_common_rust::tokio_stream::StreamExt;
-use millegrilles_common_rust::transactions::{TraiterTransaction, Transaction, TransactionImpl};
+use millegrilles_common_rust::transactions::{EtatTransaction, marquer_transaction, TraiterTransaction, Transaction, TransactionImpl};
 use millegrilles_common_rust::verificateur::VerificateurMessage;
+use millegrilles_common_rust::tokio::fs::File as File_tokio;
+use millegrilles_common_rust::tokio::io::AsyncReadExt;
 
 use crate::maitredescles_commun::*;
 
@@ -42,6 +51,14 @@ const CHAMP_FINGERPRINT_PK: &str = "fingerprint_pk";
 #[derive(Clone, Debug)]
 pub struct GestionnaireMaitreDesClesPartition {
     pub fingerprint: String,
+}
+
+fn nom_collection_transactions<S>(fingerprint: S) -> String
+    where S: AsRef<str>
+{
+    // On utilise les 12 derniers chars du fingerprint (35..48)
+    let fp = fingerprint.as_ref();
+    format!("MaitreDesCles_{}", &fp[35..])
 }
 
 impl GestionnaireMaitreDesClesPartition {
@@ -72,10 +89,10 @@ impl GestionnaireMaitreDesClesPartition {
         format!("MaitreDesCles_{}/cles", self.get_partition_tronquee())
     }
 
-    pub async fn migration_cles<M>(&self, middleware: &M) -> Result<(), Box<dyn Error>>
-        where M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage
+    pub async fn migration_cles<M>(&self, middleware: &M, gestionnaire: &Self) -> Result<(), Box<dyn Error>>
+        where M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage + ConfigMessages
     {
-        migration_cles(middleware).await
+        migration_cles(middleware, gestionnaire).await
     }
 }
 
@@ -250,9 +267,9 @@ pub async fn preparer_index_mongodb_partition<M>(middleware: &M) -> Result<(), S
 
 /// Verifie si on peut rechiffrer les cles d'une partition locale (precedente) vers
 /// une nouvelle partition (courante).
-async fn migration_cles<M>(middleware: &M)
+async fn migration_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition)
     -> Result<(), Box<dyn Error>>
-    where M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage
+    where M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage + ConfigMessages
 {
     let enveloppe_privee = middleware.get_enveloppe_privee();
     let fingerprint = enveloppe_privee.fingerprint().as_str();
@@ -274,14 +291,11 @@ async fn migration_cles<M>(middleware: &M)
     };
 
     if ! doc_rechiffrage.rechiffrage_complete {
-        let cle = trouver_cle_rechiffrage(middleware).await?;
+        let cle_curseur = trouver_cle_rechiffrage(middleware).await?;
 
-        let rechiffrage_complete: bool = match cle {
-            Some(c) => {
-                // Effectuer le rechiffrage
-                let resultat_rechiffrage = false;  // todo
-
-                resultat_rechiffrage
+        let rechiffrage_complete: bool = match cle_curseur {
+            Some((cle, curseur)) => {
+                effectuer_migration_cles(middleware, gestionnaire,cle, curseur).await?
             },
             None => false   // Rechiffrage requis, pas de cle trouvee
         };
@@ -315,12 +329,170 @@ async fn migration_cles<M>(middleware: &M)
     Ok(())
 }
 
+/// Tente de trouver une cle privee accessible localement qui permet de dechiffrer une collection
+/// de cles precedente dans MongoDB.
 async fn trouver_cle_rechiffrage<M>(middleware: &M)
-    -> Result<Option<PKey<Private>>, Box<dyn Error>>
-    where M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage
+    -> Result<Option<(PKey<Private>, Cursor<Document>)>, Box<dyn Error>>
+    where M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage + ConfigMessages
 {
+    // Recuperer path de la cle, c'est le repertoire avec les autres cles
+    let path_keys = {
+        let config_pki = middleware.get_configuration_pki();
+        let mut path_keys = config_pki.keyfile.clone();
+        path_keys.pop();
+        path_keys
+    };
+
+    let paths = read_dir(path_keys)?;
+    let mut cles_privees = HashMap::new();
+    for path_cle in paths {
+        debug!("Fichier dans rep cle : {:?}", path_cle);
+
+        let fichier = path_cle?;
+        let fichier_string = match fichier.file_name().into_string() {
+            Ok(s) => s,
+            Err(e) => Err(format!("trouver_cle_rechiffrage trouver_cle_rechiffrage Erreur conversion nom fichier : {:?}", e))?
+        };
+        if fichier_string.contains(".key.") {
+            debug!("trouver_cle_rechiffrage Verifier cle privee : {}", fichier_string);
+            let cle_privee = {
+                let mut reader_cle = File_tokio::open(fichier.path()).await?;
+                let mut pem = String::new();
+                reader_cle.read_to_string(&mut pem).await?;
+
+                match Rsa::private_key_from_pem(pem.as_bytes()) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        warn!("trouver_cle_rechiffrage Erreur chargement cle privee {}, on skip: {:?}", fichier_string, e);
+                        continue
+                    }
+                }
+            };
+
+            debug!("Cle privee chargee OK : {}", fichier_string);
+            match cle_privee.public_key_to_der() {
+                Ok(pk_der) => {
+                    let fingerprint_pk = hacher_bytes(pk_der.as_slice(), Some(Code::Sha2_256), Some(Base::Base64));
+                    debug!("trouver_cle_rechiffrage Cle privee fingerprint_pk:{} ajoutee", fingerprint_pk);
+                    cles_privees.insert(fingerprint_pk, cle_privee);
+                },
+                Err(e) => {
+                    warn!("trouver_cle_rechiffrageErreur calcule fingerprint_pk pour {}, on skip : {:?}", fichier_string, e);
+                    continue
+                }
+            }
+        }
+    }
+
+    // Parcourir les cles pour calculer leur fingerprint_pk
+    let fingerprint_pk_list: Vec<&String> = cles_privees.keys().into_iter().collect();
+    let filtre = doc! {CHAMP_FINGERPRINT_PK: {"$in": fingerprint_pk_list}, "rechiffrage_complete": true};
+    let sort_order = doc! {CHAMP_MODIFICATION: -1};
+    let opts = FindOptions::builder().sort(sort_order).build();
+    let collection = middleware.get_collection(NOM_COLLECTION_RECHIFFRAGE)?;
+    let mut curseur = collection.find(filtre, opts).await?;
+
+    while let Some(doc_info) = curseur.next().await {
+        let doc_rechiffrage = match doc_info {
+            Ok(d) => {
+                match convertir_bson_deserializable::<DocumentRechiffrage>(d) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        warn!("trouver_cle_rechiffrage Erreur conversion doc rechiffrage : err {:?}", e);
+                        continue
+                    }
+                }
+            },
+            Err(e) => {
+                warn!("trouver_cle_rechiffrage Erreur curseur sur doc rechiffrage : err {:?}", e);
+                continue
+            }
+        };
+        debug!("trouver_cle_rechiffrage Document rechiffrage : {:?}", doc_rechiffrage);
+        if doc_rechiffrage.rechiffrage_complete {
+            debug!("trouver_cle_rechiffrage On a trouve un document de rechiffrage utilisable, ouvrir curseur sur la collection");
+            let cle_dechiffrage = match cles_privees.remove(&String::from(&doc_rechiffrage.fingerprint_pk)) {
+                Some(k) => {
+                    match PKey::from_rsa(k) {
+                        Ok(k) => k,
+                        Err(e) => {
+                            error!("trouver_cle_rechiffrage Erreur conversion cle vers format PKey<Private> : {:?}", e);
+                            continue
+                        }
+                    }
+                },
+                None => {
+                    // Note : etrange comme situation, ne devrait pas arriver
+                    error!("trouver_cle_rechiffrage Cle de dechiffrage non trouvee : {:?}", doc_rechiffrage.fingerprint_pk);
+                    continue
+                }
+            };
+
+            let collection_originale = doc_rechiffrage.collection_transactions;
+            let collection_transactions = middleware.get_collection(collection_originale.as_str())?;
+            let curseur = collection_transactions.find(doc!{}, None).await?;
+            return Ok(Some((cle_dechiffrage, curseur)))
+        }
+    }
 
     Ok(None)
+}
+
+/// Utilise la cle de dechiffrage pour generer des nouvelles transactions de cle dans la partition courante.
+async fn effectuer_migration_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition, cle_dechiffrage: PKey<Private>, mut curseur: Cursor<Document>)
+    -> Result<bool, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
+{
+    let enveloppe_privee = middleware.get_enveloppe_privee();
+    let certificat = enveloppe_privee.enveloppe.as_ref();
+    let cle_publique = certificat.certificat().public_key()?;
+    let fingerprint = certificat.fingerprint.as_ref();
+    let nom_collection_partition = nom_collection_transactions(fingerprint);
+
+    while let Some(c) = curseur.next().await {
+        let mut doc_cle = match c {
+            Ok(doc_cle) => {
+                debug!("Cle a rechiffrer : {:?}", doc_cle);
+                match convertir_bson_deserializable::<TransactionCle>(doc_cle) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        error!("Erreur conversion transaction cle, on skip {:?}", e);
+                        continue
+                    }
+                }
+            },
+            Err(e) => Err(format!("effectuer_migration_cles Erreur traitement cle : {:?}", e))?
+        };
+
+        let cle_originale = doc_cle.cle.as_str();
+        let cle_rechiffree = rechiffrer_asymetrique_multibase(
+            &cle_dechiffrage, &cle_publique, cle_originale)?;
+
+        // Remplacer la cle
+        doc_cle.cle = cle_rechiffree;
+
+        // Generer nouvelle transaction pour la partition locale
+        let nouvelle_transaction = middleware.formatter_message(
+            &doc_cle, Some(DOMAINE_NOM), Some(TRANSACTION_CLE), Some(fingerprint), None)?;
+        let ms = MessageSerialise::from_parsed(nouvelle_transaction)?;
+        let mva = MessageValideAction::new(
+            ms, "local", "local", DOMAINE_NOM, TRANSACTION_CLE, TypeMessageOut::Transaction);
+
+        // Sauvegarder et traiter la transactions
+        sauvegarder_transaction(middleware, &mva, nom_collection_partition.as_str()).await?;
+        let doc_bson = map_msg_to_bson(mva.message.get_msg())?;
+        let transaction = TransactionImpl::try_from(mva.message)?;
+        let uuid_transaction = transaction.get_uuid_transaction().to_owned();
+        transaction_cle(middleware, transaction, gestionnaire).await?;
+        marquer_transaction(
+            middleware,
+            nom_collection_partition.as_str(),
+            uuid_transaction.as_str(),
+            EtatTransaction::Complete
+        ).await?;
+    }
+
+    Ok(true)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -328,13 +500,16 @@ struct DocumentRechiffrage {
     fingerprint_pk: String,
     fingerprint: String,
     rechiffrage_complete: bool,
+    collection_transactions: String,
 }
 impl DocumentRechiffrage {
     fn new<S, T>(fingerprint_pk: S, fingerprint: T) -> Self where S: Into<String>, T: Into<String> {
+        let fp = fingerprint.into();
         DocumentRechiffrage {
             fingerprint_pk: fingerprint_pk.into(),
-            fingerprint: fingerprint.into(),
+            fingerprint: fp.clone(),
             rechiffrage_complete: false,
+            collection_transactions: nom_collection_transactions(&fp)
         }
     }
 }
