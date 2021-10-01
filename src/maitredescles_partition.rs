@@ -100,8 +100,11 @@ impl GestionnaireMaitreDesClesPartition {
     pub async fn synchroniser_cles<M>(&self, middleware: &M) -> Result<(), Box<dyn Error>>
         where M: GenerateurMessages + MongoDao + VerificateurMessage
     {
-        synchroniser_cles(middleware, self).await
+        synchroniser_cles(middleware, self).await?;
+        confirmer_cles_ca(middleware, self).await?;
+        Ok(())
     }
+
 }
 
 #[async_trait]
@@ -323,15 +326,6 @@ async fn migration_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesC
             },
             None => false   // Rechiffrage requis, pas de cle trouvee
         };
-
-        // Evenement reset remplace par sync avec CA
-        // if !rechiffrage_complete {
-        //     let evenement_reset = json!({"non-dechiffrable": true});
-        //     let routage = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_RESET_CLES_NON_DECHIFFRABLES)
-        //         .exchanges(vec![Securite::L3Protege])
-        //         .build();
-        //     middleware.emettre_evenement(routage, &evenement_reset).await?;
-        // }
 
         let mut document_rechiffrage = DocumentRechiffrage::new(&fingerprint_pk, fingerprint);
         document_rechiffrage.rechiffrage_complete = true;  // Travail local complete, sync va faire le reste
@@ -1078,6 +1072,79 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
             middleware.emettre_evenement(routage_evenement_manquant.clone(), &evenement_cles_manquantes).await;
         }
     }
+
+    Ok(())
+}
+
+/// S'assurer que le CA a toutes les cles de la partition. Permet aussi de resetter le flag non-dechiffrable.
+async fn confirmer_cles_ca<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition) -> Result<(), Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + VerificateurMessage
+{
+    let batch_size = 50;
+
+    debug!("confirmer_cles_ca Debut confirmation cles locales avec confirmation_ca=false");
+
+    let mut curseur = {
+        let limit_cles = 5000;
+        let filtre = doc! { CHAMP_CONFIRMATION_CA: false };
+        let opts = FindOptions::builder().limit(limit_cles).build();
+        let collection = middleware.get_collection(gestionnaire.get_collection_cles().as_str())?;
+        let curseur = collection.find(filtre, opts).await?;
+        curseur
+    };
+
+    let mut cles = HashMap::new();
+    while let Some(d) = curseur.next().await {
+        match d {
+            Ok(cle) => {
+                let transaction_cle: TransactionCle = convertir_bson_deserializable(cle)?;
+                cles.insert(transaction_cle.hachage_bytes.clone(), transaction_cle);
+
+                if cles.len() == batch_size {
+                    emettre_cles_vers_ca(middleware, gestionnaire, &mut cles).await?;
+                }
+            },
+            Err(e) => Err(format!("maitredescles_partition.confirmer_cles_ca Erreur traitement {:?}", e))?
+        };
+    }
+
+    // Derniere batch de cles
+    if cles.len() > 0 {
+        emettre_cles_vers_ca(middleware, gestionnaire, &mut cles).await?;
+    }
+
+    Ok(())
+}
+
+/// Emet un message vers CA pour verifier quels cles sont manquantes (sur le CA)
+/// Marque les cles presentes sur la partition et CA comme confirmation_ca=true
+/// Rechiffre et emet vers le CA les cles manquantes
+async fn emettre_cles_vers_ca<M>(
+    middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition, mut cles: &mut HashMap<String, TransactionCle>)
+    -> Result<(), Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + VerificateurMessage
+{
+    let hachage_bytes: Vec<String> = cles.keys().into_iter().map(|h| h.to_owned()).collect();
+    debug!("emettre_cles_vers_ca Batch cles {:?}", hachage_bytes);
+
+    let commande = ReponseSynchroniserCles {liste_hachage_bytes: hachage_bytes};
+    let routage = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_CONFIRMER_CLES_SUR_CA)
+        .exchanges(vec![Securite::L4Secure])
+        .build();
+    let option_reponse = middleware.transmettre_commande(routage, &commande, true).await?;
+    match option_reponse {
+        Some(r) => {
+            match r {
+                TypeMessage::Valide(reponse) => {
+                    debug!("emettre_cles_vers_ca Reponse confirmer cle sur CA : {:?}", reponse);
+                },
+                _ => Err(format!("emettre_cles_vers_ca Recu mauvais type de reponse "))?
+            }
+        },
+        None => info!("emettre_cles_vers_ca Aucune reponse du serveur")
+    }
+
+    cles.clear();  // Retirer toutes les cles pour prochaine page
 
     Ok(())
 }

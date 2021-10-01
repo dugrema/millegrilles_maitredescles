@@ -312,6 +312,7 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
                             Err(e) => warn!("entretien Erreur syncrhonization cles avec CA : {:?}", e)
                         }
                     }
+
                 },
                 _ => ()
             }

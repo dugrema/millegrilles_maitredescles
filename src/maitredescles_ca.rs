@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::sync::Arc;
 
@@ -122,6 +122,11 @@ pub fn preparer_queues() -> Vec<QueueType> {
     for evnt in evenements_proteges {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("evenement.{}.{}", DOMAINE_NOM, evnt), exchange: Securite::L3Protege});
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("evenement.{}.{}", DOMAINE_NOM, evnt), exchange: Securite::L4Secure});
+    }
+    let commandes_protegees: Vec<&str> = vec![COMMANDE_CONFIRMER_CLES_SUR_CA];
+    for cmd in commandes_protegees {
+        rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L3Protege});
+        rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L4Secure});
     }
 
     // Capturer les commandes "sauver cle" sur tous les exchanges pour toutes les partitions
@@ -257,7 +262,7 @@ where
 
 async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionnaire_ca: &GestionnaireMaitreDesClesCa)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao
+    where M: GenerateurMessages + MongoDao + VerificateurMessage
 {
     debug!("consommer_commande : {:?}", &m.message);
 
@@ -270,6 +275,7 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionna
     match m.action.as_str() {
         // Commandes standard
         COMMANDE_SAUVEGARDER_CLE => commande_sauvegarder_cle(middleware, m, gestionnaire_ca).await,
+        COMMANDE_CONFIRMER_CLES_SUR_CA => commande_confirmer_cles_sur_ca(middleware, m, gestionnaire_ca).await,
         // Commandes inconnues
         _ => Err(format!("core_backup.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
     }
@@ -519,6 +525,51 @@ async fn evenement_cle_manquante<M>(middleware: &M, m: &MessageValideAction) -> 
     debug!("evenement_cle_manquante Resultat update : {:?}", resultat_update);
 
     Ok(())
+}
+
+async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesCa)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+{
+    debug!("commande_confirmer_cles_sur_ca Consommer commande : {:?}", & m.message);
+    let requete: ReponseSynchroniserCles = m.message.get_msg().map_contenu(None)?;
+    debug!("requete_synchronizer_cles cle parsed : {:?}", requete);
+
+    let mut cles_manquantes = HashSet::new();
+    cles_manquantes.extend(requete.liste_hachage_bytes.clone());
+
+    let filtre = doc! [ CHAMP_HACHAGE_BYTES: {"$in": &requete.liste_hachage_bytes } ];
+    let projection = doc! { CHAMP_HACHAGE_BYTES: 1 };
+    let opts = FindOptions::builder().projection(projection).build();
+    let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
+    let mut curseur = collection.find(filtre, opts).await?;
+    while let Some(d) = curseur.next().await {
+        match d {
+            Ok(d) => {
+                match d.get(CHAMP_HACHAGE_BYTES) {
+                    Some(c) => match c.as_str() {
+                        Some(hachage) => {
+                            // Enlever la cle de la liste de cles manquantes
+                            cles_manquantes.remove(hachage);
+                        },
+                        None => ()
+                    },
+                    None => ()
+                }
+            },
+            Err(e) => warn!("Erreur traitement curseur mongo : {:?}", e)
+        }
+    }
+
+    let mut vec_cles_manquantes = Vec::new();
+    vec_cles_manquantes.extend(cles_manquantes);
+    let reponse = ReponseConfirmerClesSurCa { cles_manquantes: vec_cles_manquantes };
+    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ReponseConfirmerClesSurCa {
+    cles_manquantes: Vec<String>
 }
 
 #[cfg(test)]

@@ -24,6 +24,7 @@ pub const NOM_Q_DECHIFFRAGE: &str = "MaitreDesCles/dechiffrage";
 pub const REQUETE_SYNCHRONISER_CLES: &str = "synchroniserCles";
 
 pub const COMMANDE_SAUVEGARDER_CLE: &str = "sauvegarderCle";
+pub const COMMANDE_CONFIRMER_CLES_SUR_CA: &str = "confirmerClesSurCa";
 
 pub const TRANSACTION_CLE: &str = "cle";
 
