@@ -25,6 +25,8 @@ pub const COMMANDE_SAUVEGARDER_CLE: &str = "sauvegarderCle";
 
 pub const TRANSACTION_CLE: &str = "cle";
 
+pub const EVENEMENT_RESET_CLES_NON_DECHIFFRABLES: &str = "resetClesNonDechiffrables";
+
 pub const CHAMP_HACHAGE_BYTES: &str = "hachage_bytes";
 pub const CHAMP_LISTE_HACHAGE_BYTES: &str = "liste_hachage_bytes";
 pub const CHAMP_LISTE_FINGERPRINTS: &str = "liste_fingerprints";

@@ -20,6 +20,7 @@ use millegrilles_common_rust::tokio::spawn;
 use millegrilles_common_rust::tokio::task::JoinHandle;
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::transactions::resoumettre_transactions;
+use millegrilles_common_rust::verificateur::VerificateurMessage;
 
 use crate::maitredescles_ca::GestionnaireMaitreDesClesCa;
 use crate::maitredescles_partition::GestionnaireMaitreDesClesPartition;
@@ -198,15 +199,14 @@ async fn executer(mut futures: FuturesUnordered<JoinHandle<()>>) {
 
 /// Thread d'entretien
 async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnaires: Vec<&'static TypeGestionnaire>)
-where
-    M: GenerateurMessages + ValidateurX509 + EmetteurCertificat + MongoDao,
+    where M: GenerateurMessages + ValidateurX509 + EmetteurCertificat + MongoDao + VerificateurMessage
 {
     let mut certificat_emis = false;
 
     // Liste de collections de transactions pour tous les domaines geres par Core
     let collections_transaction = {
         let mut coll_docs_strings = Vec::new();
-        for g in gestionnaires {
+        for g in &gestionnaires {
             match g {
                 TypeGestionnaire::CA(g) => {
                     coll_docs_strings.push(String::from(g.get_collection_transactions()));
@@ -220,41 +220,23 @@ where
         coll_docs_strings
     };
 
+    let mut rechiffrage_complete = false;
     let mut prochain_entretien_transactions = chrono::Utc::now();
     let intervalle_entretien_transactions = chrono::Duration::minutes(5);
 
     info!("domaines_maitredescles.entretien : Debut thread");
-
     loop {
         let maintenant = chrono::Utc::now();
-        debug!("entretien  Execution task d'entretien Core {:?}", maintenant);
+        debug!("domaines_maitredescles.entretien  Execution task d'entretien Core {:?}", maintenant);
 
-        middleware.entretien().await;
-
-        if prochain_entretien_transactions < maintenant {
-            let resultat = resoumettre_transactions(
-                middleware.as_ref(),
-                &collections_transaction
-            ).await;
-
-            match resultat {
-                Ok(_) => {
-                    prochain_entretien_transactions = maintenant + intervalle_entretien_transactions;
-                },
-                Err(e) => {
-                    warn!("entretien Erreur resoumission transactions (entretien) : {:?}", e);
-                }
-            }
-        }
-
-        // Sleep jusqu'au prochain entretien
-        debug!("Task entretien core fin cycle, sleep {} secondes", DUREE_ATTENTE / 1000);
+        // Sleep jusqu'au prochain entretien ou evenement MQ (e.g. connexion)
+        debug!("domaines_maitredescles.entretien Fin cycle, sleep {} secondes", DUREE_ATTENTE / 1000);
         let duration = DurationTokio::from_millis(DUREE_ATTENTE);
-        let result = timeout(duration, rx.recv()).await;
 
+        let result = timeout(duration, rx.recv()).await;
         match result {
             Ok(inner) => {
-                debug!("Recu event MQ : {:?}", inner);
+                debug!("domaines_maitredescles.entretien Recu event MQ : {:?}", inner);
                 match inner {
                     Some(e) => {
                         match e {
@@ -274,17 +256,53 @@ where
 
             },
             Err(_) => {
-                debug!("entretien Timeout, entretien est du");
+                debug!("domaines_maitredescles.entretien entretien Timeout, entretien est du");
+            }
+        }
+
+        middleware.entretien().await;
+
+        if prochain_entretien_transactions < maintenant {
+            let resultat = resoumettre_transactions(
+                middleware.as_ref(),
+                &collections_transaction
+            ).await;
+
+            match resultat {
+                Ok(_) => {
+                    prochain_entretien_transactions = maintenant + intervalle_entretien_transactions;
+                },
+                Err(e) => {
+                    warn!("domaines_maitredescles.entretien Erreur resoumission transactions (entretien) : {:?}", e);
+                }
             }
         }
 
         if certificat_emis == false {
-            debug!("Emettre certificat");
+            debug!("domaines_maitredescles.entretien Emettre certificat");
             match middleware.emettre_certificat(middleware.as_ref()).await {
                 Ok(()) => certificat_emis = true,
                 Err(e) => error!("Erreur emission certificat local : {:?}", e),
             }
-            debug!("Fin emission traitement certificat local, resultat : {}", certificat_emis);
+            debug!("domaines_maitredescles.entretien Fin emission traitement certificat local, resultat : {}", certificat_emis);
+        }
+
+        // Effectuer rechiffrage si on a fait une rotation de la cle privee
+        if ! rechiffrage_complete {
+            debug!("domaines_maitredescles.entretien Verification de rotation des cles");
+            rechiffrage_complete = true;
+
+            for g in &gestionnaires {
+                match g {
+                    TypeGestionnaire::Partition(g) => {
+                        match g.migration_cles(middleware.as_ref()).await {
+                            Ok(()) => (),
+                            Err(e) => error!("entretien Erreur migration cles : {:?}", e)
+                        }
+                    },
+                    _ => ()
+                }
+            }
         }
     }
 

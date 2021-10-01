@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use log::{debug, error, info, trace, warn};
 use millegrilles_common_rust::async_trait::async_trait;
-use millegrilles_common_rust::bson::{bson, doc, Document};
+use millegrilles_common_rust::bson::{bson, Bson, doc, Document};
 use millegrilles_common_rust::certificats::{EnveloppeCertificat, EnveloppePrivee, ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chiffrage::{CommandeSauvegarderCle, rechiffrer_asymetrique_multibase};
 use millegrilles_common_rust::chrono::Utc;
@@ -14,9 +14,10 @@ use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::formatteur_messages::{MessageMilleGrille, MessageSerialise};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
 use millegrilles_common_rust::middleware::{Middleware, sauvegarder_transaction_recue};
-use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};
+use millegrilles_common_rust::mongo_dao::{ChampIndex, convertir_bson_deserializable, convertir_bson_value, convertir_to_bson, filtrer_doc_id, IndexOptions, MongoDao};
 use millegrilles_common_rust::mongodb::Cursor;
 use millegrilles_common_rust::mongodb::options::UpdateOptions;
+use millegrilles_common_rust::openssl::pkey::{PKey, Private};
 use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange, QueueType};
 use millegrilles_common_rust::recepteur_messages::MessageValideAction;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
@@ -27,10 +28,16 @@ use millegrilles_common_rust::verificateur::VerificateurMessage;
 
 use crate::maitredescles_commun::*;
 
+const NOM_COLLECTION_RECHIFFRAGE: &str = "MaitreDesCles/rechiffrage";
+
 const NOM_Q_VOLATILS_GLOBAL: &str = "MaitreDesCles/volatils";
 
 const REQUETE_CERTIFICAT_MAITREDESCLES: &str = "certMaitreDesCles";
 const REQUETE_DECHIFFRAGE: &str = "dechiffrage";
+
+const INDEX_RECHIFFRAGE_PK: &str = "fingerprint_pk";
+
+const CHAMP_FINGERPRINT_PK: &str = "fingerprint_pk";
 
 #[derive(Clone, Debug)]
 pub struct GestionnaireMaitreDesClesPartition {
@@ -63,6 +70,12 @@ impl GestionnaireMaitreDesClesPartition {
 
     fn get_collection_cles(&self) -> String {
         format!("MaitreDesCles_{}/cles", self.get_partition_tronquee())
+    }
+
+    pub async fn migration_cles<M>(&self, middleware: &M) -> Result<(), Box<dyn Error>>
+        where M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage
+    {
+        migration_cles(middleware).await
     }
 }
 
@@ -180,7 +193,10 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
 
     async fn preparer_index_mongodb_custom<M>(&self, middleware: &M) -> Result<(), String> where M: MongoDao {
         let nom_collection_cles = self.get_collection_cles();
-        preparer_index_mongodb_custom(middleware, nom_collection_cles.as_str()).await
+        preparer_index_mongodb_custom(middleware, nom_collection_cles.as_str()).await?;
+        preparer_index_mongodb_partition(middleware).await?;
+
+        Ok(())
     }
 
     async fn consommer_requete<M>(&self, middleware: &M, message: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>> where M: Middleware + 'static {
@@ -209,6 +225,117 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
 
     async fn aiguillage_transaction<M, T>(&self, middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String> where M: ValidateurX509 + GenerateurMessages + MongoDao, T: Transaction {
         aiguillage_transaction(middleware, transaction, self).await
+    }
+}
+
+pub async fn preparer_index_mongodb_partition<M>(middleware: &M) -> Result<(), String>
+    where M: MongoDao
+{
+    // Index rechiffrage
+    let options_unique_rechiffrage = IndexOptions {
+        nom_index: Some(String::from(INDEX_RECHIFFRAGE_PK)),
+        unique: true
+    };
+    let champs_index_rechiffrage = vec!(
+        ChampIndex {nom_champ: String::from(CHAMP_FINGERPRINT_PK), direction: 1},
+    );
+    middleware.create_index(
+        NOM_COLLECTION_RECHIFFRAGE,
+        champs_index_rechiffrage,
+        Some(options_unique_rechiffrage)
+    ).await?;
+
+    Ok(())
+}
+
+/// Verifie si on peut rechiffrer les cles d'une partition locale (precedente) vers
+/// une nouvelle partition (courante).
+async fn migration_cles<M>(middleware: &M)
+    -> Result<(), Box<dyn Error>>
+    where M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage
+{
+    let enveloppe_privee = middleware.get_enveloppe_privee();
+    let fingerprint = enveloppe_privee.fingerprint().as_str();
+    let fingerprint_pk = enveloppe_privee.fingerprint_pk()?;
+
+    let filtre = doc! {CHAMP_FINGERPRINT_PK: &fingerprint_pk};
+    let collection_rechiffrage = middleware.get_collection(NOM_COLLECTION_RECHIFFRAGE)?;
+    let doc_rechiffrage_opt = collection_rechiffrage.find_one(filtre.clone(), None).await?;
+
+    let doc_rechiffrage = match doc_rechiffrage_opt {
+        Some(doc_rechiffrage) => {
+            info!("Document rechiffrage : {:?}", doc_rechiffrage);
+            convertir_bson_deserializable::<DocumentRechiffrage>(doc_rechiffrage)?
+        },
+        None => {
+            info!("On a une nouvelle partition ({}), tenter de faire le rechiffrage a partir d'une cle connue", fingerprint);
+            DocumentRechiffrage::new(&fingerprint_pk, fingerprint)
+        }
+    };
+
+    if ! doc_rechiffrage.rechiffrage_complete {
+        let cle = trouver_cle_rechiffrage(middleware).await?;
+
+        let rechiffrage_complete: bool = match cle {
+            Some(c) => {
+                // Effectuer le rechiffrage
+                let resultat_rechiffrage = false;  // todo
+
+                resultat_rechiffrage
+            },
+            None => false   // Rechiffrage requis, pas de cle trouvee
+        };
+
+        if !rechiffrage_complete {
+            let evenement_reset = json!({"non-dechiffrable": true});
+            let routage = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_RESET_CLES_NON_DECHIFFRABLES)
+                .exchanges(vec![Securite::L3Protege])
+                .build();
+            middleware.emettre_evenement(routage, &evenement_reset).await?;
+        }
+
+        let mut document_rechiffrage = DocumentRechiffrage::new(&fingerprint_pk, fingerprint);
+        document_rechiffrage.rechiffrage_complete = rechiffrage_complete;
+
+        // Mettre a jour document de rechiffrage
+        let mut doc_bson = convertir_to_bson(document_rechiffrage)?;
+        doc_bson.remove("fingerprint_pk");  // PK du doc
+        let opts = UpdateOptions::builder().upsert(true).build();
+        let ops = doc! {
+            "$set": doc_bson,
+            "$setOnInsert": {"fingerprint_pk": &fingerprint_pk, CHAMP_CREATION: Utc::now()},
+            "$currentDate": {CHAMP_MODIFICATION: true}
+        };
+        let resultat = collection_rechiffrage.update_one(filtre, ops, opts).await?;
+        debug!("migration_cles Resultat insertion document rechiffrage : {:?}", resultat);
+    } else {
+        info!("migration_cles Rechiffrage est deja complete, rien a faire");
+    }
+
+    Ok(())
+}
+
+async fn trouver_cle_rechiffrage<M>(middleware: &M)
+    -> Result<Option<PKey<Private>>, Box<dyn Error>>
+    where M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage
+{
+
+    Ok(None)
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct DocumentRechiffrage {
+    fingerprint_pk: String,
+    fingerprint: String,
+    rechiffrage_complete: bool,
+}
+impl DocumentRechiffrage {
+    fn new<S, T>(fingerprint_pk: S, fingerprint: T) -> Self where S: Into<String>, T: Into<String> {
+        DocumentRechiffrage {
+            fingerprint_pk: fingerprint_pk.into(),
+            fingerprint: fingerprint.into(),
+            rechiffrage_complete: false,
+        }
     }
 }
 
