@@ -2,12 +2,12 @@ use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::error::Error;
 use std::fs::read_dir;
-use std::ops::Deref;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use log::{debug, error, info, trace, warn};
+use log::{debug, error, info, warn};
+use millegrilles_common_rust::{multibase, multibase::Base};
 use millegrilles_common_rust::async_trait::async_trait;
-use millegrilles_common_rust::bson::{bson, Bson, doc, Document};
+use millegrilles_common_rust::bson::{doc, Document};
 use millegrilles_common_rust::certificats::{EnveloppeCertificat, EnveloppePrivee, ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chiffrage::{chiffrer_asymetrique, Chiffreur, CommandeSauvegarderCle, dechiffrer_asymetrique, rechiffrer_asymetrique_multibase};
 use millegrilles_common_rust::chrono::Utc;
@@ -15,13 +15,12 @@ use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::formatteur_messages::{MessageMilleGrille, MessageSerialise};
-use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
+use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::hachages::hacher_bytes;
-use millegrilles_common_rust::middleware::{IsConfigurationPki, map_msg_to_bson, Middleware, sauvegarder_transaction, sauvegarder_transaction_recue};
-use millegrilles_common_rust::mongo_dao::{ChampIndex, convertir_bson_deserializable, convertir_bson_value, convertir_to_bson, filtrer_doc_id, IndexOptions, MongoDao};
+use millegrilles_common_rust::middleware::{Middleware, sauvegarder_transaction, sauvegarder_transaction_recue};
+use millegrilles_common_rust::mongo_dao::{ChampIndex, convertir_bson_deserializable, convertir_to_bson, IndexOptions, MongoDao};
 use millegrilles_common_rust::mongodb::Cursor;
 use millegrilles_common_rust::mongodb::options::{FindOptions, UpdateOptions};
-use millegrilles_common_rust::{multibase, multibase::Base};
 use millegrilles_common_rust::multihash::Code;
 use millegrilles_common_rust::openssl::pkey::{PKey, Private};
 use millegrilles_common_rust::openssl::rsa::Rsa;
@@ -29,17 +28,17 @@ use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange,
 use millegrilles_common_rust::recepteur_messages::{MessageValideAction, TypeMessage};
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::json;
+use millegrilles_common_rust::tokio::fs::File as File_tokio;
+use millegrilles_common_rust::tokio::io::AsyncReadExt;
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::transactions::{EtatTransaction, marquer_transaction, TraiterTransaction, Transaction, TransactionImpl};
 use millegrilles_common_rust::verificateur::VerificateurMessage;
-use millegrilles_common_rust::tokio::fs::File as File_tokio;
-use millegrilles_common_rust::tokio::io::AsyncReadExt;
 
 use crate::maitredescles_commun::*;
 
 const NOM_COLLECTION_RECHIFFRAGE: &str = "MaitreDesCles/rechiffrage";
 
-const NOM_Q_VOLATILS_GLOBAL: &str = "MaitreDesCles/volatils";
+// const NOM_Q_VOLATILS_GLOBAL: &str = "MaitreDesCles/volatils";
 
 const REQUETE_CERTIFICAT_MAITREDESCLES: &str = "certMaitreDesCles";
 const REQUETE_DECHIFFRAGE: &str = "dechiffrage";
@@ -79,9 +78,9 @@ impl GestionnaireMaitreDesClesPartition {
         String::from(&partition[35..])
     }
 
-    pub fn get_partition(&self) -> &str {
-        self.fingerprint.as_str()
-    }
+    // pub fn get_partition(&self) -> &str {
+    //     self.fingerprint.as_str()
+    // }
 
     fn get_q_sauvegarder_cle(&self) -> String {
         format!("MaitreDesCles_{}/sauvegarder", self.fingerprint)
@@ -328,7 +327,7 @@ async fn migration_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesC
     if ! doc_rechiffrage.rechiffrage_complete {
         let cle_curseur = trouver_cle_rechiffrage(middleware).await?;
 
-        let rechiffrage_complete: bool = match cle_curseur {
+        match cle_curseur {
             Some((cle, curseur)) => {
                 effectuer_migration_cles(middleware, gestionnaire,cle, curseur).await?
             },
@@ -507,7 +506,7 @@ async fn effectuer_migration_cles<M>(middleware: &M, gestionnaire: &Gestionnaire
 
         // Sauvegarder et traiter la transactions
         sauvegarder_transaction(middleware, &mva, nom_collection_partition.as_str()).await?;
-        let doc_bson = map_msg_to_bson(mva.message.get_msg())?;
+        // let doc_bson = map_msg_to_bson(mva.message.get_msg())?;
         let transaction = TransactionImpl::try_from(mva.message)?;
         let uuid_transaction = transaction.get_uuid_transaction().to_owned();
         transaction_cle(middleware, transaction, gestionnaire).await?;
@@ -642,7 +641,7 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
     // let _ = doc_bson.remove("partition");
 
     // Retirer cles, on re-insere la cle necessaire uniquement
-    let cles = doc_bson.remove("cles");
+    doc_bson.remove("cles");
 
     let cle = match commande.cles.get(fingerprint) {
         Some(cle) => cle.as_str(),
@@ -868,13 +867,13 @@ fn verifier_autorisation_dechiffrage_global<M>(middleware: &M, m: &MessageValide
     -> Result<(bool, Option<EnveloppePermission>), Box<dyn Error>>
     where M: VerificateurMessage
 {
-    let certificat = match &m.message.certificat {
-        Some(c) => c.as_ref(),
-        None => {
-            debug!("verifier_autorisation_dechiffrage Certificat absent du message, acces refuse");
-            return Ok((false, None))
-        }
-    };
+    // let certificat = match &m.message.certificat {
+    //     Some(c) => c.as_ref(),
+    //     None => {
+    //         debug!("verifier_autorisation_dechiffrage Certificat absent du message, acces refuse");
+    //         return Ok((false, None))
+    //     }
+    // };
 
     // Verifier si le certificat est de niveau 4.secure
     if m.verifier_exchanges(vec![Securite::L4Secure]) {
@@ -1133,7 +1132,7 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
             // Emettre evenement pour indiquer que ces cles sont manquantes dans la partition
             let liste_cles: Vec<String> = cles_hashset.iter().map(|m| String::from(m.as_str())).collect();
             let evenement_cles_manquantes = ReponseSynchroniserCles { liste_hachage_bytes: liste_cles };
-            middleware.emettre_evenement(routage_evenement_manquant.clone(), &evenement_cles_manquantes).await;
+            middleware.emettre_evenement(routage_evenement_manquant.clone(), &evenement_cles_manquantes).await?;
         }
     }
 
@@ -1186,7 +1185,7 @@ async fn confirmer_cles_ca<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
 /// Marque les cles presentes sur la partition et CA comme confirmation_ca=true
 /// Rechiffre et emet vers le CA les cles manquantes
 async fn emettre_cles_vers_ca<M>(
-    middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition, mut cles: &mut HashMap<String, TransactionCle>)
+    middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition, cles: &mut HashMap<String, TransactionCle>)
     -> Result<(), Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + VerificateurMessage + Chiffreur
 {

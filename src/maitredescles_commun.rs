@@ -2,14 +2,12 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::sync::Arc;
 
-use log::{debug, error, info, trace, warn};
+use log::debug;
 use millegrilles_common_rust::certificats::EnveloppeCertificat;
 use millegrilles_common_rust::chiffrage::{CommandeSauvegarderCle, FormatChiffrage};
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::middleware::Middleware;
-use millegrilles_common_rust::mongo_dao::{ChampIndex, convertir_bson_deserializable, convertir_bson_value, convertir_to_bson, filtrer_doc_id, IndexOptions, MongoDao};
-use millegrilles_common_rust::mongodb as mongodb;
-use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOneOptions, Hint};
+use millegrilles_common_rust::mongo_dao::{ChampIndex, IndexOptions, MongoDao};
 use millegrilles_common_rust::recepteur_messages::MessageValideAction;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::tokio::time::{Duration, sleep};
@@ -28,20 +26,20 @@ pub const COMMANDE_CONFIRMER_CLES_SUR_CA: &str = "confirmerClesSurCa";
 
 pub const TRANSACTION_CLE: &str = "cle";
 
-pub const EVENEMENT_RESET_CLES_NON_DECHIFFRABLES: &str = "resetClesNonDechiffrables";
+// pub const EVENEMENT_RESET_CLES_NON_DECHIFFRABLES: &str = "resetClesNonDechiffrables";
 pub const EVENEMENT_CLES_MANQUANTES_PARTITION: &str = "clesManquantesPartition";
 
 pub const CHAMP_HACHAGE_BYTES: &str = "hachage_bytes";
-pub const CHAMP_LISTE_HACHAGE_BYTES: &str = "liste_hachage_bytes";
-pub const CHAMP_LISTE_FINGERPRINTS: &str = "liste_fingerprints";
+// pub const CHAMP_LISTE_HACHAGE_BYTES: &str = "liste_hachage_bytes";
+// pub const CHAMP_LISTE_FINGERPRINTS: &str = "liste_fingerprints";
 pub const CHAMP_NON_DECHIFFRABLE: &str = "non_dechiffrable";
-pub const CHAMP_FINGERPRINT_PK: &str = "fingerprint_pk";
+// pub const CHAMP_FINGERPRINT_PK: &str = "fingerprint_pk";
 
-pub const CHAMP_ACCES: &str = "acces";
+// pub const CHAMP_ACCES: &str = "acces";
 pub const CHAMP_ACCES_REFUSE: &str = "0.refuse";
 pub const CHAMP_ACCES_PERMIS: &str = "1.permis";
-pub const CHAMP_ACCES_ERREUR: &str = "2.erreur";
-pub const CHAMP_ACCES_CLE_INDECHIFFRABLE: &str = "3.indechiffrable";
+// pub const CHAMP_ACCES_ERREUR: &str = "2.erreur";
+// pub const CHAMP_ACCES_CLE_INDECHIFFRABLE: &str = "3.indechiffrable";
 pub const CHAMP_ACCES_CLE_INCONNUE: &str = "4.inconnue";
 
 /// Creer index MongoDB
@@ -83,8 +81,6 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M, nom_collection_cle
 pub async fn entretien<M>(_middleware: Arc<M>)
     where M: Middleware + 'static
 {
-    let mut catalogues_charges = false;
-
     loop {
         sleep(Duration::new(30, 0)).await;
         debug!("Cycle entretien {}", DOMAINE_NOM);

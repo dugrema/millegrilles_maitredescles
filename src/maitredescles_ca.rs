@@ -1,40 +1,39 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::error::Error;
 use std::sync::Arc;
 
-use log::{debug, error, info, trace, warn};
+use log::{debug, error, warn};
 use millegrilles_common_rust::async_trait::async_trait;
-use millegrilles_common_rust::bson::{bson, doc, Document};
+use millegrilles_common_rust::bson::{doc, Document};
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
-use millegrilles_common_rust::chiffrage::{CommandeSauvegarderCle, FormatChiffrage};
+use millegrilles_common_rust::chiffrage::CommandeSauvegarderCle;
 use millegrilles_common_rust::chrono::Utc;
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::formatteur_messages::MessageMilleGrille;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::middleware::{Middleware, sauvegarder_transaction_recue};
-use millegrilles_common_rust::mongo_dao::{ChampIndex, convertir_bson_deserializable, convertir_bson_value, convertir_to_bson, filtrer_doc_id, IndexOptions, MongoDao};
-use millegrilles_common_rust::mongodb as mongodb;
-use millegrilles_common_rust::mongodb::options::{CountOptions, FindOneAndUpdateOptions, FindOneOptions, FindOptions, Hint, UpdateOptions};
+use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};
+use millegrilles_common_rust::mongodb::options::{CountOptions, FindOptions, Hint, UpdateOptions};
 use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange, QueueType};
 use millegrilles_common_rust::recepteur_messages::MessageValideAction;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::json;
+use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::transactions::{TraiterTransaction, Transaction, TransactionImpl};
 use millegrilles_common_rust::verificateur::VerificateurMessage;
-use millegrilles_common_rust::tokio_stream::StreamExt;
 
 use crate::maitredescles_commun::*;
 
 pub const NOM_COLLECTION_CLES: &str = "MaitreDesCles_CA/cles";
 pub const NOM_COLLECTION_TRANSACTIONS: &str = "MaitreDesCles_CA";
 
-const NOM_Q_VOLATILS_GLOBAL: &str = "MaitreDesCles/volatils";
+// const NOM_Q_VOLATILS_GLOBAL: &str = "MaitreDesCles/volatils";
 
 const NOM_Q_TRANSACTIONS: &str = "MaitreDesCles_CA/transactions";
 const NOM_Q_VOLATILS: &str = "MaitreDesCles_CA/volatils";
 const NOM_Q_TRIGGERS: &str = "MaitreDesCles_CA/triggers";
-const NOM_Q_PREFIXE: &str = "MaitreDesCles_CA";
+// const NOM_Q_PREFIXE: &str = "MaitreDesCles_CA";
 
 const REQUETE_CLES_NON_DECHIFFRABLES: &str = "clesNonDechiffrables";
 const REQUETE_COMPTER_CLES_NON_DECHIFFRABLES: &str = "compterClesNonDechiffrables";
@@ -296,7 +295,7 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
     // let _ = doc_bson.remove("partition");
 
     // Retirer cles, on re-insere la cle necessaire uniquement
-    let cles = doc_bson.remove("cles");
+    doc_bson.remove("cles");
 
     let cle = match commande.cles.get(fingerprint) {
         Some(cle) => cle.as_str(),
@@ -432,7 +431,12 @@ async fn requete_cles_non_dechiffrables<M>(middleware: &M, m: MessageValideActio
             CHAMP_NON_DECHIFFRABLE: 1,
             CHAMP_CREATION: 1,
         };
-        let opts = FindOptions::builder().hint(hint).skip(Some(start_index)).limit(Some(limite_docs as i64)).build();
+        let opts = FindOptions::builder()
+            .hint(hint)
+            .sort(sort_doc)
+            .skip(Some(start_index))
+            .limit(Some(limite_docs as i64))
+            .build();
         let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
 
         collection.find(filtre, opts).await?
@@ -478,6 +482,7 @@ async fn requete_synchronizer_cles<M>(middleware: &M, m: MessageValideAction, ge
         let projection = doc!{CHAMP_HACHAGE_BYTES: 1};
         let opts = FindOptions::builder()
             .hint(hint)
+            .sort(sort_doc)
             .skip(Some(start_index as u64))
             .limit(Some(limite_docs as i64))
             .projection(Some(projection))

@@ -10,7 +10,7 @@ use millegrilles_common_rust::configuration::{charger_configuration, ConfigMessa
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::futures::stream::FuturesUnordered;
 use millegrilles_common_rust::generateur_messages::GenerateurMessages;
-use millegrilles_common_rust::middleware::{EmetteurCertificat, Middleware};
+use millegrilles_common_rust::middleware::Middleware;
 use millegrilles_common_rust::middleware_db::{MiddlewareDb, preparer_middleware_db};
 use millegrilles_common_rust::mongo_dao::MongoDao;
 use millegrilles_common_rust::rabbitmq_dao::{Callback, EventMq, QueueType};
@@ -20,11 +20,9 @@ use millegrilles_common_rust::tokio::spawn;
 use millegrilles_common_rust::tokio::task::JoinHandle;
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::transactions::resoumettre_transactions;
-use millegrilles_common_rust::verificateur::VerificateurMessage;
 
 use crate::maitredescles_ca::GestionnaireMaitreDesClesCa;
 use crate::maitredescles_partition::GestionnaireMaitreDesClesPartition;
-use crate::maitredescles_commun::*;
 
 const DUREE_ATTENTE: u64 = 20000;
 
@@ -45,7 +43,7 @@ pub async fn run() {
     let gestionnaires = charger_gestionnaires(None, true);
 
     // Wiring
-    let (mut futures, _) = build(gestionnaires).await;
+    let (futures, _) = build(gestionnaires).await;
 
     // Run
     executer(futures).await
@@ -407,18 +405,21 @@ async fn consommer(
 #[cfg(test)]
 mod test_integration {
     use std::collections::HashMap;
-    use crate::test_setup::setup;
-    use millegrilles_common_rust::middleware_db::preparer_middleware_db;
-    use millegrilles_common_rust::tokio as tokio;
-    use millegrilles_common_rust::tokio_stream::StreamExt;
 
-    use super::*;
     use millegrilles_common_rust::backup::CatalogueHoraire;
     use millegrilles_common_rust::chiffrage::Chiffreur;
     use millegrilles_common_rust::formatteur_messages::MessageSerialise;
     use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
     use millegrilles_common_rust::middleware::IsConfigurationPki;
+    use millegrilles_common_rust::middleware_db::preparer_middleware_db;
     use millegrilles_common_rust::mongo_dao::convertir_to_bson;
+    use millegrilles_common_rust::tokio as tokio;
+    use millegrilles_common_rust::tokio_stream::StreamExt;
+    use crate::maitredescles_commun::{COMMANDE_SAUVEGARDER_CLE, DOMAINE_NOM};
+
+    use crate::test_setup::setup;
+
+    use super::*;
 
     #[tokio::test]
     async fn test_sauvegarder_cle() {
