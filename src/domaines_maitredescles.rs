@@ -225,7 +225,10 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
     let intervalle_entretien_transactions = chrono::Duration::minutes(5);
 
     let mut prochain_sync = chrono::Utc::now();
-    let intervalle_sync = chrono::Duration::minutes(90);
+    let intervalle_sync = chrono::Duration::hours(6);
+
+    let mut prochaine_confirmation_ca = chrono::Utc::now();
+    let intervalle_confirmation_ca = chrono::Duration::minutes(15);
 
     info!("domaines_maitredescles.entretien : Debut thread");
     loop {
@@ -304,10 +307,20 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
                     }
 
                     if prochain_sync < maintenant {
-                        debug!("entretien Effectuer sync des cles avec le CA");
+                        debug!("entretien Effectuer sync des cles du CA non disponibles localement");
                         match g.synchroniser_cles(middleware.as_ref()).await {
                             Ok(()) => {
                                 prochain_sync = maintenant + intervalle_sync;
+                            },
+                            Err(e) => warn!("entretien Erreur syncrhonization cles avec CA : {:?}", e)
+                        }
+                    }
+
+                    if prochaine_confirmation_ca < maintenant {
+                        debug!("entretien Pousser les cles locales vers le CA");
+                        match g.confirmer_cles_ca(middleware.as_ref()).await {
+                            Ok(()) => {
+                                prochaine_confirmation_ca = maintenant + intervalle_confirmation_ca;
                             },
                             Err(e) => warn!("entretien Erreur syncrhonization cles avec CA : {:?}", e)
                         }

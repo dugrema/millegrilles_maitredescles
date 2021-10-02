@@ -97,10 +97,18 @@ impl GestionnaireMaitreDesClesPartition {
         migration_cles(middleware, gestionnaire).await
     }
 
+    /// Verifie si le CA a des cles qui ne sont pas connues localement
     pub async fn synchroniser_cles<M>(&self, middleware: &M) -> Result<(), Box<dyn Error>>
         where M: GenerateurMessages + MongoDao + VerificateurMessage + Chiffreur
     {
         synchroniser_cles(middleware, self).await?;
+        Ok(())
+    }
+
+    /// S'assure que le CA a toutes les cles presentes dans la partition
+    pub async fn confirmer_cles_ca<M>(&self, middleware: &M) -> Result<(), Box<dyn Error>>
+        where M: GenerateurMessages + MongoDao + VerificateurMessage + Chiffreur
+    {
         confirmer_cles_ca(middleware, self).await?;
         Ok(())
     }
