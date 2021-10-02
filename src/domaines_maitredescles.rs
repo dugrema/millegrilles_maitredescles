@@ -230,6 +230,9 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
     let mut prochaine_confirmation_ca = chrono::Utc::now();
     let intervalle_confirmation_ca = chrono::Duration::minutes(15);
 
+    let mut prochain_chargement_certificats_autres = chrono::Utc::now();
+    let intervalle_chargement_certificats_autres = chrono::Duration::minutes(5);
+
     info!("domaines_maitredescles.entretien : Debut thread");
     loop {
         let maintenant = chrono::Utc::now();
@@ -266,7 +269,16 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
             }
         }
 
-        middleware.entretien().await;
+        middleware.entretien_validateur().await;
+
+        if prochain_chargement_certificats_autres < maintenant {
+            match middleware.charger_certificats_chiffrage().await {
+                Ok(()) => {
+                    prochain_chargement_certificats_autres = maintenant + intervalle_chargement_certificats_autres;
+                },
+                Err(e) => info!("Erreur chargement certificats de maitre des cles tiers : {:?}", e)
+            }
+        }
 
         if prochain_entretien_transactions < maintenant {
             let resultat = resoumettre_transactions(
