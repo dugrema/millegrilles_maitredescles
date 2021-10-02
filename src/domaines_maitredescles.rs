@@ -18,11 +18,12 @@ use millegrilles_common_rust::recepteur_messages::TypeMessage;
 use millegrilles_common_rust::tokio::{sync::{mpsc, mpsc::{Receiver, Sender}}, time::{Duration as DurationTokio, timeout}};
 use millegrilles_common_rust::tokio::spawn;
 use millegrilles_common_rust::tokio::task::JoinHandle;
+use millegrilles_common_rust::tokio::time::sleep;
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::transactions::resoumettre_transactions;
 
 use crate::maitredescles_ca::GestionnaireMaitreDesClesCa;
-use crate::maitredescles_partition::GestionnaireMaitreDesClesPartition;
+use crate::maitredescles_partition::{emettre_certificat_maitredescles, GestionnaireMaitreDesClesPartition};
 
 const DUREE_ATTENTE: u64 = 20000;
 
@@ -231,7 +232,11 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
     let mut prochain_chargement_certificats_autres = chrono::Utc::now();
     let intervalle_chargement_certificats_autres = chrono::Duration::minutes(5);
 
-    info!("domaines_maitredescles.entretien : Debut thread");
+    info!("domaines_maitredescles.entretien : Debut thread dans 5 secondes");
+
+    // Donner 5 secondes pour que les Q soient pretes (e.g. Q reponse)
+    sleep(DurationTokio::new(5, 0)).await;
+
     loop {
         let maintenant = chrono::Utc::now();
         debug!("domaines_maitredescles.entretien  Execution task d'entretien Core {:?}", maintenant);
@@ -327,6 +332,12 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
                     }
 
                     if prochaine_confirmation_ca < maintenant {
+                        // Emettre certificat local (pas vraiment a la bonne place)
+                        match g.emettre_certificat_maitredescles(middleware.as_ref(), None).await {
+                            Ok(_) => (),
+                            Err(e) => error!("Erreur emission certificat de maitre des cles : {:?}", e)
+                        }
+
                         debug!("entretien Pousser les cles locales vers le CA");
                         match g.confirmer_cles_ca(middleware.as_ref()).await {
                             Ok(()) => {
@@ -435,7 +446,7 @@ mod test_integration {
             tokio::time::sleep(tokio::time::Duration::new(4, 0)).await;
 
             // S'assurer d'avoir recu le cert de chiffrage
-            middleware.charger_certificats_chiffrage().await;
+            middleware.charger_certificats_chiffrage().await.expect("certs");
 
             let input = b"Allo, le test";
             let mut output = [0u8; 13];

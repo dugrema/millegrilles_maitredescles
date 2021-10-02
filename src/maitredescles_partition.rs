@@ -15,7 +15,7 @@ use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::formatteur_messages::{MessageMilleGrille, MessageSerialise};
-use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
+use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
 use millegrilles_common_rust::hachages::hacher_bytes;
 use millegrilles_common_rust::middleware::{Middleware, sauvegarder_transaction, sauvegarder_transaction_recue};
 use millegrilles_common_rust::mongo_dao::{ChampIndex, convertir_bson_deserializable, convertir_to_bson, IndexOptions, MongoDao};
@@ -40,7 +40,7 @@ const NOM_COLLECTION_RECHIFFRAGE: &str = "MaitreDesCles/rechiffrage";
 
 // const NOM_Q_VOLATILS_GLOBAL: &str = "MaitreDesCles/volatils";
 
-const REQUETE_CERTIFICAT_MAITREDESCLES: &str = "certMaitreDesCles";
+const REQUETE_CERTIFICAT_MAITREDESCLES: &str = COMMANDE_CERT_MAITREDESCLES;
 const REQUETE_DECHIFFRAGE: &str = "dechiffrage";
 
 const INDEX_RECHIFFRAGE_PK: &str = "fingerprint_pk";
@@ -112,6 +112,12 @@ impl GestionnaireMaitreDesClesPartition {
         Ok(())
     }
 
+    pub async fn emettre_certificat_maitredescles<M>(&self, middleware: &M, m: Option<MessageValideAction>) -> Result<(), Box<dyn Error>>
+        where M: GenerateurMessages + MongoDao
+    {
+        emettre_certificat_maitredescles(middleware, m).await
+    }
+
 }
 
 #[async_trait]
@@ -126,7 +132,6 @@ impl TraiterTransaction for GestionnaireMaitreDesClesPartition {
 
 #[async_trait]
 impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
-
     fn get_nom_domaine(&self) -> String { String::from(DOMAINE_NOM) }
 
     fn get_collection_transactions(&self) -> String {
@@ -166,16 +171,19 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
         for sec in [Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure] {
             rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE), exchange: sec.clone() });
             rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_CERTIFICAT_MAITREDESCLES), exchange: sec.clone() });
+            // Commande volatile
+            rk_volatils.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_CERT_MAITREDESCLES), exchange: sec.clone() });
 
+            // Commande sauvegarder cles
             for commande in &commandes {
-                rk_commande_cle.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, commande), exchange: sec.clone()});
+                rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, commande), exchange: sec.clone() });
             }
         }
 
         let mut queues = Vec::new();
 
         // Queue de messages dechiffrage - taches partagees entre toutes les partitions
-        queues.push(QueueType::ExchangeQueue (
+        queues.push(QueueType::ExchangeQueue(
             ConfigQueue {
                 nom_queue: NOM_Q_DECHIFFRAGE.into(),
                 routing_keys: rk_dechiffrage,
@@ -185,7 +193,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
         ));
 
         // Queue commande de sauvegarde de cle
-        queues.push(QueueType::ExchangeQueue (
+        queues.push(QueueType::ExchangeQueue(
             ConfigQueue {
                 nom_queue: self.get_q_sauvegarder_cle(),
                 routing_keys: rk_commande_cle,
@@ -195,7 +203,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
         ));
 
         // Queue volatils
-        queues.push(QueueType::ExchangeQueue (
+        queues.push(QueueType::ExchangeQueue(
             ConfigQueue {
                 nom_queue: self.get_q_volatils().into(),
                 routing_keys: rk_volatils,
@@ -211,7 +219,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
         });
 
         // Queue de transactions
-        queues.push(QueueType::ExchangeQueue (
+        queues.push(QueueType::ExchangeQueue(
             ConfigQueue {
                 nom_queue: self.get_q_transactions(),
                 routing_keys: rk_transactions,
@@ -221,7 +229,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
         ));
 
         // Queue de triggers
-        queues.push(QueueType::Triggers (format!("MaitreDesCles.{}", self.fingerprint)));
+        queues.push(QueueType::Triggers(format!("MaitreDesCles.{}", self.fingerprint)));
 
         queues
     }
@@ -556,7 +564,7 @@ async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, gest
     match message.domaine.as_str() {
         DOMAINE_NOM => {
             match message.action.as_str() {
-                REQUETE_CERTIFICAT_MAITREDESCLES => emettre_certificat_maitredescles(middleware, message).await,
+                REQUETE_CERTIFICAT_MAITREDESCLES => requete_certificat_maitredescles(middleware, message).await,
                 REQUETE_DECHIFFRAGE => requete_dechiffrage(middleware, message, gestionnaire).await,
                 _ => {
                     error!("Message requete/action inconnue : '{}'. Message dropped.", message.action);
@@ -571,8 +579,8 @@ async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, gest
     }
 }
 
-async fn emettre_certificat_maitredescles<M>(middleware: &M, m: MessageValideAction)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+async fn requete_certificat_maitredescles<M>(middleware: &M, m: MessageValideAction)
+                                             -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao
 {
     debug!("emettre_certificat_maitredescles: {:?}", &m.message);
@@ -583,6 +591,45 @@ async fn emettre_certificat_maitredescles<M>(middleware: &M, m: MessageValideAct
 
     let message_reponse = middleware.formatter_reponse(&reponse, None)?;
     Ok(Some(message_reponse))
+}
+
+/// Emet le certificat de maitre des cles
+/// Le message n'a aucun contenu, c'est l'enveloppe qui permet de livrer le certificat
+/// Si message est None, emet sur evenement.MaitreDesCles.certMaitreDesCles
+pub async fn emettre_certificat_maitredescles<M>(middleware: &M, m: Option<MessageValideAction>)
+    -> Result<(), Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao
+{
+    debug!("emettre_certificat_maitredescles");
+
+    let reponse = json!({});
+
+    match m {
+        Some(demande) => {
+            match demande.reply_q.as_ref() {
+                Some(reply_q) => {
+                    // On utilise une correlation fixe pour permettre au demandeur de recevoir les
+                    // reponses de plusieurs partitions de maitre des cles en meme temps.
+                    let routage = RoutageMessageReponse::new(
+                        reply_q, COMMANDE_CERT_MAITREDESCLES);
+                    let message_reponse = middleware.formatter_reponse(&reponse, None)?;
+                    middleware.repondre(routage, message_reponse).await?;
+                },
+                None => {
+                    debug!("Mauvais message recu pour emettre_certificat (pas de reply_q)");
+                }
+            }
+        },
+        None => {
+            let routage = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_CERT_MAITREDESCLES)
+                .exchanges(vec![Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure])
+                .correlation_id(COMMANDE_CERT_MAITREDESCLES)
+                .build();
+            middleware.emettre_evenement(routage, &reponse).await?;
+        }
+    }
+
+    Ok(())
 }
 
 async fn consommer_transaction<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesPartition) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
@@ -621,6 +668,7 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionna
     match m.action.as_str() {
         // Commandes standard
         COMMANDE_SAUVEGARDER_CLE => commande_sauvegarder_cle(middleware, m, gestionnaire).await,
+        COMMANDE_CERT_MAITREDESCLES => {emettre_certificat_maitredescles(middleware, Some(m)).await?; Ok(None)},
         // Commandes inconnues
         _ => Err(format!("core_backup.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
     }
