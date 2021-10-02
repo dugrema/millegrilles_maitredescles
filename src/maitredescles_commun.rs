@@ -167,3 +167,8 @@ pub struct RequeteSynchroniserCles {
 pub struct ReponseSynchroniserCles {
     pub liste_hachage_bytes: Vec<String>
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReponseConfirmerClesSurCa {
+    pub cles_manquantes: Vec<String>
+}

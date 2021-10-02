@@ -10,7 +10,7 @@ use millegrilles_common_rust::configuration::{charger_configuration, ConfigMessa
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::futures::stream::FuturesUnordered;
 use millegrilles_common_rust::generateur_messages::GenerateurMessages;
-use millegrilles_common_rust::middleware::{EmetteurCertificat};
+use millegrilles_common_rust::middleware::{EmetteurCertificat, Middleware};
 use millegrilles_common_rust::middleware_db::{MiddlewareDb, preparer_middleware_db};
 use millegrilles_common_rust::mongo_dao::MongoDao;
 use millegrilles_common_rust::rabbitmq_dao::{Callback, EventMq, QueueType};
@@ -199,7 +199,7 @@ async fn executer(mut futures: FuturesUnordered<JoinHandle<()>>) {
 
 /// Thread d'entretien
 async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnaires: Vec<&'static TypeGestionnaire>)
-    where M: GenerateurMessages + ValidateurX509 + EmetteurCertificat + MongoDao + VerificateurMessage + ConfigMessages
+    where M: Middleware
 {
     let mut certificat_emis = false;
 
@@ -346,10 +346,16 @@ async fn consommer(
 
                 // Tenter de mapper avec le nom de la Q (ne fonctionnera pas pour la Q de reponse)
                 let sender = match map_senders.get(nom_q) {
-                    Some(sender) => sender,
+                    Some(sender) => {
+                        debug!("domaines_maitredescles.consommer Mapping message avec nom_q: {}", nom_q);
+                        sender
+                    },
                     None => {
                         match map_senders.get(domaine) {
-                            Some(sender) => sender,
+                            Some(sender) => {
+                                debug!("domaines_maitredescles.consommer Mapping message avec domaine: {}", domaine);
+                                sender
+                            },
                             None => {
                                 error!("domaines_maitredescles.consommer Message de queue ({}) et domaine ({}) inconnu, on le drop", nom_q, domaine);
                                 continue  // On skip

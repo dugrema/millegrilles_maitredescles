@@ -9,7 +9,7 @@ use log::{debug, error, info, trace, warn};
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{bson, Bson, doc, Document};
 use millegrilles_common_rust::certificats::{EnveloppeCertificat, EnveloppePrivee, ValidateurX509, VerificateurPermissions};
-use millegrilles_common_rust::chiffrage::{CommandeSauvegarderCle, rechiffrer_asymetrique_multibase};
+use millegrilles_common_rust::chiffrage::{chiffrer_asymetrique, Chiffreur, CommandeSauvegarderCle, dechiffrer_asymetrique, rechiffrer_asymetrique_multibase};
 use millegrilles_common_rust::chrono::Utc;
 use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::constantes::*;
@@ -21,7 +21,7 @@ use millegrilles_common_rust::middleware::{IsConfigurationPki, map_msg_to_bson, 
 use millegrilles_common_rust::mongo_dao::{ChampIndex, convertir_bson_deserializable, convertir_bson_value, convertir_to_bson, filtrer_doc_id, IndexOptions, MongoDao};
 use millegrilles_common_rust::mongodb::Cursor;
 use millegrilles_common_rust::mongodb::options::{FindOptions, UpdateOptions};
-use millegrilles_common_rust::multibase::Base;
+use millegrilles_common_rust::{multibase, multibase::Base};
 use millegrilles_common_rust::multihash::Code;
 use millegrilles_common_rust::openssl::pkey::{PKey, Private};
 use millegrilles_common_rust::openssl::rsa::Rsa;
@@ -98,7 +98,7 @@ impl GestionnaireMaitreDesClesPartition {
     }
 
     pub async fn synchroniser_cles<M>(&self, middleware: &M) -> Result<(), Box<dyn Error>>
-        where M: GenerateurMessages + MongoDao + VerificateurMessage
+        where M: GenerateurMessages + MongoDao + VerificateurMessage + Chiffreur
     {
         synchroniser_cles(middleware, self).await?;
         confirmer_cles_ca(middleware, self).await?;
@@ -944,6 +944,62 @@ fn rechiffrer_cle(cle: &mut TransactionCle, privee: &EnveloppePrivee, certificat
     Ok(())
 }
 
+/// Genere une commande de sauvegarde de cles pour tous les certificats maitre des cles connus
+/// incluant le certificat de millegrille
+fn rechiffrer_pour_maitredescles<M>(middleware: &M, cle: &TransactionCle)
+    -> Result<CommandeSauvegarderCle, Box<dyn Error>>
+    where M: GenerateurMessages + Chiffreur
+{
+    let enveloppe_privee = middleware.get_enveloppe_privee();
+    let fingerprint_local = enveloppe_privee.fingerprint().as_str();
+    let pk_chiffrage = middleware.get_publickeys_chiffrage();
+    let cle_locale = cle.cle.as_str();
+    let cle_privee = enveloppe_privee.cle_privee();
+
+    // Dechiffrer la cle secrete
+    let (_, cle_bytes): (_, Vec<u8>) = multibase::decode(cle_locale)?;
+    let cle_secrete = dechiffrer_asymetrique(cle_privee, cle_bytes.as_slice())?;
+
+    let mut fingerprint_partitions = Vec::new();
+    let mut map_cles = HashMap::new();
+
+    // Inserer la cle locale
+    map_cles.insert(fingerprint_local.to_owned(), cle_locale.to_owned());
+
+    for pk_item in pk_chiffrage {
+        let fp = pk_item.fingerprint;
+        let pk = pk_item.public_key;
+
+        // Conserver liste des partitions
+        if ! pk_item.est_cle_millegrille {
+            fingerprint_partitions.push(fp.clone());
+        }
+
+        // Rechiffrer cle
+        if fp.as_str() != fingerprint_local {
+            match chiffrer_asymetrique(&pk, &cle_secrete) {
+                Ok(cle_rechiffree) => {
+                    let cle_mb = multibase::encode(Base::Base64, cle_rechiffree);
+                    map_cles.insert(fp, cle_mb);
+                },
+                Err(e) => error!("Erreur rechiffrage cle : {:?}", e)
+            }
+        }
+    }
+
+    Ok(CommandeSauvegarderCle {
+        cles: map_cles,
+        domaine: cle.domaine.to_owned(),
+        partition: cle.partition.to_owned(),
+        format: cle.format.clone(),
+        hachage_bytes: cle.hachage_bytes.to_owned(),
+        identificateurs_document: cle.identificateurs_document.to_owned(),
+        iv: cle.iv.to_owned(),
+        tag: cle.tag.to_owned(),
+        fingerprint_partitions
+    })
+}
+
 fn verifier_autorisation_dechiffrage_specifique(
     certificat_destination: &EnveloppeCertificat, permission: Option<&EnveloppePermission>, cle: &TransactionCle)
     -> Result<bool, Box<dyn Error>>
@@ -1078,7 +1134,7 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
 
 /// S'assurer que le CA a toutes les cles de la partition. Permet aussi de resetter le flag non-dechiffrable.
 async fn confirmer_cles_ca<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition) -> Result<(), Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage
+    where M: GenerateurMessages + MongoDao + VerificateurMessage + Chiffreur
 {
     let batch_size = 50;
 
@@ -1113,6 +1169,8 @@ async fn confirmer_cles_ca<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
         emettre_cles_vers_ca(middleware, gestionnaire, &mut cles).await?;
     }
 
+    debug!("confirmer_cles_ca Fin confirmation cles locales");
+
     Ok(())
 }
 
@@ -1122,12 +1180,12 @@ async fn confirmer_cles_ca<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
 async fn emettre_cles_vers_ca<M>(
     middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition, mut cles: &mut HashMap<String, TransactionCle>)
     -> Result<(), Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage
+    where M: GenerateurMessages + MongoDao + VerificateurMessage + Chiffreur
 {
     let hachage_bytes: Vec<String> = cles.keys().into_iter().map(|h| h.to_owned()).collect();
     debug!("emettre_cles_vers_ca Batch cles {:?}", hachage_bytes);
 
-    let commande = ReponseSynchroniserCles {liste_hachage_bytes: hachage_bytes};
+    let commande = ReponseSynchroniserCles {liste_hachage_bytes: hachage_bytes.clone()};
     let routage = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_CONFIRMER_CLES_SUR_CA)
         .exchanges(vec![Securite::L4Secure])
         .build();
@@ -1137,6 +1195,9 @@ async fn emettre_cles_vers_ca<M>(
             match r {
                 TypeMessage::Valide(reponse) => {
                     debug!("emettre_cles_vers_ca Reponse confirmer cle sur CA : {:?}", reponse);
+                    let reponse_cles_manquantes: ReponseConfirmerClesSurCa = reponse.message.get_msg().map_contenu(None)?;
+                    let cles_manquantes = reponse_cles_manquantes.cles_manquantes;
+                    traiter_cles_manquantes_ca(middleware, gestionnaire, &hachage_bytes, &cles_manquantes).await?;
                 },
                 _ => Err(format!("emettre_cles_vers_ca Recu mauvais type de reponse "))?
             }
@@ -1145,6 +1206,68 @@ async fn emettre_cles_vers_ca<M>(
     }
 
     cles.clear();  // Retirer toutes les cles pour prochaine page
+
+    Ok(())
+}
+
+/// Marque les cles emises comme confirmees par le CA sauf si elles sont dans la liste de cles manquantes.
+async fn traiter_cles_manquantes_ca<M>(
+    middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition, cles_emises: &Vec<String>, cles_manquantes: &Vec<String>
+)
+    -> Result<(), Box<dyn Error>>
+    where M: MongoDao + GenerateurMessages + Chiffreur
+{
+    let collection = middleware.get_collection(gestionnaire.get_collection_cles().as_str())?;
+
+    // Marquer cles emises comme confirmees par CA si pas dans la liste de manquantes
+    {
+        let cles_confirmees: Vec<&String> = cles_emises.iter()
+            .filter(|c| !cles_manquantes.contains(c))
+            .collect();
+        debug!("traiter_cles_manquantes_ca Cles confirmees par le CA: {:?}", cles_confirmees);
+        let filtre_confirmees = doc! {CHAMP_HACHAGE_BYTES: {"$in": cles_confirmees}};
+        let ops = doc! {
+            "$set": {CHAMP_CONFIRMATION_CA: true},
+            "$currentDate": {CHAMP_MODIFICATION: true}
+        };
+        let resultat_confirmees = collection.update_many(filtre_confirmees, ops, None).await?;
+        debug!("traiter_cles_manquantes_ca Resultat maj cles confirmees: {:?}", resultat_confirmees);
+    }
+
+    // Rechiffrer et emettre les cles manquantes.
+    {
+        let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
+            .exchanges(vec![Securite::L4Secure])
+            .build();
+
+        let filtre_manquantes = doc! { CHAMP_HACHAGE_BYTES: {"$in": cles_manquantes} };
+        let mut curseur = collection.find(filtre_manquantes, None).await?;
+        while let Some(d) = curseur.next().await {
+            let commande = match d {
+                Ok(cle) => {
+                    match convertir_bson_deserializable::<TransactionCle>(cle) {
+                        Ok(c) => {
+                            match rechiffrer_pour_maitredescles(middleware, &c) {
+                                Ok(c) => c,
+                                Err(e) => {
+                                    error!("traiter_cles_manquantes_ca Erreur traitement rechiffrage cle : {:?}", e);
+                                    continue
+                                }
+                            }
+                        },
+                        Err(e) => {
+                            warn!("traiter_cles_manquantes_ca Erreur conversion document en cle : {:?}", e);
+                            continue
+                        }
+                    }
+                },
+                Err(e) => Err(format!("maitredescles_partition.traiter_cles_manquantes_ca Erreur lecture curseur : {:?}", e))?
+            };
+
+            debug!("Emettre cles rechiffrees pour CA : {:?}", commande);
+            middleware.transmettre_commande(routage_commande.clone(), &commande, false).await?;
+        }
+    }
 
     Ok(())
 }

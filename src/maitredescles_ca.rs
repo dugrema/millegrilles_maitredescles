@@ -567,11 +567,6 @@ async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValideActio
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct ReponseConfirmerClesSurCa {
-    cles_manquantes: Vec<String>
-}
-
 #[cfg(test)]
 mod test_integration {
     use millegrilles_common_rust::backup::CatalogueHoraire;
