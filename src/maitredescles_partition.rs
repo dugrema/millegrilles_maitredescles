@@ -125,14 +125,17 @@ impl TraiterTransaction for GestionnaireMaitreDesClesPartition {
     async fn appliquer_transaction<M>(&self, middleware: &M, transaction: TransactionImpl) -> Result<Option<MessageMilleGrille>, String>
         where M: ValidateurX509 + GenerateurMessages + MongoDao
     {
-        // aiguillage_transaction(middleware, transaction).await
-        todo!()
+        aiguillage_transaction(middleware, transaction, self).await
     }
 }
 
 #[async_trait]
 impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
     fn get_nom_domaine(&self) -> String { String::from(DOMAINE_NOM) }
+
+    fn get_partition(&self) -> Option<String> {
+        Some(self.fingerprint.clone())
+    }
 
     fn get_collection_transactions(&self) -> String {
         // Utiliser le nom de la partition tronquee - evite que les noms de collections deviennent
