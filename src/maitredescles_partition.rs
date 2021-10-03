@@ -1391,7 +1391,7 @@ mod ut {
         where S: Serialize
     {
         let message_millegrille = MessageMilleGrille::new_signer(
-            enveloppe_privee, contenu_message, Some("domaine"), Some("action"), None, None).expect("mg");
+            enveloppe_privee, contenu_message, Some("domaine"), Some("action"), None::<&str>, None).expect("mg");
         let mut message_serialise = MessageSerialise::from_parsed(message_millegrille).expect("ms");
         message_serialise.certificat = Some(enveloppe_privee.enveloppe.clone());
         let message_valide_action = MessageValideAction::new(
@@ -1487,7 +1487,7 @@ mod ut {
             duree: 5,
         };
         let permission = MessageMilleGrille::new_signer(
-            enveloppe_privee.as_ref(), &contenu_permission, Some("domaine"), Some("action"), None, None).expect("mg");
+            enveloppe_privee.as_ref(), &contenu_permission, Some("domaine"), Some("action"), None::<&str>, None).expect("mg");
 
         // Stub message requete
         let requete = RequeteDechiffrage { liste_hachage_bytes: vec!["DUMMY".into()], permission: Some(permission) };
@@ -1531,7 +1531,13 @@ mod ut {
             duree: 0,
         };
         let permission = MessageMilleGrille::new_signer(
-            enveloppe_privee.as_ref(), &contenu_permission, Some("domaine"), Some("action"), None, None).expect("mg");
+            enveloppe_privee.as_ref(),
+            &contenu_permission,
+            Some("domaine"),
+            Some("action"),
+            None::<&str>,
+            None
+        ).expect("mg");
 
         // Stub message requete
         let requete = RequeteDechiffrage { liste_hachage_bytes: vec!["DUMMY".into()], permission: Some(permission) };
@@ -1768,7 +1774,7 @@ mod test_integration {
                 &contenu,
                 DOMAINE_NOM.into(),
                 REQUETE_DECHIFFRAGE.into(),
-                None,
+                None::<&str>,
                 None
             ).expect("message");
             let mut message = MessageSerialise::from_parsed(message_mg).expect("serialise");

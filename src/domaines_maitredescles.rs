@@ -419,6 +419,7 @@ mod test_integration {
 
     use millegrilles_common_rust::backup::CatalogueHoraire;
     use millegrilles_common_rust::chiffrage::Chiffreur;
+    use millegrilles_common_rust::constantes::COMMANDE_SAUVEGARDER_CLE;
     use millegrilles_common_rust::formatteur_messages::MessageSerialise;
     use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
     use millegrilles_common_rust::middleware::IsConfigurationPki;
@@ -426,7 +427,7 @@ mod test_integration {
     use millegrilles_common_rust::mongo_dao::convertir_to_bson;
     use millegrilles_common_rust::tokio as tokio;
     use millegrilles_common_rust::tokio_stream::StreamExt;
-    use crate::maitredescles_commun::{COMMANDE_SAUVEGARDER_CLE, DOMAINE_NOM};
+    use crate::maitredescles_commun::DOMAINE_NOM;
 
     use crate::test_setup::setup;
 

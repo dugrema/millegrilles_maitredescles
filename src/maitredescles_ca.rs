@@ -617,7 +617,7 @@ mod test_integration {
                 &contenu,
                 DOMAINE_NOM.into(),
                 REQUETE_COMPTER_CLES_NON_DECHIFFRABLES.into(),
-                None,
+                None::<&str>,
                 None
             ).expect("message");
             let mut message = MessageSerialise::from_parsed(message_mg).expect("serialise");
@@ -655,7 +655,7 @@ mod test_integration {
                 &contenu,
                 DOMAINE_NOM.into(),
                 REQUETE_COMPTER_CLES_NON_DECHIFFRABLES.into(),
-                None,
+                None::<&str>,
                 None
             ).expect("message");
             let mut message = MessageSerialise::from_parsed(message_mg).expect("serialise");
@@ -693,7 +693,7 @@ mod test_integration {
                 &contenu,
                 DOMAINE_NOM.into(),
                 REQUETE_COMPTER_CLES_NON_DECHIFFRABLES.into(),
-                None,
+                None::<&str>,
                 None
             ).expect("message");
             let mut message = MessageSerialise::from_parsed(message_mg).expect("serialise");
