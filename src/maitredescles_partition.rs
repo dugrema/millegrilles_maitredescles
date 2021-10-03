@@ -662,7 +662,13 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionna
     // Autorisation : doit etre un message via exchange
     match m.verifier_exchanges(vec!(Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure)) {
         true => Ok(()),
-        false => Err(format!("core_backup.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id)),
+        false => {
+            // Verifier si on a un certificat delegation globale
+            match m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+                true => Ok(()),
+                false => Err(format!("core_backup.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id)),
+            }
+        }
     }?;
 
     match m.action.as_str() {
@@ -1051,7 +1057,7 @@ fn rechiffrer_pour_maitredescles<M>(middleware: &M, cle: &TransactionCle)
         identificateurs_document: cle.identificateurs_document.to_owned(),
         iv: cle.iv.to_owned(),
         tag: cle.tag.to_owned(),
-        fingerprint_partitions
+        fingerprint_partitions: Some(fingerprint_partitions)
     })
 }
 
