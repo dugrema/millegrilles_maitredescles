@@ -544,9 +544,18 @@ async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValideActio
     cles_manquantes.extend(requete.liste_hachage_bytes.clone());
 
     let filtre = doc! [ CHAMP_HACHAGE_BYTES: {"$in": &requete.liste_hachage_bytes } ];
+
+    // Marquer les cles recues comme dechiffrables sur au moins une partition
+    let ops = doc! {
+        "$set": { CHAMP_NON_DECHIFFRABLE: false},
+        "$currentDate": { CHAMP_MODIFICATION: true }
+    };
+    let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
+    let resultat_update = collection.update_many(filtre.clone(), ops, None).await?;
+    debug!("commande_confirmer_cles_sur_ca Resultat update : {:?}", resultat_update);
+
     let projection = doc! { CHAMP_HACHAGE_BYTES: 1 };
     let opts = FindOptions::builder().projection(projection).build();
-    let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
     let mut curseur = collection.find(filtre, opts).await?;
     while let Some(d) = curseur.next().await {
         match d {
