@@ -68,6 +68,10 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesCa {
 
     fn preparer_queues(&self) -> Vec<QueueType> { preparer_queues() }
 
+    fn chiffrer_backup(&self) -> bool {
+        false
+    }
+
     async fn preparer_index_mongodb_custom<M>(&self, middleware: &M) -> Result<(), String> where M: MongoDao {
         preparer_index_mongodb_custom(middleware, NOM_COLLECTION_CLES).await
     }

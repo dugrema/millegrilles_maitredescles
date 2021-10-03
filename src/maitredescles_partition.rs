@@ -158,6 +158,8 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
         format!("MaitreDesCles_{}/triggers", self.fingerprint)
     }
 
+
+
     fn preparer_queues(&self) -> Vec<QueueType> {
         let mut rk_dechiffrage = Vec::new();
         let mut rk_commande_cle = Vec::new();
@@ -232,6 +234,10 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
         queues.push(QueueType::Triggers(format!("MaitreDesCles.{}", self.fingerprint)));
 
         queues
+    }
+
+    fn chiffrer_backup(&self) -> bool {
+        false
     }
 
     async fn preparer_index_mongodb_custom<M>(&self, middleware: &M) -> Result<(), String> where M: MongoDao {
