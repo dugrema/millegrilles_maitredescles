@@ -272,7 +272,13 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionna
     // Autorisation : doit etre un message via exchange
     match m.verifier_exchanges(vec!(Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure)) {
         true => Ok(()),
-        false => Err(format!("core_backup.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id)),
+        false => {
+            // Verifier si on a un certificat delegation globale
+            match m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+                true => Ok(()),
+                false => Err(format!("maitredescles_ca.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id)),
+            }
+        }
     }?;
 
     match m.action.as_str() {

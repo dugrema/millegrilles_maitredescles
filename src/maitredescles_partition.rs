@@ -675,7 +675,7 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionna
             // Verifier si on a un certificat delegation globale
             match m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
                 true => Ok(()),
-                false => Err(format!("core_backup.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id)),
+                false => Err(format!("maitredescles_partition.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id)),
             }
         }
     }?;
