@@ -396,7 +396,7 @@ async fn trouver_cle_rechiffrage<M>(middleware: &M)
             Ok(s) => s,
             Err(e) => Err(format!("trouver_cle_rechiffrage trouver_cle_rechiffrage Erreur conversion nom fichier : {:?}", e))?
         };
-        if fichier_string.contains(".key.") {
+        if fichier_string.contains("key") {
             debug!("trouver_cle_rechiffrage Verifier cle privee : {}", fichier_string);
             let cle_privee = {
                 let mut reader_cle = File_tokio::open(fichier.path()).await?;
