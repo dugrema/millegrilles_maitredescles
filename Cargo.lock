@@ -1328,7 +1328,7 @@ checksum = "308cc39be01b73d0d18f82a0e7b2a3df85245f84af96fdddc5d202d27e47b86a"
 
 [[package]]
 name = "millegrilles_common_rust"
-version = "1.45.0"
+version = "1.46.0"
 dependencies = [
  "async-recursion",
  "async-std",
@@ -1351,6 +1351,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "substring",
  "tempfile",
  "tokio",
  "tokio-amqp",
@@ -2354,6 +2355,15 @@ name = "strsim"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "73473c0e59e6d5812c5dfe2a064a6444949f089e20eec9a2e5506596494e4623"
+
+[[package]]
+name = "substring"
+version = "1.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42ee6433ecef213b2e72f587ef64a2f5943e7cd16fbd82dbe8bc07486c534c86"
+dependencies = [
+ "autocfg",
+]
 
 [[package]]
 name = "subtle"

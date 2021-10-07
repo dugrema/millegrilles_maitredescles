@@ -6,6 +6,7 @@ use log::debug;
 use millegrilles_common_rust::certificats::EnveloppeCertificat;
 use millegrilles_common_rust::chiffrage::{CommandeSauvegarderCle, FormatChiffrage};
 use millegrilles_common_rust::constantes::*;
+use millegrilles_common_rust::messages_generiques::MessageCedule;
 use millegrilles_common_rust::middleware::Middleware;
 use millegrilles_common_rust::mongo_dao::{ChampIndex, IndexOptions, MongoDao};
 use millegrilles_common_rust::recepteur_messages::MessageValideAction;
@@ -87,7 +88,7 @@ pub async fn entretien<M>(_middleware: Arc<M>)
     }
 }
 
-pub async fn traiter_cedule<M>(_middleware: &M, _trigger: MessageValideAction) -> Result<(), Box<dyn Error>>
+pub async fn traiter_cedule<M>(_middleware: &M, _trigger: &MessageCedule) -> Result<(), Box<dyn Error>>
 where M: Middleware + 'static {
     // let message = trigger.message;
 
