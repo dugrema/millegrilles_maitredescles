@@ -4,7 +4,7 @@ REPO=docker.maceroc.com
 DOCKERHUB_REPO=dugremat
 NAME=millegrilles_maitredescles
 BRANCH=`git rev-parse --abbrev-ref HEAD`
-ARCH_SUPPORTEES=( x86_64 armv7l aarch64 )
+ARCH_SUPPORTEES=( x86_64 aarch64 )
 BUILD=`cat build.txt`
 
 VERSION=$BRANCH.$BUILD
