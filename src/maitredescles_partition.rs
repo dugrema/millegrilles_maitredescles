@@ -566,7 +566,10 @@ async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, gest
     // Autorisation : On accepte les requetes de tous les echanges
     match message.verifier_exchanges(vec![Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure]) {
         true => Ok(()),
-        false => Err(format!("Trigger cedule autorisation invalide (pas d'un exchange reconnu)")),
+        false => match message.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+            true => Ok(()),
+            false => Err(format!("Trigger cedule autorisation invalide (pas d'un exchange reconnu)"))
+        },
     }?;
 
     // Note : aucune verification d'autorisation - tant que le certificat est valide (deja verifie), on repond.
@@ -795,7 +798,7 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + VerificateurMessage,
 {
-    debug!("requete_dechiffrage Consommer commande : {:?}", & m.message);
+    debug!("requete_dechiffrage Consommer requete : {:?}", & m.message);
     let requete: RequeteDechiffrage = m.message.get_msg().map_contenu(None)?;
     debug!("requete_dechiffrage cle parsed : {:?}", requete);
 
