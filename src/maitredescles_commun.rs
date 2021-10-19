@@ -136,10 +136,10 @@ impl TransactionCle {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PermissionDechiffrage {
-    pub liste_hachage_bytes: Vec<String>,
+    pub permission_hachage_bytes: Vec<String>,
     pub domaines_permis: Option<Vec<String>>,
     pub user_id: Option<String>,
-    pub duree: u32,
+    pub permission_duree: u32,
 }
 
 /// Permission deja validee avec un certificat

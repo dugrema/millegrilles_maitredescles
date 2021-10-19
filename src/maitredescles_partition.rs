@@ -796,7 +796,7 @@ async fn transaction_cle<M, T>(middleware: &M, transaction: T, gestionnaire: &Ge
 
 async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesPartition)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+    where M: GenerateurMessages + MongoDao + VerificateurMessage + ValidateurX509
 {
     debug!("requete_dechiffrage Consommer requete : {:?}", & m.message);
     let requete: RequeteDechiffrage = m.message.get_msg().map_contenu(None)?;
@@ -814,7 +814,7 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
 
     // Verifier si on a une autorisation de dechiffrage global
     let (requete_autorisee_globalement, permission) = verifier_autorisation_dechiffrage_global(
-        middleware, &m, &requete)?;
+        middleware, &m, &requete).await?;
 
     // Rejeter si global false et permission absente
     if ! requete_autorisee_globalement && permission.is_none() {
@@ -930,9 +930,9 @@ async fn preparer_curseur_cles<M>(
 
 /// Verifier si la requete de dechiffrage est valide (autorisee) de maniere globale
 /// Les certificats 4.secure et delegations globales proprietaire donnent acces a toutes les cles
-fn verifier_autorisation_dechiffrage_global<M>(middleware: &M, m: &MessageValideAction, requete: &RequeteDechiffrage)
+async fn verifier_autorisation_dechiffrage_global<M>(middleware: &M, m: &MessageValideAction, requete: &RequeteDechiffrage)
     -> Result<(bool, Option<EnveloppePermission>), Box<dyn Error>>
-    where M: VerificateurMessage
+    where M: VerificateurMessage + ValidateurX509
 {
     // let certificat = match &m.message.certificat {
     //     Some(c) => c.as_ref(),
@@ -960,34 +960,33 @@ fn verifier_autorisation_dechiffrage_global<M>(middleware: &M, m: &MessageValide
     let mut permission: Option<EnveloppePermission> = None;
     if let Some(p) = &requete.permission {
         debug!("verifier_autorisation_dechiffrage_global On a une permission, valider le message {:?}", p);
-        match MessageSerialise::from_parsed(p.to_owned()) {
-            Ok(mut ms) => {
-                match middleware.verifier_message(&mut ms, None) {
-                    Ok(resultat) => {
-                        if resultat.valide() {
-                            match ms.parsed.map_contenu::<PermissionDechiffrage>(None) {
-                                Ok(contenu_permission) => {
-                                    // Verifier la date d'expiration de la permission
-                                    let estampille = &ms.get_entete().estampille.get_datetime().timestamp();
-                                    let duree_validite = contenu_permission.duree as i64;
-                                    let ts_courant = Utc::now().timestamp();
-                                    if estampille + duree_validite > ts_courant {
-                                        debug!("Permission encore valide (duree {}) (verif: {:?}), on va l'utiliser", duree_validite, resultat);
-                                        // Note : conserver permission "localement" pour return false global
-                                        permission = Some(EnveloppePermission {
-                                            enveloppe: ms.certificat.clone().expect("cert"),
-                                            permission: contenu_permission
-                                        });
-                                    }
-                                },
-                                Err(e) => info!("verifier_autorisation_dechiffrage_global Erreur verification permission (1), refuse: {:?}", e)
-                            }
-                        }
-                    },
-                    Err(e) => info!("verifier_autorisation_dechiffrage_global Erreur verification permission (2), refuse: {:?}", e)
+        let mut ms = match MessageSerialise::from_parsed(p.to_owned()) {
+            Ok(mut ms) => Ok(ms),
+            Err(e) => Err(format!("verifier_autorisation_dechiffrage_global Erreur verification permission (2), refuse: {:?}", e))
+        }?;
+
+        // Charger le certificat dans ms
+        let resultat = ms.valider(middleware, None).await?;
+        if ! resultat.valide() {
+            Err(format!("verifier_autorisation_dechiffrage_global Erreur verification certificat permission (1), refuse: certificat invalide"))?
+        }
+
+        match ms.parsed.map_contenu::<PermissionDechiffrage>(None) {
+            Ok(contenu_permission) => {
+                // Verifier la date d'expiration de la permission
+                let estampille = &ms.get_entete().estampille.get_datetime().timestamp();
+                let duree_validite = contenu_permission.permission_duree as i64;
+                let ts_courant = Utc::now().timestamp();
+                if estampille + duree_validite > ts_courant {
+                    debug!("Permission encore valide (duree {}), on va l'utiliser", duree_validite);
+                    // Note : conserver permission "localement" pour return false global
+                    permission = Some(EnveloppePermission {
+                        enveloppe: ms.certificat.clone().expect("cert"),
+                        permission: contenu_permission
+                    });
                 }
             },
-            Err(e) => info!("verifier_autorisation_dechiffrage_global Erreur verification permission (3), refuse: {:?}", e)
+            Err(e) => info!("verifier_autorisation_dechiffrage_global Erreur verification permission (1), refuse: {:?}", e)
         }
     }
 
@@ -1091,7 +1090,7 @@ fn verifier_autorisation_dechiffrage_specifique(
         // S'assurer que le hachage_bytes est inclus dans la permission
         let regles_permission = &p.permission;
 
-        let hachage_bytes_permis = &regles_permission.liste_hachage_bytes;
+        let hachage_bytes_permis = &regles_permission.permission_hachage_bytes;
         let hachage_bytes_demande = &cle.hachage_bytes;
         if ! hachage_bytes_permis.contains(hachage_bytes_demande) {
             debug!("verifier_autorisation_dechiffrage_specifique Hachage_bytes {} n'est pas inclus dans la permission", hachage_bytes_demande);
@@ -1357,11 +1356,13 @@ mod ut {
     use millegrilles_common_rust::chiffrage::FormatChiffrage;
     use millegrilles_common_rust::configuration::{charger_configuration, ConfigMessages, ConfigurationMessages};
     use millegrilles_common_rust::formatteur_messages::{MessageMilleGrille, MessageSerialise};
+    use millegrilles_common_rust::openssl::x509::store::X509Store;
+    use millegrilles_common_rust::openssl::x509::X509;
     use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
     use millegrilles_common_rust::recepteur_messages::MessageValideAction;
     use millegrilles_common_rust::serde_json::Value;
     use millegrilles_common_rust::verificateur::{ResultatValidation, ValidationOptions, VerificateurMessage};
-
+    use millegrilles_common_rust::tokio as tokio;
     use crate::test_setup::setup;
 
     use super::*;
@@ -1390,6 +1391,44 @@ mod ut {
             Ok(self.resultat.clone())
         }
     }
+    #[async_trait]
+    impl ValidateurX509 for MiddlewareStub {
+        async fn charger_enveloppe(&self, chaine_pem: &Vec<String>, fingerprint: Option<&str>) -> Result<Arc<EnveloppeCertificat>, String> {
+            todo!()
+        }
+
+        async fn cacher(&self, certificat: EnveloppeCertificat) -> Arc<EnveloppeCertificat> {
+            todo!()
+        }
+
+        async fn get_certificat(&self, fingerprint: &str) -> Option<Arc<EnveloppeCertificat>> {
+            todo!()
+        }
+
+        fn idmg(&self) -> &str {
+            todo!()
+        }
+
+        fn ca_pem(&self) -> &str {
+            todo!()
+        }
+
+        fn ca_cert(&self) -> &X509 {
+            todo!()
+        }
+
+        fn store(&self) -> &X509Store {
+            todo!()
+        }
+
+        fn store_notime(&self) -> &X509Store {
+            todo!()
+        }
+
+        async fn entretien_validateur(&self) {
+            todo!()
+        }
+    }
 
     fn prep_mva<S>(enveloppe_privee: &EnveloppePrivee, contenu_message: &S) -> MessageValideAction
         where S: Serialize
@@ -1404,8 +1443,8 @@ mod ut {
         message_valide_action
     }
 
-    #[test]
-    fn acces_global_ok() {
+    #[tokio::test]
+    async fn acces_global_ok() {
         setup("acces_global_ok");
 
         let config = init();
@@ -1413,7 +1452,7 @@ mod ut {
 
         // Stub middleware, resultat verification
         let middleware = MiddlewareStub{
-            resultat: ResultatValidation {signature_valide: true, hachage_valide: Some(true), certificat_valide: true},
+            resultat: ResultatValidation {signature_valide: true, hachage_valide: Some(true), certificat_valide: true, regles_valides: true},
             certificat: None,
         };
 
@@ -1423,7 +1462,7 @@ mod ut {
 
         // verifier_autorisation_dechiffrage_global<M>(middleware: &M, m: &MessageValideAction, requete: &RequeteDechiffrage)
         let (global_permis, permission) = verifier_autorisation_dechiffrage_global(
-            &middleware, &message_valide_action, &requete).expect("resultat");
+            &middleware, &message_valide_action, &requete).await.expect("resultat");
 
         debug!("acces_global_ok Resultat global_permis: {}, permission {:?}", global_permis, permission);
 
@@ -1431,8 +1470,8 @@ mod ut {
         assert_eq!(true, permission.is_none());
     }
 
-    #[test]
-    fn acces_global_refuse() {
+    #[tokio::test]
+    async fn acces_global_refuse() {
         setup("acces_global_refuse");
 
         let path_cert = PathBuf::from("/home/mathieu/mgdev/certs/pki.nginx.cert");
@@ -1445,7 +1484,7 @@ mod ut {
 
         // Stub middleware, resultat verification
         let middleware = MiddlewareStub{
-            resultat: ResultatValidation {signature_valide: true, hachage_valide: Some(true), certificat_valide: true},
+            resultat: ResultatValidation {signature_valide: true, hachage_valide: Some(true), certificat_valide: true, regles_valides: true},
             certificat: None
         };
 
@@ -1457,7 +1496,7 @@ mod ut {
 
         // verifier_autorisation_dechiffrage_global<M>(middleware: &M, m: &MessageValideAction, requete: &RequeteDechiffrage)
         let (global_permis, permission) = verifier_autorisation_dechiffrage_global(
-            &middleware, &message_valide_action, &requete).expect("resultat");
+            &middleware, &message_valide_action, &requete).await.expect("resultat");
 
         debug!("acces_global_ok Resultat global_permis: {}, permission {:?}", global_permis, permission);
 
@@ -1465,8 +1504,8 @@ mod ut {
         assert_eq!(true, permission.is_none());
     }
 
-    #[test]
-    fn permission_globale_ok() {
+    #[tokio::test]
+    async fn permission_globale_ok() {
         setup("acces_global_ok");
 
         let path_cert = PathBuf::from("/home/mathieu/mgdev/certs/pki.nginx.cert");
@@ -1479,16 +1518,16 @@ mod ut {
 
         // Stub middleware, resultat verification
         let middleware = MiddlewareStub{
-            resultat: ResultatValidation {signature_valide: true, hachage_valide: Some(true), certificat_valide: true},
+            resultat: ResultatValidation {signature_valide: true, hachage_valide: Some(true), certificat_valide: true, regles_valides: true},
             certificat: Some(enveloppe_privee.enveloppe.clone())  // Injecter cert 4.secure
         };
 
         // Creer permission
         let contenu_permission = PermissionDechiffrage {
-            liste_hachage_bytes: vec!["DUMMY".into()],
+            permission_hachage_bytes: vec!["DUMMY".into()],
             domaines_permis: None,
             user_id: None,
-            duree: 5,
+            permission_duree: 5,
         };
         let permission = MessageMilleGrille::new_signer(
             enveloppe_privee.as_ref(), &contenu_permission, Some("domaine"), Some("action"), None::<&str>, None).expect("mg");
@@ -1501,7 +1540,7 @@ mod ut {
 
         // verifier_autorisation_dechiffrage_global<M>(middleware: &M, m: &MessageValideAction, requete: &RequeteDechiffrage)
         let (global_permis, permission) = verifier_autorisation_dechiffrage_global(
-            &middleware, &message_valide_action, &requete).expect("resultat");
+            &middleware, &message_valide_action, &requete).await.expect("resultat");
 
         debug!("acces_global_ok Resultat global_permis: {}, permission {:?}", global_permis, permission);
 
@@ -1509,8 +1548,8 @@ mod ut {
         assert_eq!(true, permission.is_some());
     }
 
-    #[test]
-    fn permission_expiree() {
+    #[tokio::test]
+    async fn permission_expiree() {
         setup("permission_expiree");
 
         let path_cert = PathBuf::from("/home/mathieu/mgdev/certs/pki.nginx.cert");
@@ -1523,16 +1562,16 @@ mod ut {
 
         // Stub middleware, resultat verification
         let middleware = MiddlewareStub{
-            resultat: ResultatValidation {signature_valide: true, hachage_valide: Some(true), certificat_valide: true},
+            resultat: ResultatValidation {signature_valide: true, hachage_valide: Some(true), certificat_valide: true, regles_valides: true},
             certificat: Some(enveloppe_privee.enveloppe.clone())  // Injecter cert 4.secure
         };
 
         // Creer permission
         let contenu_permission = PermissionDechiffrage {
-            liste_hachage_bytes: vec!["DUMMY".into()],
+            permission_hachage_bytes: vec!["DUMMY".into()],
             domaines_permis: None,
             user_id: None,
-            duree: 0,
+            permission_duree: 0,
         };
         let permission = MessageMilleGrille::new_signer(
             enveloppe_privee.as_ref(),
@@ -1553,7 +1592,7 @@ mod ut {
 
         // verifier_autorisation_dechiffrage_global<M>(middleware: &M, m: &MessageValideAction, requete: &RequeteDechiffrage)
         let (global_permis, permission) = verifier_autorisation_dechiffrage_global(
-            &middleware, &message_valide_action, &requete).expect("resultat");
+            &middleware, &message_valide_action, &requete).await.expect("resultat");
 
         debug!("acces_global_ok Resultat global_permis: {}, permission {:?}", global_permis, permission);
 
@@ -1576,10 +1615,10 @@ mod ut {
 
         // Creer permission
         let contenu_permission = PermissionDechiffrage {
-            liste_hachage_bytes: vec!["DUMMY".into()],
+            permission_hachage_bytes: vec!["DUMMY".into()],
             domaines_permis: None,
             user_id: None,
-            duree: 5,
+            permission_duree: 5,
         };
 
         let enveloppe_permission = EnveloppePermission {
@@ -1621,10 +1660,10 @@ mod ut {
 
         // Creer permission
         let contenu_permission = PermissionDechiffrage {
-            liste_hachage_bytes: vec!["DUMMY".into()],
+            permission_hachage_bytes: vec!["DUMMY".into()],
             domaines_permis: Some(vec!["DomaineTest".into()]),
             user_id: None,
-            duree: 5,
+            permission_duree: 5,
         };
 
         let enveloppe_permission = EnveloppePermission {
@@ -1666,10 +1705,10 @@ mod ut {
 
         // Creer permission
         let contenu_permission = PermissionDechiffrage {
-            liste_hachage_bytes: vec!["DUMMY".into()],
+            permission_hachage_bytes: vec!["DUMMY".into()],
             domaines_permis: Some(vec!["DomaineTest_MAUVAIS".into()]),
             user_id: None,
-            duree: 5,
+            permission_duree: 5,
         };
 
         let enveloppe_permission = EnveloppePermission {
@@ -1711,10 +1750,10 @@ mod ut {
 
         // Creer permission
         let contenu_permission = PermissionDechiffrage {
-            liste_hachage_bytes: vec!["DUMMY".into()],
+            permission_hachage_bytes: vec!["DUMMY".into()],
             domaines_permis: None,
             user_id: Some("dummy_user".into()),
-            duree: 0,
+            permission_duree: 0,
         };
 
         let enveloppe_permission = EnveloppePermission {
