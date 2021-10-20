@@ -990,8 +990,26 @@ async fn verifier_autorisation_dechiffrage_global<M>(middleware: &M, m: &Message
         }
     }
 
-    // Reponse par defaut - acces global refuse, permission OK si presente
-    Ok((false, permission))
+    match permission {
+        Some(p) => {
+            // Verifier si le certificat de permission est de niveau 4.secure
+            if p.enveloppe.verifier_exchanges(vec![Securite::L4Secure]) {
+                debug!("verifier_autorisation_dechiffrage Certificat de niveau L4Securite - toujours autorise");
+                return Ok((true, Some(p)))
+            }
+            // Verifier si le certificat de permission est une delegation globale
+            if p.enveloppe.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+                debug!("verifier_autorisation_dechiffrage Certificat delegation globale proprietaire - toujours autorise");
+                return Ok((true, Some(p)))
+            }
+            // Utiliser regles de la permission
+            Ok((false, Some(p)))
+        },
+        None => Ok((false, None))
+    }
+
+    // // Reponse par defaut - acces global refuse, permission OK si presente
+    // Ok((false, permission))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
