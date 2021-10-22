@@ -1386,7 +1386,7 @@ dependencies = [
 
 [[package]]
 name = "millegrilles_maitredescles"
-version = "1.45.0"
+version = "1.46.0"
 dependencies = [
  "env_logger",
  "log",
