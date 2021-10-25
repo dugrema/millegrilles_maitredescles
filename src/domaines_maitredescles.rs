@@ -376,7 +376,8 @@ async fn consommer(
                 let action = m.action.as_str();
                 let domaine = m.domaine.as_str();
                 let nom_q = m.q.as_str();
-                info!("domaines_maitredescles.consommer: Traiter message valide (action: {}, rk: {}, q: {}): {:?}", action, rk, nom_q, contenu);
+                info!("domaines_maitredescles.consommer Traiter message valide (action: {}, rk: {}, q: {})", action, rk, nom_q);
+                debug!("domaines_maitredescles.consommer contenu : {:?}", contenu);
 
                 // Tenter de mapper avec le nom de la Q (ne fonctionnera pas pour la Q de reponse)
                 let sender = match map_senders.get(nom_q) {
