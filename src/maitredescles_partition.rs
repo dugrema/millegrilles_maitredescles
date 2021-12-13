@@ -563,14 +563,18 @@ async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, gest
 {
     debug!("Consommer requete : {:?}", &message.message);
 
-    // Autorisation : On accepte les requetes de tous les echanges
-    match message.verifier_exchanges(vec![Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure]) {
-        true => Ok(()),
-        false => match message.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
-            true => Ok(()),
-            false => Err(format!("Trigger cedule autorisation invalide (pas d'un exchange reconnu)"))
-        },
-    }?;
+    let user_id = message.get_user_id();
+    let role_prive = message.verifier_roles(vec![RolesCertificats::ComptePrive]);
+
+    if role_prive == true && user_id.is_some() {
+        // OK
+    } else if message.verifier_exchanges(vec![Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure]) {
+        // Autorisation : On accepte les requetes de tous les echanges
+    } else if message.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+        // Delegation globale
+    } else {
+        Err(format!("Autorisation requete invalide, acces refuse"))?
+    }
 
     // Note : aucune verification d'autorisation - tant que le certificat est valide (deja verifie), on repond.
 
@@ -672,17 +676,18 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionna
 {
     debug!("consommer_commande : {:?}", &m.message);
 
-    // Autorisation : doit etre un message via exchange
-    match m.verifier_exchanges(vec!(Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure)) {
-        true => Ok(()),
-        false => {
-            // Verifier si on a un certificat delegation globale
-            match m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
-                true => Ok(()),
-                false => Err(format!("maitredescles_partition.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id)),
-            }
-        }
-    }?;
+    let user_id = m.get_user_id();
+    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+
+    if role_prive == true && user_id.is_some() {
+        // OK
+    } else if m.verifier_exchanges(vec![Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure]) {
+        // Autorisation : On accepte les requetes de tous les echanges
+    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+        // Delegation globale
+    } else {
+        Err(format!("Autorisation commande invalide, acces refuse"))?
+    }
 
     match m.action.as_str() {
         // Commandes standard

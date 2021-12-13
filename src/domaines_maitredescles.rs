@@ -434,50 +434,50 @@ mod test_integration {
 
     use super::*;
 
-    #[tokio::test]
-    async fn test_sauvegarder_cle() {
-        setup("test_sauvegarder_cle");
-        let gestionnaires = charger_gestionnaires(Some(true), false);
-        let (mut futures, middleware) = build(gestionnaires).await;
-
-        let fingerprint_cert = middleware.get_enveloppe_privee();
-        let fingerprint = fingerprint_cert.fingerprint().to_owned();
-
-        futures.push(tokio::spawn(async move {
-
-            tokio::time::sleep(tokio::time::Duration::new(4, 0)).await;
-
-            // S'assurer d'avoir recu le cert de chiffrage
-            middleware.charger_certificats_chiffrage().await.expect("certs");
-
-            let input = b"Allo, le test";
-            let mut output = [0u8; 13];
-
-            let mut cipher = middleware.get_cipher().expect("cipher");
-            let output_size = cipher.update(input, &mut output).expect("update");
-            let mut output_final = [0u8; 10];
-            let output_final_size = cipher.finalize(&mut output_final).expect("final");
-            let cipher_keys = cipher.get_cipher_keys().expect("keys");
-
-            let mut doc_map = HashMap::new();
-            doc_map.insert(String::from("test"), String::from("true"));
-            let commande = cipher_keys.get_commande_sauvegarder_cles(
-                "Test", None, doc_map);
-
-            debug!("Commande sauvegarder cles : {:?}", commande);
-
-            let routage = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
-                .partition(fingerprint)
-                .build();
-
-            let reponse = middleware.transmettre_commande(routage, &commande, true).await.expect("commande");
-            debug!("Reponse commande cle : {:?}", reponse);
-
-            debug!("Sleep 2 secondes pour attendre fin traitements");
-            tokio::time::sleep(tokio::time::Duration::new(2, 0)).await;
-
-        }));
-        // Execution async du test
-        futures.next().await.expect("resultat").expect("ok");
-    }
+    // #[tokio::test]
+    // async fn test_sauvegarder_cle() {
+    //     setup("test_sauvegarder_cle");
+    //     let gestionnaires = charger_gestionnaires(Some(true), false);
+    //     let (mut futures, middleware) = build(gestionnaires).await;
+    //
+    //     let fingerprint_cert = middleware.get_enveloppe_privee();
+    //     let fingerprint = fingerprint_cert.fingerprint().to_owned();
+    //
+    //     futures.push(tokio::spawn(async move {
+    //
+    //         tokio::time::sleep(tokio::time::Duration::new(4, 0)).await;
+    //
+    //         // S'assurer d'avoir recu le cert de chiffrage
+    //         middleware.charger_certificats_chiffrage().await.expect("certs");
+    //
+    //         let input = b"Allo, le test";
+    //         let mut output = [0u8; 13];
+    //
+    //         let mut cipher = middleware.get_cipher().expect("cipher");
+    //         let output_size = cipher.update(input, &mut output).expect("update");
+    //         let mut output_final = [0u8; 10];
+    //         let output_final_size = cipher.finalize(&mut output_final).expect("final");
+    //         let cipher_keys = cipher.get_cipher_keys().expect("keys");
+    //
+    //         let mut doc_map = HashMap::new();
+    //         doc_map.insert(String::from("test"), String::from("true"));
+    //         let commande = cipher_keys.get_commande_sauvegarder_cles(
+    //             "Test", None, doc_map);
+    //
+    //         debug!("Commande sauvegarder cles : {:?}", commande);
+    //
+    //         let routage = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
+    //             .partition(fingerprint)
+    //             .build();
+    //
+    //         let reponse = middleware.transmettre_commande(routage, &commande, true).await.expect("commande");
+    //         debug!("Reponse commande cle : {:?}", reponse);
+    //
+    //         debug!("Sleep 2 secondes pour attendre fin traitements");
+    //         tokio::time::sleep(tokio::time::Duration::new(2, 0)).await;
+    //
+    //     }));
+    //     // Execution async du test
+    //     futures.next().await.expect("resultat").expect("ok");
+    // }
 }
