@@ -139,6 +139,7 @@ async fn build(gestionnaires: Vec<&'static TypeGestionnaire>) -> (FuturesUnorder
     let (
         middleware,
         rx_messages_verifies,
+        rx_messages_verif_reply,
         rx_triggers,
         future_recevoir_messages
     ) = preparer_middleware_db(queues, listeners);
@@ -173,6 +174,9 @@ async fn build(gestionnaires: Vec<&'static TypeGestionnaire>) -> (FuturesUnorder
         // Creer consommateurs MQ globaux pour rediriger messages recus vers Q internes appropriees
         futures.push(spawn(
             consommer(middleware.clone(), rx_messages_verifies, map_senders.clone())
+        ));
+        futures.push(spawn(
+            consommer(middleware.clone(), rx_messages_verif_reply, map_senders.clone())
         ));
         futures.push(spawn(
             consommer(middleware.clone(), rx_triggers, map_senders.clone())
