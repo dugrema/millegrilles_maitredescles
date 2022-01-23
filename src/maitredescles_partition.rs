@@ -9,7 +9,9 @@ use millegrilles_common_rust::{multibase, multibase::Base};
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{doc, Document};
 use millegrilles_common_rust::certificats::{EnveloppeCertificat, EnveloppePrivee, ValidateurX509, VerificateurPermissions};
-use millegrilles_common_rust::chiffrage::{chiffrer_asymetrique, Chiffreur, CommandeSauvegarderCle, dechiffrer_asymetrique, rechiffrer_asymetrique_multibase};
+use millegrilles_common_rust::chiffrage::{Chiffreur, ChiffreurMgs3, CommandeSauvegarderCle, rechiffrer_asymetrique_multibase};
+use millegrilles_common_rust::chiffrage_chacha20poly1305::{CipherMgs3, Mgs3CipherKeys};
+// use millegrilles_common_rust::chiffrage_ed25519::{chiffrer_asymmetrique_ed25519, dechiffrer_asymmetrique_ed25519};
 use millegrilles_common_rust::chrono::Utc;
 use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::constantes::*;
@@ -99,7 +101,7 @@ impl GestionnaireMaitreDesClesPartition {
 
     /// Verifie si le CA a des cles qui ne sont pas connues localement
     pub async fn synchroniser_cles<M>(&self, middleware: &M) -> Result<(), Box<dyn Error>>
-        where M: GenerateurMessages + MongoDao + VerificateurMessage + Chiffreur
+        where M: GenerateurMessages + MongoDao + VerificateurMessage + Chiffreur<CipherMgs3, Mgs3CipherKeys>
     {
         synchroniser_cles(middleware, self).await?;
         Ok(())
@@ -107,7 +109,7 @@ impl GestionnaireMaitreDesClesPartition {
 
     /// S'assure que le CA a toutes les cles presentes dans la partition
     pub async fn confirmer_cles_ca<M>(&self, middleware: &M) -> Result<(), Box<dyn Error>>
-        where M: GenerateurMessages + MongoDao + VerificateurMessage + Chiffreur
+        where M: GenerateurMessages + MongoDao + VerificateurMessage + Chiffreur<CipherMgs3, Mgs3CipherKeys>
     {
         confirmer_cles_ca(middleware, self).await?;
         Ok(())
@@ -1044,7 +1046,7 @@ fn rechiffrer_cle(cle: &mut TransactionCle, privee: &EnveloppePrivee, certificat
 /// incluant le certificat de millegrille
 fn rechiffrer_pour_maitredescles<M>(middleware: &M, cle: &TransactionCle)
     -> Result<CommandeSauvegarderCle, Box<dyn Error>>
-    where M: GenerateurMessages + Chiffreur
+    where M: GenerateurMessages + Chiffreur<CipherMgs3, Mgs3CipherKeys>
 {
     let enveloppe_privee = middleware.get_enveloppe_privee();
     let fingerprint_local = enveloppe_privee.fingerprint().as_str();
@@ -1053,8 +1055,8 @@ fn rechiffrer_pour_maitredescles<M>(middleware: &M, cle: &TransactionCle)
     let cle_privee = enveloppe_privee.cle_privee();
 
     // Dechiffrer la cle secrete
-    let (_, cle_bytes): (_, Vec<u8>) = multibase::decode(cle_locale)?;
-    let cle_secrete = dechiffrer_asymetrique(cle_privee, cle_bytes.as_slice())?;
+    // let (_, cle_bytes): (_, Vec<u8>) = multibase::decode(cle_locale)?;
+    // let cle_secrete = dechiffrer_asymetrique(cle_privee, cle_bytes.as_slice())?;
 
     let mut fingerprint_partitions = Vec::new();
     let mut map_cles = HashMap::new();
@@ -1073,10 +1075,11 @@ fn rechiffrer_pour_maitredescles<M>(middleware: &M, cle: &TransactionCle)
 
         // Rechiffrer cle
         if fp.as_str() != fingerprint_local {
-            match chiffrer_asymetrique(&pk, &cle_secrete) {
+            // match chiffrer_asymetrique(&pk, &cle_secrete) {
+            match rechiffrer_asymetrique_multibase(cle_privee, &pk, cle_locale) {
                 Ok(cle_rechiffree) => {
-                    let cle_mb = multibase::encode(Base::Base64, cle_rechiffree);
-                    map_cles.insert(fp, cle_mb);
+                    // let cle_mb = multibase::encode(Base::Base64, cle_rechiffree);
+                    map_cles.insert(fp, cle_rechiffree);
                 },
                 Err(e) => error!("Erreur rechiffrage cle : {:?}", e)
             }
@@ -1230,7 +1233,7 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
 
 /// S'assurer que le CA a toutes les cles de la partition. Permet aussi de resetter le flag non-dechiffrable.
 async fn confirmer_cles_ca<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition) -> Result<(), Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage + Chiffreur
+    where M: GenerateurMessages + MongoDao + VerificateurMessage + Chiffreur<CipherMgs3, Mgs3CipherKeys>
 {
     let batch_size = 50;
 
@@ -1276,7 +1279,7 @@ async fn confirmer_cles_ca<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
 async fn emettre_cles_vers_ca<M>(
     middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition, cles: &mut HashMap<String, TransactionCle>)
     -> Result<(), Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage + Chiffreur
+    where M: GenerateurMessages + MongoDao + VerificateurMessage + Chiffreur<CipherMgs3, Mgs3CipherKeys>
 {
     let hachage_bytes: Vec<String> = cles.keys().into_iter().map(|h| h.to_owned()).collect();
     debug!("emettre_cles_vers_ca Batch cles {:?}", hachage_bytes);
@@ -1311,7 +1314,7 @@ async fn traiter_cles_manquantes_ca<M>(
     middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition, cles_emises: &Vec<String>, cles_manquantes: &Vec<String>
 )
     -> Result<(), Box<dyn Error>>
-    where M: MongoDao + GenerateurMessages + Chiffreur
+    where M: MongoDao + GenerateurMessages + Chiffreur<CipherMgs3, Mgs3CipherKeys>
 {
     let collection = middleware.get_collection(gestionnaire.get_collection_cles().as_str())?;
 
