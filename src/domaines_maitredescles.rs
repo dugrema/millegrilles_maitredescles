@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use log::{debug, error, info, warn};
-use millegrilles_common_rust::certificats::ValidateurX509;
+use millegrilles_common_rust::certificats::{calculer_fingerprint, ValidateurX509};
 use millegrilles_common_rust::chrono as chrono;
 use millegrilles_common_rust::configuration::{charger_configuration, ConfigMessages};
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
@@ -67,8 +67,11 @@ fn charger_gestionnaires(activer_ca: Option<bool>, activer_partition: bool) -> V
     let partition = fp_leaf.fingerprint.as_str();
 
     // Root - dernier certificat
-    let fp_cert_ca = pem_iter.last().expect("ca");
-    let fp_ca = fp_cert_ca.fingerprint.as_str();
+    let validateur = config.get_configuration_pki().get_validateur();
+    let cert_ca = validateur.ca_cert();
+    let fp_ca = calculer_fingerprint(cert_ca).expect("fingerprint cert ca");
+    // let fp_cert_ca = pem_iter.last().expect("ca");
+    // let fp_ca = fp_cert_ca.fingerprint.as_str();
 
     info!("Configuration du maitre des cles avec CA {} et Partition {}", fp_ca, partition);
 
