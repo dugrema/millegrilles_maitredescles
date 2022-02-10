@@ -810,14 +810,29 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
     debug!("requete_dechiffrage cle parsed : {:?}", requete);
 
     let enveloppe_privee = middleware.get_enveloppe_privee();
-    let certificat = match &m.message.certificat {
-        Some(c) => c.as_ref(),
+
+    // Trouver le certificat de rechiffrage
+    let certificat = match requete.certificat_rechiffrage.as_ref() {
+        Some(cr) => {
+            debug!("Utilisation certificat dans la requete de dechiffrage");
+            middleware.charger_enveloppe(cr, None).await?
+        },
         None => {
-            debug!("requete_dechiffrage Requete {:?} de dechiffrage {:?} refusee, certificat manquant", m.correlation_id, &requete.liste_hachage_bytes);
-            let refuse = json!({"ok": false, "err": "Autorisation refusee - certificat manquant ou introuvable", "acces": "0.refuse", "code": 0});
-            return Ok(Some(middleware.formatter_reponse(&refuse, None)?))
+            match &m.message.certificat {
+                Some(c) => c.clone(),
+                None => {
+                    debug!("requete_dechiffrage Requete {:?} de dechiffrage {:?} refusee, certificat manquant", m.correlation_id, &requete.liste_hachage_bytes);
+                    let refuse = json!({"ok": false, "err": "Autorisation refusee - certificat manquant ou introuvable", "acces": "0.refuse", "code": 0});
+                    return Ok(Some(middleware.formatter_reponse(&refuse, None)?))
+                }
+            }
         }
     };
+
+    if ! certificat.presentement_valide {
+        let refuse = json!({"ok": false, "err": "Autorisation refusee - certificat de rechiffrage n'est pas presentement valide", "acces": "0.refuse", "code": 0});
+        return Ok(Some(middleware.formatter_reponse(&refuse, None)?))
+    }
 
     // Verifier si on a une autorisation de dechiffrage global
     let (requete_autorisee_globalement, permission) = verifier_autorisation_dechiffrage_global(
@@ -833,7 +848,7 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
     // Trouver les cles demandees et rechiffrer
     let mut curseur = preparer_curseur_cles(middleware, gestionnaire, &requete, permission.as_ref()).await?;
     let (cles, cles_trouvees) = rechiffrer_cles(
-        middleware, &m, &requete, enveloppe_privee, certificat, requete_autorisee_globalement, permission, &mut curseur).await?;
+        middleware, &m, &requete, enveloppe_privee, certificat.as_ref(), requete_autorisee_globalement, permission, &mut curseur).await?;
 
     // Preparer la reponse
     // Verifier si on a au moins une cle dans la reponse
@@ -1023,6 +1038,7 @@ async fn verifier_autorisation_dechiffrage_global<M>(middleware: &M, m: &Message
 struct RequeteDechiffrage {
     liste_hachage_bytes: Vec<String>,
     permission: Option<MessageMilleGrille>,
+    certificat_rechiffrage: Option<Vec<String>>,
 }
 
 /// Rechiffre une cle secrete
@@ -1483,7 +1499,7 @@ mod ut {
         };
 
         // Stub message requete
-        let requete = RequeteDechiffrage { liste_hachage_bytes: vec!["DUMMY".into()], permission: None };
+        let requete = RequeteDechiffrage { liste_hachage_bytes: vec!["DUMMY".into()], permission: None, certificat_rechiffrage: None };
         let message_valide_action = prep_mva(enveloppe_privee.as_ref(), &requete);
 
         // verifier_autorisation_dechiffrage_global<M>(middleware: &M, m: &MessageValideAction, requete: &RequeteDechiffrage)
@@ -1515,7 +1531,7 @@ mod ut {
         };
 
         // Stub message requete
-        let requete = RequeteDechiffrage { liste_hachage_bytes: vec!["DUMMY".into()], permission: None };
+        let requete = RequeteDechiffrage { liste_hachage_bytes: vec!["DUMMY".into()], permission: None, certificat_rechiffrage: None };
 
         // Preparer message avec certificat "autre" (qui n'a pas exchange 4.secure)
         let mut message_valide_action = prep_mva(enveloppe_privee_autre.as_ref(), &requete);
@@ -1559,7 +1575,7 @@ mod ut {
             enveloppe_privee.as_ref(), &contenu_permission, Some("domaine"), Some("action"), None::<&str>, None).expect("mg");
 
         // Stub message requete
-        let requete = RequeteDechiffrage { liste_hachage_bytes: vec!["DUMMY".into()], permission: Some(permission) };
+        let requete = RequeteDechiffrage { liste_hachage_bytes: vec!["DUMMY".into()], permission: Some(permission), certificat_rechiffrage: None };
 
         // Preparer message avec certificat "autre" (qui n'a pas exchange 4.secure)
         let mut message_valide_action = prep_mva(enveloppe_privee_autre.as_ref(), &requete);
@@ -1609,7 +1625,7 @@ mod ut {
         ).expect("mg");
 
         // Stub message requete
-        let requete = RequeteDechiffrage { liste_hachage_bytes: vec!["DUMMY".into()], permission: Some(permission) };
+        let requete = RequeteDechiffrage { liste_hachage_bytes: vec!["DUMMY".into()], permission: Some(permission), certificat_rechiffrage: None };
 
         // Preparer message avec certificat "autre" (qui n'a pas exchange 4.secure)
         let mut message_valide_action = prep_mva(enveloppe_privee_autre.as_ref(), &requete);
