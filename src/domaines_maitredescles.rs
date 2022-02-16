@@ -139,13 +139,16 @@ async fn build(gestionnaires: Vec<&'static TypeGestionnaire>) -> (FuturesUnorder
     };
 
     // Preparer middleware avec acces direct aux tables Pki (le domaine est local)
-    let (
-        middleware,
-        rx_messages_verifies,
-        rx_messages_verif_reply,
-        rx_triggers,
-        future_recevoir_messages
-    ) = preparer_middleware_db(queues, listeners);
+    // let (
+    //     middleware,
+    //     rx_messages_verifies,
+    //     rx_messages_verif_reply,
+    //     rx_triggers,
+    //     future_recevoir_messages
+    // ) = preparer_middleware_db(queues, listeners);
+
+    let middleware_hooks = preparer_middleware_db(queues, listeners);
+    let middleware = middleware_hooks.middleware;
 
     // Preparer les green threads de tous les domaines/processus
     let mut futures = FuturesUnordered::new();
@@ -176,20 +179,20 @@ async fn build(gestionnaires: Vec<&'static TypeGestionnaire>) -> (FuturesUnorder
 
         // Creer consommateurs MQ globaux pour rediriger messages recus vers Q internes appropriees
         futures.push(spawn(
-            consommer(middleware.clone(), rx_messages_verifies, map_senders.clone())
+            consommer(middleware.clone(), middleware_hooks.rx_messages_verifies, map_senders.clone())
         ));
         futures.push(spawn(
-            consommer(middleware.clone(), rx_messages_verif_reply, map_senders.clone())
+            consommer(middleware.clone(), middleware_hooks.rx_messages_verif_reply, map_senders.clone())
         ));
         futures.push(spawn(
-            consommer(middleware.clone(), rx_triggers, map_senders.clone())
+            consommer(middleware.clone(), middleware_hooks.rx_triggers, map_senders.clone())
         ));
 
         // ** Thread d'entretien **
         futures.push(spawn(entretien(middleware.clone(), rx_entretien, gestionnaires.clone())));
 
         // Thread ecoute et validation des messages
-        for f in future_recevoir_messages {
+        for f in middleware_hooks.futures {
             futures.push(f);
         }
     }
