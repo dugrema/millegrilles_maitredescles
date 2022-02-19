@@ -811,6 +811,13 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
 
     let enveloppe_privee = middleware.get_enveloppe_privee();
 
+    let certificat_requete = m.message.certificat.as_ref();
+    let domaines_permis = if let Some(c) = certificat_requete {
+        c.get_domaines()?
+    } else {
+        Err(format!("maitredescles_partition.certificat_requete Erreur chargement enveloppe du message"))?
+    };
+
     // Trouver le certificat de rechiffrage
     let certificat = match requete.certificat_rechiffrage.as_ref() {
         Some(cr) => {
@@ -839,14 +846,15 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
         middleware, &m, &requete).await?;
 
     // Rejeter si global false et permission absente
-    if ! requete_autorisee_globalement && permission.is_none() {
-        debug!("requete_dechiffrage Requete {:?} de dechiffrage {:?} refusee, permission manquante", m.correlation_id, &requete.liste_hachage_bytes);
+    if ! requete_autorisee_globalement && permission.is_none() && domaines_permis.is_none() {
+        debug!("requete_dechiffrage Requete {:?} de dechiffrage {:?} refusee, permission manquante ou aucuns domaines inclus dans le certificat", m.correlation_id, &requete.liste_hachage_bytes);
         let refuse = json!({"ok": false, "err": "Autorisation refusee - permission manquante", "acces": "0.refuse", "code": 0});
         return Ok(Some(middleware.formatter_reponse(&refuse, None)?))
     }
 
     // Trouver les cles demandees et rechiffrer
-    let mut curseur = preparer_curseur_cles(middleware, gestionnaire, &requete, permission.as_ref()).await?;
+    let mut curseur = preparer_curseur_cles(
+        middleware, gestionnaire, &requete, permission.as_ref(), domaines_permis.as_ref()).await?;
     let (cles, cles_trouvees) = rechiffrer_cles(
         middleware, &m, &requete, enveloppe_privee, certificat.as_ref(), requete_autorisee_globalement, permission, &mut curseur).await?;
 
@@ -906,14 +914,15 @@ async fn rechiffrer_cles<M>(
                 };
                 let hachage_bytes = cle.hachage_bytes.clone();
 
-                // Verifier l'autorisation de dechiffrage pour cette cle
-                let requete_autorisee = match requete_autorisee_globalement {
-                    true => true,
-                    false => verifier_autorisation_dechiffrage_specifique(&certificat, permission.as_ref(), &cle)?
-                };
-                debug!("rechiffrer_cles Autorisation rechiffrage cle {} = {}", hachage_bytes, requete_autorisee);
+                // Changer pour filtre avant coup (preparer_curseur)
+                // // Verifier l'autorisation de dechiffrage pour cette cle
+                // let requete_autorisee = match requete_autorisee_globalement {
+                //     true => true,
+                //     false => verifier_autorisation_dechiffrage_specifique(&certificat, permission.as_ref(), &cle)?
+                // };
+                // debug!("rechiffrer_cles Autorisation rechiffrage cle {} = {}", hachage_bytes, requete_autorisee);
 
-                if requete_autorisee {
+                // if requete_autorisee {
                     match rechiffrer_cle(&mut cle, enveloppe_privee.as_ref(), certificat) {
                         Ok(()) => {
                             cles.insert(hachage_bytes, cle);
@@ -923,7 +932,7 @@ async fn rechiffrer_cles<M>(
                             continue;  // Skip cette cle
                         }
                     }
-                }
+                // }
             },
             Err(e) => error!("rechiffrer_cles: Erreur lecture curseur cle : {:?}", e)
         }
@@ -937,12 +946,20 @@ async fn preparer_curseur_cles<M>(
     middleware: &M,
     gestionnaire: &GestionnaireMaitreDesClesPartition,
     requete: &RequeteDechiffrage,
-    permission: Option<&EnveloppePermission>
+    permission: Option<&EnveloppePermission>,
+    domaines_permis: Option<&Vec<String>>
 )
     -> Result<Cursor<Document>, Box<dyn Error>>
     where M: MongoDao
 {
-    let filtre = doc! {CHAMP_HACHAGE_BYTES: {"$in": &requete.liste_hachage_bytes}};
+    if permission.is_some() {
+        Err(format!("Permission non supporte - FIX ME"))?;
+    }
+
+    let mut filtre = doc! {CHAMP_HACHAGE_BYTES: {"$in": &requete.liste_hachage_bytes}};
+    if let Some(d) = domaines_permis {
+        filtre.insert("domaine", doc!{"$in": d});
+    }
     let nom_collection = gestionnaire.get_collection_cles();
     debug!("requete_dechiffrage Filtre cles sur collection {} : {:?}", nom_collection, filtre);
 
@@ -963,12 +980,6 @@ async fn verifier_autorisation_dechiffrage_global<M>(middleware: &M, m: &Message
     //         return Ok((false, None))
     //     }
     // };
-
-    // Verifier si le certificat est de niveau 4.secure
-    if m.verifier_exchanges(vec![Securite::L4Secure]) {
-        debug!("verifier_autorisation_dechiffrage Certificat de niveau L4Securite - toujours autorise");
-        return Ok((true, None))
-    }
 
     // Verifier si le certificat est une delegation globale
     if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
@@ -1014,11 +1025,11 @@ async fn verifier_autorisation_dechiffrage_global<M>(middleware: &M, m: &Message
 
     match permission {
         Some(p) => {
-            // Verifier si le certificat de permission est de niveau 4.secure
-            if p.enveloppe.verifier_exchanges(vec![Securite::L4Secure]) {
-                debug!("verifier_autorisation_dechiffrage Certificat de niveau L4Securite - toujours autorise");
-                return Ok((true, Some(p)))
-            }
+            // // Verifier si le certificat de permission est de niveau 4.secure
+            // if p.enveloppe.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure]) {
+            //     debug!("verifier_autorisation_dechiffrage Certificat de niveau L4Securite - toujours autorise");
+            //     return Ok((false, Some(p)))
+            // }
             // Verifier si le certificat de permission est une delegation globale
             if p.enveloppe.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
                 debug!("verifier_autorisation_dechiffrage Certificat delegation globale proprietaire - toujours autorise");
