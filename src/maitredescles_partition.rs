@@ -9,8 +9,9 @@ use millegrilles_common_rust::{multibase, multibase::Base};
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{doc, Document};
 use millegrilles_common_rust::certificats::{EnveloppeCertificat, EnveloppePrivee, ValidateurX509, VerificateurPermissions};
-use millegrilles_common_rust::chiffrage::{Chiffreur, ChiffreurMgs3, CommandeSauvegarderCle, rechiffrer_asymetrique_multibase};
+use millegrilles_common_rust::chiffrage::{Chiffreur, ChiffreurMgs3, CommandeSauvegarderCle, dechiffrer_asymetrique_multibase, rechiffrer_asymetrique_multibase};
 use millegrilles_common_rust::chiffrage_chacha20poly1305::{CipherMgs3, Mgs3CipherKeys};
+use millegrilles_common_rust::chiffrage_ed25519::dechiffrer_asymmetrique_ed25519;
 // use millegrilles_common_rust::chiffrage_ed25519::{chiffrer_asymmetrique_ed25519, dechiffrer_asymmetrique_ed25519};
 use millegrilles_common_rust::chrono::Utc;
 use millegrilles_common_rust::configuration::ConfigMessages;
@@ -45,6 +46,7 @@ const NOM_COLLECTION_RECHIFFRAGE: &str = "MaitreDesCles/rechiffrage";
 
 const REQUETE_CERTIFICAT_MAITREDESCLES: &str = COMMANDE_CERT_MAITREDESCLES;
 const REQUETE_DECHIFFRAGE: &str = "dechiffrage";
+const REQUETE_VERIFIER_PREUVE: &str = "verifierPreuve";
 
 const INDEX_RECHIFFRAGE_PK: &str = "fingerprint_pk";
 const INDEX_CONFIRMATION_CA: &str = "confirmation_ca";
@@ -164,8 +166,6 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
         format!("MaitreDesCles_{}/triggers", self.fingerprint)
     }
 
-
-
     fn preparer_queues(&self) -> Vec<QueueType> {
         let mut rk_dechiffrage = Vec::new();
         let mut rk_commande_cle = Vec::new();
@@ -178,7 +178,10 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
 
         for sec in [Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure] {
             rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE), exchange: sec.clone() });
+            rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_VERIFIER_PREUVE), exchange: sec.clone() });
             rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_CERTIFICAT_MAITREDESCLES), exchange: sec.clone() });
+            rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}.{}", DOMAINE_NOM, nom_partition, REQUETE_VERIFIER_PREUVE), exchange: sec.clone() });
+
             // Commande volatile
             rk_volatils.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_CERT_MAITREDESCLES), exchange: sec.clone() });
 
@@ -585,6 +588,7 @@ async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, gest
             match message.action.as_str() {
                 REQUETE_CERTIFICAT_MAITREDESCLES => requete_certificat_maitredescles(middleware, message).await,
                 REQUETE_DECHIFFRAGE => requete_dechiffrage(middleware, message, gestionnaire).await,
+                REQUETE_VERIFIER_PREUVE => requete_verifier_preuve(middleware, message, gestionnaire).await,
                 _ => {
                     error!("Message requete/action inconnue : '{}'. Message dropped.", message.action);
                     Ok(None)
@@ -884,6 +888,75 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
     Ok(Some(reponse))
 }
 
+/// Verifie que la requete contient des cles secretes qui correspondent aux cles stockees.
+/// Confirme que le demandeur a bien en sa possession (via methode tierce) les cles secretes.
+async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesPartition)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + VerificateurMessage + ValidateurX509
+{
+    debug!("requete_verifier_preuve Consommer requete : {:?}", & m.message);
+    let requete: RequeteVerifierPreuve = m.message.get_msg().map_contenu(None)?;
+    debug!("requete_verifier_preuve cle parsed : {:?}", requete);
+
+    let domaines = match m.message.certificat.as_ref() {
+        Some(c) => {
+            match c.get_domaines()? {
+                Some(d) => Ok(d.to_owned()),
+                None => Err(format!("maitredescles_partition.requete_verifier_preuve Aucuns domaines dans certificat demandeur"))
+            }
+        },
+        None => Err(format!("maitredescles_partition.requete_verifier_preuve Erreur chargement certificat"))
+    }?;
+
+    let enveloppe_privee = middleware.get_enveloppe_privee();
+
+    let liste_hachage_bytes: Vec<&str> = requete.cles.keys().map(|k| k.as_str()).collect();
+    let mut liste_verification: HashMap<String, bool> = HashMap::new();
+    for hachage in &liste_hachage_bytes {
+        liste_verification.insert(hachage.to_string(), false);
+    }
+
+    // Trouver les cles en reference
+    let mut filtre = doc! {
+        CHAMP_HACHAGE_BYTES: {"$in": &liste_hachage_bytes},
+        TRANSACTION_CHAMP_DOMAINE: {"$in": &domaines}
+    };
+    let nom_collection = gestionnaire.get_collection_cles();
+    debug!("requete_dechiffrage Filtre cles sur collection {} : {:?}", nom_collection, filtre);
+
+    let collection = middleware.get_collection(nom_collection.as_str())?;
+    let mut curseur = collection.find(filtre, None).await?;
+
+    let cle_privee = enveloppe_privee.cle_privee();
+    while let Some(rc) = curseur.next().await {
+        let doc_cle = rc?;
+        let mut cle_mongo_chiffree: TransactionCle = match convertir_bson_deserializable::<TransactionCle>(doc_cle) {
+            Ok(c) => c,
+            Err(e) => {
+                error!("requete_verifier_preuve Erreur conversion bson vers TransactionCle : {:?}", e);
+                continue
+            }
+        };
+        let cle_mongo_dechiffree = dechiffrer_asymetrique_multibase(cle_privee, cle_mongo_chiffree.cle.as_str())?;
+        let hachage_bytes = cle_mongo_chiffree.hachage_bytes.as_str();
+        if let Some(cle_preuve) = requete.cles.get(hachage_bytes) {
+            let cle_preuve_dechiffree = dechiffrer_asymetrique_multibase(cle_privee, cle_preuve.as_str())?;
+            if cle_mongo_dechiffree == cle_preuve_dechiffree {
+                // La cle preuve correspond a la cle dans la base de donnees, verification OK
+                liste_verification.insert(hachage_bytes.into(), true);
+            }
+        }
+    }
+
+    // Preparer la reponse
+    let reponse_json = json!({
+        "verification": liste_verification,
+    });
+    let reponse = middleware.formatter_reponse(reponse_json, None)?;
+
+    Ok(Some(reponse))
+}
+
 async fn rechiffrer_cles<M>(
     middleware: &M,
     m: &MessageValideAction,
@@ -1050,6 +1123,11 @@ struct RequeteDechiffrage {
     liste_hachage_bytes: Vec<String>,
     permission: Option<MessageMilleGrille>,
     certificat_rechiffrage: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RequeteVerifierPreuve {
+    cles: HashMap<String, String>,
 }
 
 /// Rechiffre une cle secrete

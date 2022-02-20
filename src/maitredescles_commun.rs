@@ -16,6 +16,7 @@ use millegrilles_common_rust::tokio::time::{Duration, sleep};
 pub const DOMAINE_NOM: &str = "MaitreDesCles";
 
 pub const INDEX_CLES_HACHAGE_BYTES: &str = "index_hachage_bytes";
+pub const INDEX_CLES_HACHAGE_BYTES_DOMAINES: &str = "index_hachage_bytes_domaines";
 pub const INDEX_NON_DECHIFFRABLES: &str = "index_non_dechiffrables";
 
 pub const NOM_Q_DECHIFFRAGE: &str = "MaitreDesCles/dechiffrage";
@@ -59,6 +60,21 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M, nom_collection_cle
         nom_collection_cles,
         champs_index_cles_hachage_bytes,
         Some(options_unique_cles_hachage_bytes)
+    ).await?;
+
+    // Index hachage_bytes
+    let options_unique_cles_hachage_bytes_domaines = IndexOptions {
+        nom_index: Some(String::from(INDEX_CLES_HACHAGE_BYTES_DOMAINES)),
+        unique: true
+    };
+    let champs_index_cles_hachage_bytes_domaines = vec!(
+        ChampIndex {nom_champ: String::from(CHAMP_HACHAGE_BYTES), direction: 1},
+        ChampIndex {nom_champ: String::from(TRANSACTION_CHAMP_DOMAINE), direction: 1},
+    );
+    middleware.create_index(
+        nom_collection_cles,
+        champs_index_cles_hachage_bytes_domaines,
+        Some(options_unique_cles_hachage_bytes_domaines)
     ).await?;
 
     // Index cles non dechiffrable
