@@ -186,7 +186,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
     ));
 
     // Queue de triggers pour Pki
-    queues.push(QueueType::Triggers (DOMAINE_NOM.into()));
+    queues.push(QueueType::Triggers (DOMAINE_NOM.into(), Securite::L3Protege));
 
     queues
 }

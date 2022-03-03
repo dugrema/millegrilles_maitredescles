@@ -240,7 +240,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
         ));
 
         // Queue de triggers
-        queues.push(QueueType::Triggers(format!("MaitreDesCles.{}", self.fingerprint)));
+        queues.push(QueueType::Triggers(format!("MaitreDesCles.{}", self.fingerprint), Securite::L3Protege));
 
         queues
     }
@@ -522,7 +522,7 @@ async fn effectuer_migration_cles<M>(middleware: &M, gestionnaire: &Gestionnaire
 
         // Generer nouvelle transaction pour la partition locale
         let nouvelle_transaction = middleware.formatter_message(
-            &doc_cle, Some(DOMAINE_NOM), Some(TRANSACTION_CLE), Some(fingerprint), None)?;
+            &doc_cle, Some(DOMAINE_NOM), Some(TRANSACTION_CLE), Some(fingerprint), None, false)?;
         let ms = MessageSerialise::from_parsed(nouvelle_transaction)?;
         let mva = MessageValideAction::new(
             ms, "local", "local", DOMAINE_NOM, TRANSACTION_CLE, TypeMessageOut::Transaction);
@@ -826,7 +826,7 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
     let certificat = match requete.certificat_rechiffrage.as_ref() {
         Some(cr) => {
             debug!("Utilisation certificat dans la requete de dechiffrage");
-            middleware.charger_enveloppe(cr, None).await?
+            middleware.charger_enveloppe(cr, None, None).await?
         },
         None => {
             match &m.message.certificat {
