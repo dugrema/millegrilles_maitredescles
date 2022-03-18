@@ -26,15 +26,14 @@ use millegrilles_common_rust::verificateur::VerificateurMessage;
 
 use crate::maitredescles_commun::*;
 
-pub const NOM_COLLECTION_CLES: &str = "MaitreDesCles_CA/cles";
-pub const NOM_COLLECTION_TRANSACTIONS: &str = "MaitreDesCles_CA";
+pub const NOM_COLLECTION_CLES: &str = "MaitreDesCles/CA/cles";
+pub const NOM_COLLECTION_TRANSACTIONS: &str = "MaitreDesCles/CA";
 
 // const NOM_Q_VOLATILS_GLOBAL: &str = "MaitreDesCles/volatils";
 
-const NOM_Q_TRANSACTIONS: &str = "MaitreDesCles_CA/transactions";
-const NOM_Q_VOLATILS: &str = "MaitreDesCles_CA/volatils";
-const NOM_Q_TRIGGERS: &str = "MaitreDesCles_CA/triggers";
-// const NOM_Q_PREFIXE: &str = "MaitreDesCles_CA";
+const NOM_Q_TRANSACTIONS: &str = "MaitreDesCles/CA/transactions";
+const NOM_Q_VOLATILS: &str = "MaitreDesCles/CA/volatils";
+const NOM_Q_TRIGGERS: &str = "MaitreDesCles/CA/triggers";
 
 const REQUETE_CLES_NON_DECHIFFRABLES: &str = "clesNonDechiffrables";
 const REQUETE_COMPTER_CLES_NON_DECHIFFRABLES: &str = "compterClesNonDechiffrables";
@@ -168,7 +167,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
     // Queue commande de sauvegarde de cle
     queues.push(QueueType::ExchangeQueue (
         ConfigQueue {
-            nom_queue: String::from("MaitreDesCles_CA/sauvegarder"),
+            nom_queue: String::from(format!("{}/sauvegarder", NOM_COLLECTION_TRANSACTIONS)),
             routing_keys: rk_sauvegarder_cle,
             ttl: None,
             durable: true,

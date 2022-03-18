@@ -64,7 +64,7 @@ fn nom_collection_transactions<S>(fingerprint: S) -> String
 {
     // On utilise les 12 derniers chars du fingerprint (35..48)
     let fp = fingerprint.as_ref();
-    format!("MaitreDesCles_{}", &fp[35..])
+    format!("MaitreDesCles/{}", &fp[35..])
 }
 
 impl GestionnaireMaitreDesClesPartition {
@@ -88,11 +88,11 @@ impl GestionnaireMaitreDesClesPartition {
     // }
 
     fn get_q_sauvegarder_cle(&self) -> String {
-        format!("MaitreDesCles_{}/sauvegarder", self.fingerprint)
+        format!("MaitreDesCles/{}/sauvegarder", self.fingerprint)
     }
 
     fn get_collection_cles(&self) -> String {
-        format!("MaitreDesCles_{}/cles", self.get_partition_tronquee())
+        format!("MaitreDesCles/{}/cles", self.get_partition_tronquee())
     }
 
     pub async fn migration_cles<M>(&self, middleware: &M, gestionnaire: &Self) -> Result<(), Box<dyn Error>>
@@ -145,25 +145,25 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
     fn get_collection_transactions(&self) -> String {
         // Utiliser le nom de la partition tronquee - evite que les noms de collections deviennent
         // trop long (cause un probleme lors de la creation d'index, max 127 chars sur path)
-        format!("MaitreDesCles_{}", self.get_partition_tronquee())
+        format!("MaitreDesCles/{}", self.get_partition_tronquee())
     }
 
     fn get_collections_documents(&self) -> Vec<String> {
         // Utiliser le nom de la partition tronquee - evite que les noms de collections deviennent
         // trop long (cause un probleme lors de la creation d'index, max 127 chars sur path)
-        vec![format!("MaitreDesCles_{}/cles", self.get_partition_tronquee())]
+        vec![format!("MaitreDesCles/{}/cles", self.get_partition_tronquee())]
     }
 
     fn get_q_transactions(&self) -> String {
-        format!("MaitreDesCles_{}/transactions", self.fingerprint)
+        format!("MaitreDesCles/{}/transactions", self.fingerprint)
     }
 
     fn get_q_volatils(&self) -> String {
-        format!("MaitreDesCles_{}/volatils", self.fingerprint)
+        format!("MaitreDesCles/{}/volatils", self.fingerprint)
     }
 
     fn get_q_triggers(&self) -> String {
-        format!("MaitreDesCles_{}/triggers", self.fingerprint)
+        format!("MaitreDesCles/{}/triggers", self.fingerprint)
     }
 
     fn preparer_queues(&self) -> Vec<QueueType> {
