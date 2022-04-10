@@ -10,7 +10,7 @@ use millegrilles_common_rust::chiffrage::CommandeSauvegarderCle;
 use millegrilles_common_rust::chrono::Utc;
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
-use millegrilles_common_rust::formatteur_messages::MessageMilleGrille;
+use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::messages_generiques::MessageCedule;
 use millegrilles_common_rust::middleware::{Middleware, sauvegarder_transaction_recue};
@@ -37,6 +37,8 @@ const NOM_Q_TRIGGERS: &str = "MaitreDesCles/CA/triggers";
 
 const REQUETE_CLES_NON_DECHIFFRABLES: &str = "clesNonDechiffrables";
 const REQUETE_COMPTER_CLES_NON_DECHIFFRABLES: &str = "compterClesNonDechiffrables";
+
+const COMMANDE_RESET_NON_DECHIFFRABLE: &str = "resetNonDechiffrable";
 
 #[derive(Clone, Debug)]
 pub struct GestionnaireMaitreDesClesCa {
@@ -126,7 +128,11 @@ pub fn preparer_queues() -> Vec<QueueType> {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("evenement.{}.{}", DOMAINE_NOM, evnt), exchange: Securite::L3Protege});
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("evenement.{}.{}", DOMAINE_NOM, evnt), exchange: Securite::L4Secure});
     }
-    let commandes_protegees: Vec<&str> = vec![COMMANDE_CONFIRMER_CLES_SUR_CA];
+
+    let commandes_protegees: Vec<&str> = vec![
+        COMMANDE_CONFIRMER_CLES_SUR_CA,
+        COMMANDE_RESET_NON_DECHIFFRABLE,
+    ];
     for cmd in commandes_protegees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L3Protege});
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L4Secure});
@@ -272,35 +278,48 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionna
     let user_id = m.get_user_id();
     let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
 
-    if role_prive == true && user_id.is_some() {
-        // OK
+    if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+        // Delegation proprietaire
+        match m.action.as_str() {
+            // Commandes standard
+            COMMANDE_SAUVEGARDER_CLE => commande_sauvegarder_cle(middleware, m, gestionnaire_ca).await,
+            COMMANDE_RESET_NON_DECHIFFRABLE => commande_reset_non_dechiffrable(middleware, m, gestionnaire_ca).await,
+
+            // Commandes inconnues
+            _ => Err(format!("core_backup.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
+        }
+    } else if m.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure]) {
+        // Exchanges, serveur protege
+        match m.action.as_str() {
+            // Commandes standard
+            COMMANDE_SAUVEGARDER_CLE => commande_sauvegarder_cle(middleware, m, gestionnaire_ca).await,
+            COMMANDE_CONFIRMER_CLES_SUR_CA => commande_confirmer_cles_sur_ca(middleware, m, gestionnaire_ca).await,
+
+            // Commandes inconnues
+            _ => Err(format!("core_backup.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
+        }
     } else if m.verifier_exchanges(vec![Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure]) {
-        // Autorisation : On accepte les requetes de tous les echanges
-    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
-        // Delegation globale
+        // Tous exchanges, serveur
+        match m.action.as_str() {
+            // Commandes standard
+            COMMANDE_SAUVEGARDER_CLE => commande_sauvegarder_cle(middleware, m, gestionnaire_ca).await,
+
+            // Commandes inconnues
+            _ => Err(format!("core_backup.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
+        }
+    } else if role_prive == true && user_id.is_some() {
+        // Usagers prives
+        match m.action.as_str() {
+            // Commandes standard
+            COMMANDE_SAUVEGARDER_CLE => commande_sauvegarder_cle(middleware, m, gestionnaire_ca).await,
+
+            // Commandes inconnues
+            _ => Err(format!("core_backup.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
+        }
     } else {
-        Err(format!("maitredescles_ca.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+        Err(format!("core_backup.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?
     }
 
-    // // Autorisation : doit etre un message via exchange
-    // match m.verifier_exchanges(vec!(Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure)) {
-    //     true => Ok(()),
-    //     false => {
-    //         // Verifier si on a un certificat delegation globale
-    //         match m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
-    //             true => Ok(()),
-    //             false => Err(format!("maitredescles_ca.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id)),
-    //         }
-    //     }
-    // }?;
-
-    match m.action.as_str() {
-        // Commandes standard
-        COMMANDE_SAUVEGARDER_CLE => commande_sauvegarder_cle(middleware, m, gestionnaire_ca).await,
-        COMMANDE_CONFIRMER_CLES_SUR_CA => commande_confirmer_cles_sur_ca(middleware, m, gestionnaire_ca).await,
-        // Commandes inconnues
-        _ => Err(format!("core_backup.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
-    }
 }
 
 async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, gestionnaire_ca: &GestionnaireMaitreDesClesCa)
@@ -359,6 +378,26 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
             .build();
         middleware.soumettre_transaction(routage, &transaction, false).await?;
     }
+
+    Ok(middleware.reponse_ok()?)
+}
+
+/// Reset toutes les cles a non_dechiffrable=true
+async fn commande_reset_non_dechiffrable<M>(middleware: &M, m: MessageValideAction, gestionnaire_ca: &GestionnaireMaitreDesClesCa)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao,
+{
+    debug!("commande_reset_non_dechiffrable Consommer commande : {:?}", & m.message);
+    //let commande: CommandeSauvegarderCle = m.message.get_msg().map_contenu(None)?;
+    //debug!("Commande sauvegarder cle parsed : {:?}", commande);
+
+    let filtre = doc! {"non_dechiffrable": false};
+    let ops = doc! {
+        "$set": {"non_dechiffrable": true},
+        "$currentDate": {CHAMP_MODIFICATION: true},
+    };
+    let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
+    let resultat = collection.update_many(filtre, ops, None).await?;
 
     Ok(middleware.reponse_ok()?)
 }
@@ -442,13 +481,23 @@ async fn requete_cles_non_dechiffrables<M>(middleware: &M, m: MessageValideActio
             Some(l) => l,
             None => 1000 as u64
         };
-        let page = match requete.page {
-            Some(p) => p,
-            None => 0 as u64
-        };
-        let start_index = page * limite_docs;
 
-        let filtre = doc! { CHAMP_NON_DECHIFFRABLE: true };
+        let mut filtre = doc! { CHAMP_NON_DECHIFFRABLE: true };
+
+        match requete.date_creation_min {
+            Some(d) => {
+                filtre.insert(CHAMP_CREATION, doc!{"$gte": d.get_datetime()});
+            },
+            None => ()
+        }
+
+        match requete.exclude_hachage_bytes {
+            Some(e) => {
+                filtre.insert(CHAMP_HACHAGE_BYTES, doc!{"$nin": e});
+            },
+            None => ()
+        }
+
         let hint = Hint::Name(INDEX_NON_DECHIFFRABLES.into());
         let sort_doc = doc! {
             CHAMP_NON_DECHIFFRABLE: 1,
@@ -457,18 +506,27 @@ async fn requete_cles_non_dechiffrables<M>(middleware: &M, m: MessageValideActio
         let opts = FindOptions::builder()
             .hint(hint)
             .sort(sort_doc)
-            .skip(Some(start_index))
             .limit(Some(limite_docs as i64))
             .build();
         let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
-
+        debug!("Requete batch cles filtre : {:?}", filtre);
         collection.find(filtre, opts).await?
     };
 
     let mut cles = Vec::new();
+    let mut date_creation = None;
     while let Some(d) = curseur.next().await {
         match d {
             Ok(doc_cle) => {
+                // Conserver date de creation
+                match doc_cle.get(CHAMP_CREATION) {
+                    Some(c) => {
+                        if let Some(date) = c.as_datetime() {
+                            date_creation = Some(DateEpochSeconds::from_i64(date.timestamp_millis()/1000));
+                        }
+                    },
+                    None => ()
+                };
                 let rep_cle: TransactionCle = convertir_bson_deserializable(doc_cle)?;
                 cles.push(rep_cle);
             },
@@ -476,14 +534,16 @@ async fn requete_cles_non_dechiffrables<M>(middleware: &M, m: MessageValideActio
         }
     }
 
-    let reponse = json!({ "cles": cles });
+    let reponse = json!({ "cles": cles, "date_creation_max": date_creation.as_ref() });
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct RequeteClesNonDechiffrable {
     limite: Option<u64>,
-    page: Option<u64>,
+    // page: Option<u64>,
+    date_creation_min: Option<DateEpochSeconds>,
+    exclude_hachage_bytes: Option<Vec<String>>
 }
 
 async fn requete_synchronizer_cles<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesCa)
