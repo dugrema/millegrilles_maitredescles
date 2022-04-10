@@ -123,6 +123,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
     }
     let evenements_proteges: Vec<&str> = vec![
         EVENEMENT_CLES_MANQUANTES_PARTITION,
+        EVENEMENT_CLE_RECUE_PARTITION,
     ];
     for evnt in evenements_proteges {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("evenement.{}.{}", DOMAINE_NOM, evnt), exchange: Securite::L3Protege});
@@ -239,10 +240,8 @@ where
     }?;
 
     match m.action.as_str() {
-        EVENEMENT_CLES_MANQUANTES_PARTITION => {
-            evenement_cle_manquante(middleware, &m).await?;
-            Ok(None)
-        },
+        EVENEMENT_CLES_MANQUANTES_PARTITION => evenement_cle_manquante(middleware, &m).await,
+        EVENEMENT_CLE_RECUE_PARTITION => evenement_cle_recue_partition(middleware, &m).await,
         _ => Err(format!("maitredescles_ca.consommer_transaction: Mauvais type d'action pour une transaction : {}", m.action))?,
     }
 }
@@ -597,7 +596,7 @@ async fn requete_synchronizer_cles<M>(middleware: &M, m: MessageValideAction, ge
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
 }
 
-async fn evenement_cle_manquante<M>(middleware: &M, m: &MessageValideAction) -> Result<(), Box<dyn Error>>
+async fn evenement_cle_manquante<M>(middleware: &M, m: &MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: ValidateurX509 + GenerateurMessages + MongoDao,
 {
     debug!("evenement_cle_manquante Marquer cles comme non dechiffrables {:?}", &m.message);
@@ -612,7 +611,26 @@ async fn evenement_cle_manquante<M>(middleware: &M, m: &MessageValideAction) -> 
     let resultat_update = collection.update_many(filtre, ops, None).await?;
     debug!("evenement_cle_manquante Resultat update : {:?}", resultat_update);
 
-    Ok(())
+    Ok(None)
+}
+
+/// Marquer les cles existantes comme recues (implique dechiffrable) par au moins une partition
+async fn evenement_cle_recue_partition<M>(middleware: &M, m: &MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: ValidateurX509 + GenerateurMessages + MongoDao,
+{
+    debug!("evenement_cle_recue_partition Marquer cle comme confirmee (dechiffrable) par la partition {:?}", &m.message);
+    let event_cles_recues: ReponseSynchroniserCles = m.message.get_msg().map_contenu(None)?;
+
+    let filtre = doc! { CHAMP_HACHAGE_BYTES: { "$in": event_cles_recues.liste_hachage_bytes }};
+    let ops = doc! {
+        "$set": { CHAMP_NON_DECHIFFRABLE: false },
+        "$currentDate": { CHAMP_MODIFICATION: true },
+    };
+    let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
+    let resultat_update = collection.update_many(filtre, ops, None).await?;
+    debug!("evenement_cle_recue_partition Resultat update : {:?}", resultat_update);
+
+    Ok(None)
 }
 
 async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesCa)

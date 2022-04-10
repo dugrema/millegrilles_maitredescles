@@ -30,6 +30,7 @@ pub const TRANSACTION_CLE: &str = "cle";
 
 // pub const EVENEMENT_RESET_CLES_NON_DECHIFFRABLES: &str = "resetClesNonDechiffrables";
 pub const EVENEMENT_CLES_MANQUANTES_PARTITION: &str = "clesManquantesPartition";
+pub const EVENEMENT_CLE_RECUE_PARTITION: &str = "cleRecuePartition";
 
 pub const CHAMP_HACHAGE_BYTES: &str = "hachage_bytes";
 pub const CHAMP_LISTE_HACHAGE_BYTES: &str = "liste_hachage_bytes";
@@ -184,4 +185,9 @@ pub struct ReponseSynchroniserCles {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReponseConfirmerClesSurCa {
     pub cles_manquantes: Vec<String>
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CommandeRechiffrerBatch {
+    pub cles: Vec<TransactionCle>
 }

@@ -16,6 +16,7 @@ use millegrilles_common_rust::chiffrage_ed25519::dechiffrer_asymmetrique_ed25519
 use millegrilles_common_rust::chrono::Utc;
 use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::constantes::*;
+use millegrilles_common_rust::constantes::Securite::L3Protege;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::formatteur_messages::{MessageMilleGrille, MessageSerialise};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
@@ -47,6 +48,8 @@ const NOM_COLLECTION_RECHIFFRAGE: &str = "MaitreDesCles/rechiffrage";
 const REQUETE_CERTIFICAT_MAITREDESCLES: &str = COMMANDE_CERT_MAITREDESCLES;
 const REQUETE_DECHIFFRAGE: &str = "dechiffrage";
 const REQUETE_VERIFIER_PREUVE: &str = "verifierPreuve";
+
+const COMMANDE_RECHIFFRER_BATCH: &str = "rechiffrerBatch";
 
 const INDEX_RECHIFFRAGE_PK: &str = "fingerprint_pk";
 const INDEX_CONFIRMATION_CA: &str = "confirmation_ca";
@@ -189,6 +192,13 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
             for commande in &commandes {
                 rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, commande), exchange: sec.clone() });
             }
+        }
+
+        let commandes_protegees = vec![
+            COMMANDE_RECHIFFRER_BATCH,
+        ];
+        for commande in commandes_protegees {
+            rk_volatils.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, commande), exchange: L3Protege });
         }
 
         let mut queues = Vec::new();
@@ -685,22 +695,34 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionna
     let user_id = m.get_user_id();
     let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
 
-    if role_prive == true && user_id.is_some() {
-        // OK
+    if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+        match m.action.as_str() {
+            // Commandes standard
+            COMMANDE_SAUVEGARDER_CLE => commande_sauvegarder_cle(middleware, m, gestionnaire).await,
+            COMMANDE_CERT_MAITREDESCLES => {emettre_certificat_maitredescles(middleware, Some(m)).await?; Ok(None)},
+
+            COMMANDE_RECHIFFRER_BATCH => commande_rechiffrer_batch(middleware, m, gestionnaire).await,
+            // Commandes inconnues
+            _ => Err(format!("core_backup.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
+        }
+    } else if role_prive == true && user_id.is_some() {
+        match m.action.as_str() {
+            // Commandes standard
+            COMMANDE_SAUVEGARDER_CLE => commande_sauvegarder_cle(middleware, m, gestionnaire).await,
+            COMMANDE_CERT_MAITREDESCLES => {emettre_certificat_maitredescles(middleware, Some(m)).await?; Ok(None)},
+            // Commandes inconnues
+            _ => Err(format!("core_backup.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
+        }
     } else if m.verifier_exchanges(vec![Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure]) {
-        // Autorisation : On accepte les requetes de tous les echanges
-    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
-        // Delegation globale
+        match m.action.as_str() {
+            // Commandes standard
+            COMMANDE_SAUVEGARDER_CLE => commande_sauvegarder_cle(middleware, m, gestionnaire).await,
+            COMMANDE_CERT_MAITREDESCLES => {emettre_certificat_maitredescles(middleware, Some(m)).await?; Ok(None)},
+            // Commandes inconnues
+            _ => Err(format!("core_backup.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
+        }
     } else {
         Err(format!("Autorisation commande invalide, acces refuse"))?
-    }
-
-    match m.action.as_str() {
-        // Commandes standard
-        COMMANDE_SAUVEGARDER_CLE => commande_sauvegarder_cle(middleware, m, gestionnaire).await,
-        COMMANDE_CERT_MAITREDESCLES => {emettre_certificat_maitredescles(middleware, Some(m)).await?; Ok(None)},
-        // Commandes inconnues
-        _ => Err(format!("core_backup.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
     }
 }
 
@@ -757,6 +779,54 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
             .build();
         middleware.soumettre_transaction(routage, &transaction, false).await?;
     }
+
+    Ok(middleware.reponse_ok()?)
+}
+
+async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesPartition)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao,
+{
+    debug!("commande_rechiffrer_batch Consommer commande : {:?}", & m.message);
+    let commande: CommandeRechiffrerBatch = m.message.get_msg().map_contenu(None)?;
+    debug!("commande_rechiffrer_batch Commande parsed : {:?}", commande);
+
+    let fingerprint = gestionnaire.fingerprint.as_str();
+
+    let collection = middleware.get_collection(gestionnaire.get_collection_cles().as_str())?;
+
+    // Traiter chaque cle individuellement
+    let liste_hachage_bytes: Vec<String> = commande.cles.iter().map(|c| c.hachage_bytes.to_owned()).collect();
+    for cle in commande.cles {
+        let mut doc_cle = convertir_to_bson(cle.clone())?;
+        doc_cle.insert("dirty", true);
+        doc_cle.insert("confirmation_ca", false);
+        doc_cle.insert(CHAMP_CREATION, Utc::now());
+        doc_cle.insert(CHAMP_MODIFICATION, Utc::now());
+        let filtre = doc! { "hachage_bytes": cle.hachage_bytes.as_str() };
+        let ops = doc! { "$setOnInsert": doc_cle };
+        let opts = UpdateOptions::builder().upsert(true).build();
+        let resultat = collection.update_one(filtre, ops, opts).await?;
+
+        if let Some(uid) = resultat.upserted_id {
+            debug!("commande_rechiffrer_batch Nouvelle cle insere _id: {}, generer transaction", uid);
+            let routage = RoutageMessageAction::builder(DOMAINE_NOM, TRANSACTION_CLE)
+                .partition(fingerprint)
+                .exchanges(vec![Securite::L4Secure])
+                .build();
+            middleware.soumettre_transaction(routage, &cle, false).await?;
+        }
+
+    }
+
+    // Emettre un evenement pour confirmer le traitement.
+    // Utilise par le CA (confirme que les cles sont dechiffrables) et par le client (batch traitee)
+    let routage_event = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_CLE_RECUE_PARTITION).build();
+    let event_contenu = json!({
+        "correlation": &m.correlation_id,
+        "liste_hachage_bytes": liste_hachage_bytes,
+    });
+    middleware.emettre_evenement(routage_event, &event_contenu).await?;
 
     Ok(middleware.reponse_ok()?)
 }
