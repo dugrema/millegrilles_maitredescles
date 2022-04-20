@@ -41,7 +41,7 @@ enum TypeGestionnaire {
 pub async fn run() {
 
     // Init gestionnaires ('static)
-    let gestionnaires = charger_gestionnaires(None, true);
+    let gestionnaires = charger_gestionnaires();
 
     // Wiring
     let (futures, _) = build(gestionnaires).await;
@@ -52,7 +52,7 @@ pub async fn run() {
 
 /// Fonction qui lit le certificat local et extrait les fingerprints idmg et de partition
 /// Conserve les gestionnaires dans la variable GESTIONNAIRES 'static
-fn charger_gestionnaires(activer_ca: Option<bool>, activer_partition: bool) -> Vec<&'static TypeGestionnaire> {
+fn charger_gestionnaires() -> Vec<&'static TypeGestionnaire> {
     // Charger une version simplifiee de la configuration - on veut le certificat associe a l'enveloppe privee
     let config = charger_configuration().expect("config");
     let enveloppe_privee = config.get_configuration_pki().get_enveloppe_privee();
@@ -76,27 +76,39 @@ fn charger_gestionnaires(activer_ca: Option<bool>, activer_partition: bool) -> V
     info!("Configuration du maitre des cles avec CA {} et Partition {}", fp_ca, partition);
 
     // Charger valeur d'environnement au besoin
-    let flag_ca = match activer_ca {
-        Some(a) => a,
-        None => {
-            match std::env::var("MG_MAITREDESCLES_CA") {
-                Ok(val) => val.as_str() == "1",
-                Err(_) => false
+    // let flag_ca = match activer_ca {
+    //     Some(a) => a,
+    //     None => {
+    //         match std::env::var("MG_MAITREDESCLES_CA") {
+    //             Ok(val) => val.as_str() == "1",
+    //             Err(_) => false
+    //         }
+    //     }
+    // };
+    let (flag_ca, flag_partition) = match std::env::var("MG_MAITREDESCLES_MODE") {
+        Ok(val) => {
+            match val.as_str() {
+                "ca" => (true, false),
+                "partition" => (false, true),
+                _=> (true, true),  // Defaut, 2 actifs
             }
-        }
+        },
+        Err(_) => (true, true)
     };
 
     // Inserer les gestionnaires dans la variable static - permet d'obtenir lifetime 'static
     unsafe {
-        if flag_ca {
-            GESTIONNAIRES[0] = TypeGestionnaire::CA(Arc::new(GestionnaireMaitreDesClesCa { fingerprint: fp_ca.into() }));
-        }
-        if activer_partition {
-            GESTIONNAIRES[1] = TypeGestionnaire::Partition(Arc::new(GestionnaireMaitreDesClesPartition::new(partition.into())));
-        }
-
         let mut vec_gestionnaires = Vec::new();
-        vec_gestionnaires.extend(&GESTIONNAIRES);
+        if flag_ca {
+            info!("Activation gestionnaire CA");
+            GESTIONNAIRES[0] = TypeGestionnaire::CA(Arc::new(GestionnaireMaitreDesClesCa { fingerprint: fp_ca.into() }));
+            vec_gestionnaires.push(&GESTIONNAIRES[0]);
+        }
+        if flag_partition {
+            info!("Activation gestionnaire partition {}", partition);
+            GESTIONNAIRES[1] = TypeGestionnaire::Partition(Arc::new(GestionnaireMaitreDesClesPartition::new(partition.into())));
+            vec_gestionnaires.push(&GESTIONNAIRES[1]);
+        }
         vec_gestionnaires
     }
 }
