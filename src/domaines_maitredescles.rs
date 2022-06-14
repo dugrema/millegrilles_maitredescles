@@ -24,17 +24,19 @@ use millegrilles_common_rust::transactions::resoumettre_transactions;
 
 use crate::maitredescles_ca::GestionnaireMaitreDesClesCa;
 use crate::maitredescles_partition::{emettre_certificat_maitredescles, GestionnaireMaitreDesClesPartition};
+use crate::maitredescles_redis::{GestionnaireMaitreDesClesRedis};
 
 const DUREE_ATTENTE: u64 = 20000;
 
 // Creer espace static pour conserver les gestionnaires
-static mut GESTIONNAIRES: [TypeGestionnaire; 2] = [TypeGestionnaire::None, TypeGestionnaire::None];
+static mut GESTIONNAIRES: [TypeGestionnaire; 3] = [TypeGestionnaire::None, TypeGestionnaire::None, TypeGestionnaire::None];
 
 /// Enum pour distinger les types de gestionnaires.
 #[derive(Clone, Debug)]
 enum TypeGestionnaire {
     CA(Arc<GestionnaireMaitreDesClesCa>),
     Partition(Arc<GestionnaireMaitreDesClesPartition>),
+    Redis(Arc<GestionnaireMaitreDesClesRedis>),
     None
 }
 
@@ -85,15 +87,16 @@ fn charger_gestionnaires() -> Vec<&'static TypeGestionnaire> {
     //         }
     //     }
     // };
-    let (flag_ca, flag_partition) = match std::env::var("MG_MAITREDESCLES_MODE") {
+    let (flag_ca, flag_partition, flag_redis) = match std::env::var("MG_MAITREDESCLES_MODE") {
         Ok(val) => {
             match val.as_str() {
-                "ca" => (true, false),
-                "partition" => (false, true),
-                _=> (true, true),  // Defaut, 2 actifs
+                "ca" => (true, false, false),
+                "partition" => (false, true, false),
+                "redis" => (false, false, true),
+                _=> (true, false, true),  // Defaut, 2 actifs
             }
         },
-        Err(_) => (true, true)
+        Err(_) => (true, false, true)
     };
 
     // Inserer les gestionnaires dans la variable static - permet d'obtenir lifetime 'static
@@ -108,6 +111,11 @@ fn charger_gestionnaires() -> Vec<&'static TypeGestionnaire> {
             info!("Activation gestionnaire partition {}", partition);
             GESTIONNAIRES[1] = TypeGestionnaire::Partition(Arc::new(GestionnaireMaitreDesClesPartition::new(partition.into())));
             vec_gestionnaires.push(&GESTIONNAIRES[1]);
+        }
+        if flag_redis {
+            info!("Activation gestionnaire redis {}", partition);
+            GESTIONNAIRES[2] = TypeGestionnaire::Redis(Arc::new(GestionnaireMaitreDesClesRedis::new(partition.into())));
+            vec_gestionnaires.push(&GESTIONNAIRES[2]);
         }
         vec_gestionnaires
     }
@@ -124,6 +132,9 @@ async fn build(gestionnaires: Vec<&'static TypeGestionnaire>) -> (FuturesUnorder
                     queues.extend(g.preparer_queues());
                 },
                 TypeGestionnaire::Partition(g) => {
+                    queues.extend(g.preparer_queues());
+                },
+                TypeGestionnaire::Redis(g) => {
                     queues.extend(g.preparer_queues());
                 },
                 TypeGestionnaire::None => ()
@@ -180,6 +191,9 @@ async fn build(gestionnaires: Vec<&'static TypeGestionnaire>) -> (FuturesUnorder
                     TypeGestionnaire::Partition(g) => {
                         g.preparer_threads(middleware.clone()).await.expect("gestionnaire")
                     },
+                    TypeGestionnaire::Redis(g) => {
+                        g.preparer_threads(middleware.clone()).await.expect("gestionnaire")
+                    },
                     TypeGestionnaire::None => (HashMap::new(), FuturesUnordered::new()),
                 };
                 futures.extend(futures_g);        // Deplacer vers futures globaux
@@ -233,6 +247,9 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
                     coll_docs_strings.push(String::from(g.get_collection_transactions()));
                 },
                 TypeGestionnaire::Partition(g) => {
+                    coll_docs_strings.push(String::from(g.get_collection_transactions()));
+                },
+                TypeGestionnaire::Redis(g) => {
                     coll_docs_strings.push(String::from(g.get_collection_transactions()));
                 },
                 TypeGestionnaire::None => ()

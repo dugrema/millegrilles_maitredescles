@@ -58,7 +58,7 @@ const CHAMP_FINGERPRINT_PK: &str = "fingerprint_pk";
 const CHAMP_CONFIRMATION_CA: &str = "confirmation_ca";
 
 #[derive(Clone, Debug)]
-pub struct GestionnaireMaitreDesClesPartition {
+pub struct GestionnaireMaitreDesClesRedis {
     pub fingerprint: String,
 }
 
@@ -70,7 +70,7 @@ fn nom_collection_transactions<S>(fingerprint: S) -> String
     format!("MaitreDesCles/{}", &fp[35..])
 }
 
-impl GestionnaireMaitreDesClesPartition {
+impl GestionnaireMaitreDesClesRedis {
     pub fn new(fingerprint: &str) -> Self {
         Self {
             fingerprint: String::from(fingerprint)
@@ -129,7 +129,7 @@ impl GestionnaireMaitreDesClesPartition {
 }
 
 #[async_trait]
-impl TraiterTransaction for GestionnaireMaitreDesClesPartition {
+impl TraiterTransaction for GestionnaireMaitreDesClesRedis {
     async fn appliquer_transaction<M>(&self, middleware: &M, transaction: TransactionImpl) -> Result<Option<MessageMilleGrille>, String>
         where M: ValidateurX509 + GenerateurMessages + MongoDao
     {
@@ -138,7 +138,7 @@ impl TraiterTransaction for GestionnaireMaitreDesClesPartition {
 }
 
 #[async_trait]
-impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
+impl GestionnaireDomaine for GestionnaireMaitreDesClesRedis {
     fn get_nom_domaine(&self) -> String { String::from(DOMAINE_NOM) }
 
     fn get_partition(&self) -> Option<String> {
@@ -296,7 +296,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
     }
 }
 
-pub async fn preparer_index_mongodb_partition<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition) -> Result<(), String>
+pub async fn preparer_index_mongodb_partition<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesRedis) -> Result<(), String>
     where M: MongoDao
 {
     // Index rechiffrage
@@ -334,7 +334,7 @@ pub async fn preparer_index_mongodb_partition<M>(middleware: &M, gestionnaire: &
 
 /// Verifie si on peut rechiffrer les cles d'une partition locale (precedente) vers
 /// une nouvelle partition (courante).
-async fn migration_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition)
+async fn migration_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesRedis)
     -> Result<(), Box<dyn Error>>
     where M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage + ConfigMessages
 {
@@ -498,8 +498,8 @@ async fn trouver_cle_rechiffrage<M>(middleware: &M)
 }
 
 /// Utilise la cle de dechiffrage pour generer des nouvelles transactions de cle dans la partition courante.
-async fn effectuer_migration_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition, cle_dechiffrage: PKey<Private>, mut curseur: Cursor<Document>)
-    -> Result<bool, Box<dyn Error>>
+async fn effectuer_migration_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesRedis, cle_dechiffrage: PKey<Private>, mut curseur: Cursor<Document>)
+                                     -> Result<bool, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
     let enveloppe_privee = middleware.get_enveloppe_privee();
@@ -573,7 +573,7 @@ impl DocumentRechiffrage {
     }
 }
 
-async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesPartition) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesRedis) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage
 {
     debug!("Consommer requete : {:?}", &message.message);
@@ -665,7 +665,7 @@ pub async fn emettre_certificat_maitredescles<M>(middleware: &M, m: Option<Messa
     Ok(())
 }
 
-async fn consommer_transaction<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesPartition) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+async fn consommer_transaction<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesRedis) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
 where
     M: ValidateurX509 + GenerateurMessages + MongoDao,
 {
@@ -686,7 +686,7 @@ where
     }
 }
 
-async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesPartition)
+async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesRedis)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao
 {
@@ -726,7 +726,7 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionna
     }
 }
 
-async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesPartition)
+async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesRedis)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao,
 {
@@ -780,12 +780,12 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
     }
 
     // Sauvegarde cle dans redis
-
+    
 
     Ok(middleware.reponse_ok()?)
 }
 
-async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesPartition)
+async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesRedis)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao,
 {
@@ -833,7 +833,7 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
     Ok(middleware.reponse_ok()?)
 }
 
-async fn aiguillage_transaction<M, T>(middleware: &M, transaction: T, gestionnaire: &GestionnaireMaitreDesClesPartition) -> Result<Option<MessageMilleGrille>, String>
+async fn aiguillage_transaction<M, T>(middleware: &M, transaction: T, gestionnaire: &GestionnaireMaitreDesClesRedis) -> Result<Option<MessageMilleGrille>, String>
     where
         M: ValidateurX509 + GenerateurMessages + MongoDao,
         T: Transaction
@@ -844,7 +844,7 @@ async fn aiguillage_transaction<M, T>(middleware: &M, transaction: T, gestionnai
     }
 }
 
-async fn transaction_cle<M, T>(middleware: &M, transaction: T, gestionnaire: &GestionnaireMaitreDesClesPartition) -> Result<Option<MessageMilleGrille>, String>
+async fn transaction_cle<M, T>(middleware: &M, transaction: T, gestionnaire: &GestionnaireMaitreDesClesRedis) -> Result<Option<MessageMilleGrille>, String>
     where
         M: GenerateurMessages + MongoDao,
         T: Transaction
@@ -877,7 +877,7 @@ async fn transaction_cle<M, T>(middleware: &M, transaction: T, gestionnaire: &Ge
     Ok(None)
 }
 
-async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesPartition)
+async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesRedis)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + VerificateurMessage + ValidateurX509
 {
@@ -962,7 +962,7 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
 
 /// Verifie que la requete contient des cles secretes qui correspondent aux cles stockees.
 /// Confirme que le demandeur a bien en sa possession (via methode tierce) les cles secretes.
-async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesPartition)
+async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesRedis)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + VerificateurMessage + ValidateurX509
 {
@@ -1089,7 +1089,7 @@ async fn rechiffrer_cles<M>(
 /// Prepare le curseur sur les cles demandees
 async fn preparer_curseur_cles<M>(
     middleware: &M,
-    gestionnaire: &GestionnaireMaitreDesClesPartition,
+    gestionnaire: &GestionnaireMaitreDesClesRedis,
     requete: &RequeteDechiffrage,
     permission: Option<&EnveloppePermission>,
     domaines_permis: Option<&Vec<String>>
@@ -1337,7 +1337,7 @@ fn verifier_autorisation_dechiffrage_specifique(
     Ok(false)
 }
 
-async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition) -> Result<(), Box<dyn Error>>
+async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesRedis) -> Result<(), Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + VerificateurMessage
 {
     // Requete vers CA pour obtenir la liste des cles connues
@@ -1409,7 +1409,7 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
 }
 
 /// S'assurer que le CA a toutes les cles de la partition. Permet aussi de resetter le flag non-dechiffrable.
-async fn confirmer_cles_ca<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition) -> Result<(), Box<dyn Error>>
+async fn confirmer_cles_ca<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesRedis) -> Result<(), Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + VerificateurMessage + Chiffreur<CipherMgs3, Mgs3CipherKeys>
 {
     let batch_size = 50;
@@ -1454,7 +1454,7 @@ async fn confirmer_cles_ca<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
 /// Marque les cles presentes sur la partition et CA comme confirmation_ca=true
 /// Rechiffre et emet vers le CA les cles manquantes
 async fn emettre_cles_vers_ca<M>(
-    middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition, cles: &mut HashMap<String, TransactionCle>)
+    middleware: &M, gestionnaire: &GestionnaireMaitreDesClesRedis, cles: &mut HashMap<String, TransactionCle>)
     -> Result<(), Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + VerificateurMessage + Chiffreur<CipherMgs3, Mgs3CipherKeys>
 {
@@ -1488,7 +1488,7 @@ async fn emettre_cles_vers_ca<M>(
 
 /// Marque les cles emises comme confirmees par le CA sauf si elles sont dans la liste de cles manquantes.
 async fn traiter_cles_manquantes_ca<M>(
-    middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition, cles_emises: &Vec<String>, cles_manquantes: &Vec<String>
+    middleware: &M, gestionnaire: &GestionnaireMaitreDesClesRedis, cles_emises: &Vec<String>, cles_manquantes: &Vec<String>
 )
     -> Result<(), Box<dyn Error>>
     where M: MongoDao + GenerateurMessages + Chiffreur<CipherMgs3, Mgs3CipherKeys>

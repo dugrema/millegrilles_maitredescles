@@ -2,6 +2,7 @@ mod domaines_maitredescles;
 mod maitredescles_partition;
 mod maitredescles_ca;
 mod maitredescles_commun;
+mod maitredescles_redis;
 
 use log::{info};
 use millegrilles_common_rust::tokio as tokio;
