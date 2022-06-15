@@ -111,7 +111,7 @@ impl GestionnaireMaitreDesClesRedis {
 
     /// S'assure que le CA a toutes les cles presentes dans la partition
     pub async fn confirmer_cles_ca<M>(&self, middleware: &M) -> Result<(), Box<dyn Error>>
-        where M: GenerateurMessages + MongoDao + VerificateurMessage + Chiffreur<CipherMgs3, Mgs3CipherKeys>
+        where M: GenerateurMessages + MongoDao + RedisTrait + VerificateurMessage + Chiffreur<CipherMgs3, Mgs3CipherKeys>
     {
         confirmer_cles_ca(middleware, self).await?;
         Ok(())
@@ -1083,34 +1083,42 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
 
 /// S'assurer que le CA a toutes les cles de la partition. Permet aussi de resetter le flag non-dechiffrable.
 async fn confirmer_cles_ca<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesRedis) -> Result<(), Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage + Chiffreur<CipherMgs3, Mgs3CipherKeys>
+    where M: GenerateurMessages + RedisTrait + VerificateurMessage + Chiffreur<CipherMgs3, Mgs3CipherKeys>
 {
     let batch_size = 50;
 
     debug!("confirmer_cles_ca Debut confirmation cles locales avec confirmation_ca=false");
 
-    let mut curseur = {
-        let limit_cles = 5000;
-        let filtre = doc! { CHAMP_CONFIRMATION_CA: false };
-        let opts = FindOptions::builder().limit(limit_cles).build();
-        let collection = middleware.get_collection(gestionnaire.get_collection_cles().as_str())?;
-        let curseur = collection.find(filtre, opts).await?;
-        curseur
-    };
+    let limit_cles = 5000;
 
-    let mut cles = HashMap::new();
-    while let Some(d) = curseur.next().await {
-        match d {
-            Ok(cle) => {
-                let transaction_cle: TransactionCle = convertir_bson_deserializable(cle)?;
-                cles.insert(transaction_cle.hachage_bytes.clone(), transaction_cle);
+    // let mut curseur = {
+    //     let limit_cles = 5000;
+    //     let filtre = doc! { CHAMP_CONFIRMATION_CA: false };
+    //     let opts = FindOptions::builder().limit(limit_cles).build();
+    //     let collection = middleware.get_collection(gestionnaire.get_collection_cles().as_str())?;
+    //     let curseur = collection.find(filtre, opts).await?;
+    //     curseur
+    // };
+    let enveloppe_privee = middleware.get_enveloppe_privee();
+    let fingerprint = enveloppe_privee.fingerprint().as_str();
 
-                if cles.len() == batch_size {
-                    emettre_cles_vers_ca(middleware, gestionnaire, &mut cles).await?;
-                }
-            },
-            Err(e) => Err(format!("maitredescles_partition.confirmer_cles_ca Erreur traitement {:?}", e))?
-        };
+    let redis_dao = middleware.get_redis();
+    let cles_ca = redis_dao.get_cleversca_batch(fingerprint, Some(limit_cles)).await?;
+    debug!("confirmer_cles_ca Batch cle a confirmer avec CA : {:?}", cles_ca);
+    if cles_ca.len() == 0 {
+        debug!("confirmer_cles_ca Aucune cle a transmettre vers CA");
+        return Ok(())
+    }
+
+    let mut cles = Vec::new();
+
+    // Traiter cles en batch
+    for hachage_bytes in cles_ca {
+        cles.push(hachage_bytes);
+        if cles.len() == batch_size {
+            emettre_cles_vers_ca(middleware, gestionnaire, &mut cles).await?;
+            cles.clear();
+        }
     }
 
     // Derniere batch de cles
@@ -1127,11 +1135,11 @@ async fn confirmer_cles_ca<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
 /// Marque les cles presentes sur la partition et CA comme confirmation_ca=true
 /// Rechiffre et emet vers le CA les cles manquantes
 async fn emettre_cles_vers_ca<M>(
-    middleware: &M, gestionnaire: &GestionnaireMaitreDesClesRedis, cles: &mut HashMap<String, TransactionCle>)
+    middleware: &M, gestionnaire: &GestionnaireMaitreDesClesRedis, hachage_bytes: &mut Vec<String>)
     -> Result<(), Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage + Chiffreur<CipherMgs3, Mgs3CipherKeys>
+    where M: GenerateurMessages + RedisTrait + VerificateurMessage + Chiffreur<CipherMgs3, Mgs3CipherKeys>
 {
-    let hachage_bytes: Vec<String> = cles.keys().into_iter().map(|h| h.to_owned()).collect();
+    // let hachage_bytes: Vec<String> = cles.keys().into_iter().map(|h| h.to_owned()).collect();
     debug!("emettre_cles_vers_ca Batch cles {:?}", hachage_bytes);
 
     let commande = ReponseSynchroniserCles {liste_hachage_bytes: hachage_bytes.clone()};
@@ -1154,8 +1162,6 @@ async fn emettre_cles_vers_ca<M>(
         None => info!("emettre_cles_vers_ca Aucune reponse du serveur")
     }
 
-    cles.clear();  // Retirer toutes les cles pour prochaine page
-
     Ok(())
 }
 
@@ -1164,23 +1170,21 @@ async fn traiter_cles_manquantes_ca<M>(
     middleware: &M, gestionnaire: &GestionnaireMaitreDesClesRedis, cles_emises: &Vec<String>, cles_manquantes: &Vec<String>
 )
     -> Result<(), Box<dyn Error>>
-    where M: MongoDao + GenerateurMessages + Chiffreur<CipherMgs3, Mgs3CipherKeys>
+    where M: RedisTrait + GenerateurMessages + Chiffreur<CipherMgs3, Mgs3CipherKeys>
 {
-    let collection = middleware.get_collection(gestionnaire.get_collection_cles().as_str())?;
+    let enveloppe_privee = middleware.get_enveloppe_privee();
+    let fingerprint = enveloppe_privee.fingerprint().as_str();
 
     // Marquer cles emises comme confirmees par CA si pas dans la liste de manquantes
+    let redis_dao = middleware.get_redis();
     {
         let cles_confirmees: Vec<&String> = cles_emises.iter()
             .filter(|c| !cles_manquantes.contains(c))
             .collect();
         debug!("traiter_cles_manquantes_ca Cles confirmees par le CA: {:?}", cles_confirmees);
-        let filtre_confirmees = doc! {CHAMP_HACHAGE_BYTES: {"$in": cles_confirmees}};
-        let ops = doc! {
-            "$set": {CHAMP_CONFIRMATION_CA: true},
-            "$currentDate": {CHAMP_MODIFICATION: true}
-        };
-        let resultat_confirmees = collection.update_many(filtre_confirmees, ops, None).await?;
-        debug!("traiter_cles_manquantes_ca Resultat maj cles confirmees: {:?}", resultat_confirmees);
+        for hachage_bytes in cles_confirmees {
+            redis_dao.retirer_cleca_manquante(fingerprint, hachage_bytes).await?;
+        }
     }
 
     // Rechiffrer et emettre les cles manquantes.
@@ -1189,28 +1193,35 @@ async fn traiter_cles_manquantes_ca<M>(
             .exchanges(vec![Securite::L4Secure])
             .build();
 
-        let filtre_manquantes = doc! { CHAMP_HACHAGE_BYTES: {"$in": cles_manquantes} };
-        let mut curseur = collection.find(filtre_manquantes, None).await?;
-        while let Some(d) = curseur.next().await {
-            let commande = match d {
+        for hachage_bytes in cles_manquantes {
+            let cle_str = match redis_dao.get_cle(fingerprint, hachage_bytes).await {
+                Ok(c) => match c {
+                    Some(c)=> c,
+                    None => {
+                        debug!("cle manquante n'est pas presente localement : {}", hachage_bytes);
+                        continue
+                    }
+                },
+                Err(e) => {
+                    error!("Erreur chargement cle manquant localement {} : {:?}", hachage_bytes, e);
+                    continue
+                }
+            };
+
+            let commande = match serde_json::from_str::<TransactionCle>(cle_str.as_str()) {
                 Ok(cle) => {
-                    match convertir_bson_deserializable::<TransactionCle>(cle) {
-                        Ok(c) => {
-                            match rechiffrer_pour_maitredescles(middleware, &c) {
-                                Ok(c) => c,
-                                Err(e) => {
-                                    error!("traiter_cles_manquantes_ca Erreur traitement rechiffrage cle : {:?}", e);
-                                    continue
-                                }
-                            }
-                        },
+                    match rechiffrer_pour_maitredescles(middleware, &cle) {
+                        Ok(c) => c,
                         Err(e) => {
-                            warn!("traiter_cles_manquantes_ca Erreur conversion document en cle : {:?}", e);
+                            error!("traiter_cles_manquantes_ca Erreur traitement rechiffrage cle : {:?}", e);
                             continue
                         }
                     }
                 },
-                Err(e) => Err(format!("maitredescles_partition.traiter_cles_manquantes_ca Erreur lecture curseur : {:?}", e))?
+                Err(e) => {
+                    warn!("traiter_cles_manquantes_ca Erreur conversion document en cle : {:?}", e);
+                    continue
+                }
             };
 
             debug!("Emettre cles rechiffrees pour CA : {:?}", commande);

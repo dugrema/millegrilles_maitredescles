@@ -387,6 +387,44 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
                     }
 
                 },
+                TypeGestionnaire::Redis(g) => {
+                    // Effectuer rechiffrage si on a fait une rotation de la cle privee
+                    // if ! rechiffrage_complete {
+                    //     debug!("domaines_maitredescles.entretien Verification de rotation des cles");
+                    //     rechiffrage_complete = true;
+                    //     match g.migration_cles(middleware.as_ref(), g).await {
+                    //         Ok(()) => (),
+                    //         Err(e) => error!("entretien Erreur migration cles : {:?}", e)
+                    //     }
+                    // }
+
+                    if prochain_sync < maintenant {
+                        debug!("entretien Effectuer sync des cles du CA non disponibles localement");
+                        match g.synchroniser_cles(middleware.as_ref()).await {
+                            Ok(()) => {
+                                prochain_sync = maintenant + intervalle_sync;
+                            },
+                            Err(e) => warn!("entretien Erreur syncrhonization cles avec CA : {:?}", e)
+                        }
+                    }
+
+                    if prochaine_confirmation_ca < maintenant {
+                        // Emettre certificat local (pas vraiment a la bonne place)
+                        match g.emettre_certificat_maitredescles(middleware.as_ref(), None).await {
+                            Ok(_) => (),
+                            Err(e) => error!("Erreur emission certificat de maitre des cles : {:?}", e)
+                        }
+
+                        debug!("entretien Pousser les cles locales vers le CA");
+                        match g.confirmer_cles_ca(middleware.as_ref()).await {
+                            Ok(()) => {
+                                prochaine_confirmation_ca = maintenant + intervalle_confirmation_ca;
+                            },
+                            Err(e) => warn!("entretien Erreur syncrhonization cles avec CA : {:?}", e)
+                        }
+                    }
+
+                },
                 _ => ()
             }
         }
