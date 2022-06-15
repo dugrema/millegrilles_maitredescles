@@ -61,7 +61,7 @@ pub struct GestionnaireMaitreDesClesRedis {
 fn nom_collection_transactions<S>(_fingerprint: S) -> String
     where S: AsRef<str>
 {
-    panic!("Non supporte")
+    panic!("nom_collection_transactions Non supporte")
 }
 
 impl GestionnaireMaitreDesClesRedis {
@@ -94,7 +94,7 @@ impl GestionnaireMaitreDesClesRedis {
 
     /// Verifie si le CA a des cles qui ne sont pas connues localement
     pub async fn synchroniser_cles<M>(&self, middleware: &M) -> Result<(), Box<dyn Error>>
-        where M: GenerateurMessages + VerificateurMessage + Chiffreur<CipherMgs3, Mgs3CipherKeys>
+        where M: GenerateurMessages + VerificateurMessage + Chiffreur<CipherMgs3, Mgs3CipherKeys> + RedisTrait
     {
         synchroniser_cles(middleware, self).await?;
         Ok(())
@@ -244,7 +244,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesRedis {
     }
 
     async fn preparer_index_mongodb_custom<M>(&self, _middleware: &M) -> Result<(), String> where M: MongoDao {
-        Err(format!("Non supporte"))?
+        Ok(())
     }
 
     async fn consommer_requete<M>(&self, middleware: &M, message: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>> where M: Middleware + 'static {
@@ -280,7 +280,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesRedis {
 pub async fn preparer_index_mongodb_partition<M>(_middleware: &M, _gestionnaire: &GestionnaireMaitreDesClesRedis) -> Result<(), String>
     where M: ValidateurX509
 {
-    Err(format!("Non supporte"))?
+    Ok(())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -650,7 +650,7 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
     let requete: RequeteVerifierPreuve = m.message.get_msg().map_contenu(None)?;
     debug!("requete_verifier_preuve cle parsed : {:?}", requete);
 
-    todo!("Fix me")
+    todo!("requete_verifier_preuve Fix me")
     //
     // let domaines = match m.message.certificat.as_ref() {
     //     Some(c) => {
@@ -970,7 +970,7 @@ fn verifier_autorisation_dechiffrage_specifique(
 }
 
 async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesRedis) -> Result<(), Box<dyn Error>>
-    where M: GenerateurMessages + VerificateurMessage
+    where M: GenerateurMessages + VerificateurMessage + RedisTrait
 {
     // Requete vers CA pour obtenir la liste des cles connues
     let mut requete_sync = RequeteSynchroniserCles {page: 0, limite: 1000};
@@ -981,6 +981,10 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
     let routage_evenement_manquant = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION)
         .exchanges(vec![Securite::L4Secure])
         .build();
+
+    let enveloppe_privee = middleware.get_enveloppe_privee();
+    let fingerprint = enveloppe_privee.fingerprint().as_str();
+    let redis_dao = middleware.get_redis();
 
     loop {
         let reponse = match middleware.transmettre_requete(routage_sync.clone(), &requete_sync).await? {
@@ -1000,40 +1004,28 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
             break
         }
 
-        let mut cles_hashset = HashSet::new();
-        cles_hashset.extend(&liste_hachage_bytes);
+        let mut cles_manquantes = HashSet::new();
+        debug!("Recu liste_hachage_bytes a verifier : {:?}", liste_hachage_bytes);
 
-        todo!("Fix me")
+        for hachage_bytes in liste_hachage_bytes.into_iter() {
+            match redis_dao.get_cle(fingerprint, &hachage_bytes).await? {
+                Some(c) => (),
+                None => {
+                    cles_manquantes.insert(hachage_bytes);
+                }
+            }
+        }
 
-        // debug!("Recu liste_hachage_bytes a verifier : {:?}", liste_hachage_bytes);
-        // let filtre_cles = doc! { CHAMP_HACHAGE_BYTES: {"$in": &liste_hachage_bytes} };
-        // let projection = doc! { CHAMP_HACHAGE_BYTES: 1 };
-        // let find_options = FindOptions::builder().projection(projection).build();
-        // let mut cles = collection.find(filtre_cles, Some(find_options)).await?;
-        // while let Some(result_cle) = cles.next().await {
-        //     match result_cle {
-        //         Ok(cle) => {
-        //             match cle.get(CHAMP_HACHAGE_BYTES) {
-        //                 Some(d) => {
-        //                     match d.as_str() {
-        //                         Some(d) => { cles_hashset.remove(&String::from(d)); },
-        //                         None => continue
-        //                     }
-        //                 },
-        //                 None => continue
-        //             };
-        //         },
-        //         Err(e) => Err(format!("maitredescles_partition.synchroniser_cles Erreur lecture table cles : {:?}", e))?
-        //     }
-        // }
-        //
-        // if cles_hashset.len() > 0 {
-        //     debug!("Cles absentes localement : {:?}", cles_hashset);
-        //     // Emettre evenement pour indiquer que ces cles sont manquantes dans la partition
-        //     let liste_cles: Vec<String> = cles_hashset.iter().map(|m| String::from(m.as_str())).collect();
-        //     let evenement_cles_manquantes = ReponseSynchroniserCles { liste_hachage_bytes: liste_cles };
-        //     middleware.emettre_evenement(routage_evenement_manquant.clone(), &evenement_cles_manquantes).await?;
-        // }
+        for cle_manquante in &cles_manquantes {
+            redis_dao.ajouter_cle_manquante(enveloppe_privee.as_ref(), cle_manquante).await?;
+        }
+
+        if cles_manquantes.len() > 0 {
+            let liste_cles: Vec<String> = cles_manquantes.iter().map(|m| String::from(m.as_str())).collect();
+            let evenement_cles_manquantes = ReponseSynchroniserCles { liste_hachage_bytes: liste_cles };
+            middleware.emettre_evenement(routage_evenement_manquant.clone(), &evenement_cles_manquantes).await?;
+        }
+
     }
 
     Ok(())

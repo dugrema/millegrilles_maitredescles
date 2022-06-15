@@ -90,13 +90,13 @@ fn charger_gestionnaires() -> Vec<&'static TypeGestionnaire> {
     let (flag_ca, flag_partition, flag_redis) = match std::env::var("MG_MAITREDESCLES_MODE") {
         Ok(val) => {
             match val.as_str() {
-                "ca" => (true, false, false),
-                "partition" => (false, true, false),
-                "redis" => (false, false, true),
-                _=> (true, false, true),  // Defaut, 2 actifs
+                "ca" => (true, false, false),       // ca
+                "partition" => (true, true, false), // ca + partition
+                "redis" => (false, false, true),    // redis
+                _=> (true, true, false),            // Defaut = ca + partition
             }
         },
-        Err(_) => (true, false, true)
+        Err(_) => (true, true, false)
     };
 
     // Inserer les gestionnaires dans la variable static - permet d'obtenir lifetime 'static
