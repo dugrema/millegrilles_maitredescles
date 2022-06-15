@@ -341,7 +341,7 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
     let cle = match commande.cles.get(fingerprint) {
         Some(cle) => cle.as_str(),
         None => {
-            let message = format!("maitredescles_ca.commande_sauvegarder_cle: Erreur validation - commande sauvegarder cles ne contient pas la cle CA : {:?}", commande);
+            let message = format!("maitredescles_ca.commande_sauvegarder_cle: Erreur validation - commande sauvegarder cles ne contient pas la cle CA ({}) : {:?}", fingerprint, commande);
             warn!("{}", message);
             let reponse_err = json!({"ok": false, "err": message});
             return Ok(Some(middleware.formatter_reponse(&reponse_err, None)?));

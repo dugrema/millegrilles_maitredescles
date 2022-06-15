@@ -510,7 +510,7 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
     let cle = match commande.cles.get(fingerprint) {
         Some(cle) => cle.as_str(),
         None => {
-            let message = format!("maitredescles_ca.commande_sauvegarder_cle: Erreur validation - commande sauvegarder cles ne contient pas la cle CA : {:?}", commande);
+            let message = format!("maitredescles_ca.commande_sauvegarder_cle: Erreur validation - commande sauvegarder cles ne contient pas la cle locale ({}) : {:?}", fingerprint, commande);
             warn!("{}", message);
             let reponse_err = json!({"ok": false, "err": message});
             return Ok(Some(middleware.formatter_reponse(&reponse_err, None)?));
@@ -905,8 +905,7 @@ fn rechiffrer_pour_maitredescles<M>(middleware: &M, cle: &TransactionCle)
     let cle_privee = enveloppe_privee.cle_privee();
 
     // Dechiffrer la cle secrete
-    // let (_, cle_bytes): (_, Vec<u8>) = multibase::decode(cle_locale)?;
-    // let cle_secrete = dechiffrer_asymetrique(cle_privee, cle_bytes.as_slice())?;
+    debug!("rechiffrer_pour_maitredescles Cle rechiffrage : {:?}", pk_chiffrage);
 
     let mut fingerprint_partitions = Vec::new();
     let mut map_cles = HashMap::new();
