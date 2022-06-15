@@ -1100,7 +1100,17 @@ async fn get_cles_redis_rechiffrees<M>(
                 // Cle trouvee
                 let mut cle_transaction: TransactionCle = serde_json::from_str(info_cle_str.as_str())?;
 
-                // TODO : Verifier autorisation cle
+                // Verifier autorisation du domaine
+                match domaines_permis {
+                    Some(domaines) => {
+                        let domaine_cle = &cle_transaction.domaine;
+                        if domaines.contains(domaine_cle) == false {
+                            debug!("Demande de rechiffrage de {} refusee, certificat ne supporte pas domaine {}", hachage_bytes, domaine_cle);
+                            continue
+                        }
+                    },
+                    None => ()
+                }
 
                 // Rechiffrer
                 rechiffrer_cle(&mut cle_transaction, enveloppe_privee.as_ref(), certificat)?;
