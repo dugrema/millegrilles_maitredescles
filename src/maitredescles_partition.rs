@@ -192,6 +192,10 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
             }
         }
 
+        for sec in [Securite::L3Protege, Securite::L4Secure] {
+            rk_volatils.push(ConfigRoutingExchange { routing_key: format!("evenement.{}.{}", DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION), exchange: sec.clone() });
+        }
+
         let commandes_protegees = vec![
             COMMANDE_RECHIFFRER_BATCH,
         ];
@@ -277,8 +281,8 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
         consommer_transaction(middleware, message, self).await
     }
 
-    async fn consommer_evenement<M>(self: &'static Self, _middleware: &M, _message: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>> where M: Middleware + 'static {
-        todo!()
+    async fn consommer_evenement<M>(self: &'static Self, middleware: &M, message: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>> where M: Middleware + 'static {
+        consommer_evenement(middleware, self, message).await
     }
 
     async fn entretien<M>(&self, middleware: Arc<M>) where M: Middleware + 'static {
@@ -681,6 +685,23 @@ where
             Ok(None)
         },
         _ => Err(format!("maitredescles_ca.consommer_transaction: Mauvais type d'action pour une transaction : {}", m.action))?,
+    }
+}
+
+async fn consommer_evenement<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition, m: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: ValidateurX509 + GenerateurMessages + MongoDao + Chiffreur<CipherMgs3, Mgs3CipherKeys>
+{
+    debug!("consommer_evenement Consommer evenement : {:?}", &m.message);
+
+    // Autorisation : doit etre de niveau 3.protege ou 4.secure
+    match m.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure]) {
+        true => Ok(()),
+        false => Err(format!("consommer_evenement: Evenement invalide (pas 3.protege ou 4.secure)")),
+    }?;
+
+    match m.action.as_str() {
+        EVENEMENT_CLES_MANQUANTES_PARTITION => evenement_cle_manquante(middleware, gestionnaire, &m).await,
+        _ => Err(format!("consommer_transaction: Mauvais type d'action pour une transaction : {}", m.action))?,
     }
 }
 
@@ -1483,6 +1504,69 @@ async fn traiter_cles_manquantes_ca<M>(
     }
 
     Ok(())
+}
+
+async fn evenement_cle_manquante<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition, m: &MessageValideAction)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: ValidateurX509 + GenerateurMessages + MongoDao + Chiffreur<CipherMgs3, Mgs3CipherKeys>,
+{
+    debug!("evenement_cle_manquante Verifier si on peut transmettre la cle manquante {:?}", &m.message);
+    let event_non_dechiffrables: ReponseSynchroniserCles = m.message.get_msg().map_contenu(None)?;
+
+    let enveloppe = match m.message.certificat.clone() {
+        Some(e) => {
+            if e.verifier_roles(vec![RolesCertificats::MaitreDesCles]) {
+                e
+            } else {
+                debug!("evenement_cle_manquante Certificat sans role maitredescles, on rejette la demande");
+                return Ok(None)
+            }
+        },
+        None => return Ok(None)  // Type certificat inconnu
+    };
+
+    let partition = enveloppe.fingerprint.as_str();
+    let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
+        .exchanges(vec![Securite::L4Secure])
+        .partition(partition)
+        .build();
+
+    let hachages_bytes = event_non_dechiffrables.liste_hachage_bytes;
+    let filtre = doc! { CHAMP_HACHAGE_BYTES: {"$in": hachages_bytes} };
+
+    let collection = middleware.get_collection(gestionnaire.get_collection_cles().as_str())?;
+    let mut curseur = collection.find(filtre, None).await?;
+    while let Some(d) = curseur.next().await {
+        let commande = match d {
+            Ok(cle) => {
+                match convertir_bson_deserializable::<TransactionCle>(cle) {
+                    Ok(c) => {
+                        match rechiffrer_pour_maitredescles(middleware, &c) {
+                            Ok(c) => c,
+                            Err(e) => {
+                                error!("traiter_cles_manquantes_ca Erreur traitement rechiffrage cle : {:?}", e);
+                                continue
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        warn!("traiter_cles_manquantes_ca Erreur conversion document en cle : {:?}", e);
+                        continue
+                    }
+                }
+            },
+            Err(e) => Err(format!("maitredescles_partition.traiter_cles_manquantes_ca Erreur lecture curseur : {:?}", e))?
+        };
+
+        if commande.cles.len() > 0 {
+            debug!("evenement_cle_manquante Emettre cles rechiffrees pour partition : {:?}", partition);
+            middleware.transmettre_commande(routage_commande.clone(), &commande, false).await?;
+        } else {
+            debug!("evenement_cle_manquante Aucune cle manquante n'est connue localement");
+        }
+    }
+
+    Ok(None)
 }
 
 // #[cfg(test)]
