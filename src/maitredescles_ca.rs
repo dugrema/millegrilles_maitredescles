@@ -382,7 +382,7 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
 }
 
 /// Reset toutes les cles a non_dechiffrable=true
-async fn commande_reset_non_dechiffrable<M>(middleware: &M, m: MessageValideAction, gestionnaire_ca: &GestionnaireMaitreDesClesCa)
+async fn commande_reset_non_dechiffrable<M>(middleware: &M, m: MessageValideAction, _gestionnaire_ca: &GestionnaireMaitreDesClesCa)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao,
 {
@@ -396,7 +396,7 @@ async fn commande_reset_non_dechiffrable<M>(middleware: &M, m: MessageValideActi
         "$currentDate": {CHAMP_MODIFICATION: true},
     };
     let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
-    let resultat = collection.update_many(filtre, ops, None).await?;
+    collection.update_many(filtre, ops, None).await?;
 
     Ok(middleware.reponse_ok()?)
 }
@@ -445,7 +445,7 @@ async fn transaction_cle<M, T>(middleware: &M, transaction: T) -> Result<Option<
     Ok(None)
 }
 
-async fn requete_compter_cles_non_dechiffrables<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesCa)
+async fn requete_compter_cles_non_dechiffrables<M>(middleware: &M, m: MessageValideAction, _gestionnaire: &GestionnaireMaitreDesClesCa)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + VerificateurMessage,
 {
@@ -467,7 +467,7 @@ async fn requete_compter_cles_non_dechiffrables<M>(middleware: &M, m: MessageVal
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
 }
 
-async fn requete_cles_non_dechiffrables<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesCa)
+async fn requete_cles_non_dechiffrables<M>(middleware: &M, m: MessageValideAction, _gestionnaire: &GestionnaireMaitreDesClesCa)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + VerificateurMessage,
 {
@@ -545,7 +545,7 @@ struct RequeteClesNonDechiffrable {
     exclude_hachage_bytes: Option<Vec<String>>
 }
 
-async fn requete_synchronizer_cles<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesCa)
+async fn requete_synchronizer_cles<M>(middleware: &M, m: MessageValideAction, _gestionnaire: &GestionnaireMaitreDesClesCa)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + VerificateurMessage,
 {
@@ -633,7 +633,7 @@ async fn evenement_cle_recue_partition<M>(middleware: &M, m: &MessageValideActio
     Ok(None)
 }
 
-async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesCa)
+async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValideAction, _gestionnaire: &GestionnaireMaitreDesClesCa)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + VerificateurMessage,
 {

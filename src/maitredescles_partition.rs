@@ -5,14 +5,12 @@ use std::fs::read_dir;
 use std::sync::Arc;
 
 use log::{debug, error, info, warn};
-use millegrilles_common_rust::{multibase, multibase::Base};
+use millegrilles_common_rust::multibase::Base;
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{doc, Document};
 use millegrilles_common_rust::certificats::{EnveloppeCertificat, EnveloppePrivee, ValidateurX509, VerificateurPermissions};
-use millegrilles_common_rust::chiffrage::{Chiffreur, ChiffreurMgs3, CommandeSauvegarderCle, dechiffrer_asymetrique_multibase, rechiffrer_asymetrique_multibase};
+use millegrilles_common_rust::chiffrage::{Chiffreur, CommandeSauvegarderCle, dechiffrer_asymetrique_multibase, rechiffrer_asymetrique_multibase};
 use millegrilles_common_rust::chiffrage_chacha20poly1305::{CipherMgs3, Mgs3CipherKeys};
-use millegrilles_common_rust::chiffrage_ed25519::dechiffrer_asymmetrique_ed25519;
-// use millegrilles_common_rust::chiffrage_ed25519::{chiffrer_asymmetrique_ed25519, dechiffrer_asymmetrique_ed25519};
 use millegrilles_common_rust::chrono::Utc;
 use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::constantes::*;
@@ -279,7 +277,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
         consommer_transaction(middleware, message, self).await
     }
 
-    async fn consommer_evenement<M>(self: &'static Self, middleware: &M, message: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>> where M: Middleware + 'static {
+    async fn consommer_evenement<M>(self: &'static Self, _middleware: &M, _message: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>> where M: Middleware + 'static {
         todo!()
     }
 
@@ -989,7 +987,7 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
     }
 
     // Trouver les cles en reference
-    let mut filtre = doc! {
+    let filtre = doc! {
         CHAMP_HACHAGE_BYTES: {"$in": &liste_hachage_bytes},
         TRANSACTION_CHAMP_DOMAINE: {"$in": &domaines}
     };
@@ -1002,7 +1000,7 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
     let cle_privee = enveloppe_privee.cle_privee();
     while let Some(rc) = curseur.next().await {
         let doc_cle = rc?;
-        let mut cle_mongo_chiffree: TransactionCle = match convertir_bson_deserializable::<TransactionCle>(doc_cle) {
+        let cle_mongo_chiffree: TransactionCle = match convertir_bson_deserializable::<TransactionCle>(doc_cle) {
             Ok(c) => c,
             Err(e) => {
                 error!("requete_verifier_preuve Erreur conversion bson vers TransactionCle : {:?}", e);
@@ -1030,13 +1028,13 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
 }
 
 async fn rechiffrer_cles<M>(
-    middleware: &M,
-    m: &MessageValideAction,
-    requete: &RequeteDechiffrage,
+    _middleware: &M,
+    _m: &MessageValideAction,
+    _requete: &RequeteDechiffrage,
     enveloppe_privee: Arc<EnveloppePrivee>,
     certificat: &EnveloppeCertificat,
-    requete_autorisee_globalement: bool,
-    permission: Option<EnveloppePermission>,
+    _requete_autorisee_globalement: bool,
+    _permission: Option<EnveloppePermission>,
     curseur: &mut Cursor<Document>
 )
     -> Result<(HashMap<String, TransactionCle>, bool), Box<dyn Error>>
@@ -1139,7 +1137,7 @@ async fn verifier_autorisation_dechiffrage_global<M>(middleware: &M, m: &Message
     if let Some(p) = &requete.permission {
         debug!("verifier_autorisation_dechiffrage_global On a une permission, valider le message {:?}", p);
         let mut ms = match MessageSerialise::from_parsed(p.to_owned()) {
-            Ok(mut ms) => Ok(ms),
+            Ok(ms) => Ok(ms),
             Err(e) => Err(format!("verifier_autorisation_dechiffrage_global Erreur verification permission (2), refuse: {:?}", e))
         }?;
 
@@ -1274,67 +1272,6 @@ fn rechiffrer_pour_maitredescles<M>(middleware: &M, cle: &TransactionCle)
         tag: cle.tag.to_owned(),
         fingerprint_partitions: Some(fingerprint_partitions)
     })
-}
-
-fn verifier_autorisation_dechiffrage_specifique(
-    certificat_destination: &EnveloppeCertificat, permission: Option<&EnveloppePermission>, cle: &TransactionCle)
-    -> Result<bool, Box<dyn Error>>
-{
-    let domaine_cle = &cle.domaine;
-
-    // Verifier si le certificat est une delegation pour le domaine
-    if let Some(d) = certificat_destination.get_delegation_domaines()? {
-        if d.contains(domaine_cle) {
-            return Ok(true)
-        }
-    }
-
-    if let Some(p) = permission {
-        // S'assurer que le hachage_bytes est inclus dans la permission
-        let regles_permission = &p.permission;
-
-        let hachage_bytes_permis = &regles_permission.permission_hachage_bytes;
-        let hachage_bytes_demande = &cle.hachage_bytes;
-        if ! hachage_bytes_permis.contains(hachage_bytes_demande) {
-            debug!("verifier_autorisation_dechiffrage_specifique Hachage_bytes {} n'est pas inclus dans la permission", hachage_bytes_demande);
-            return Ok(false)
-        }
-
-        let enveloppe_permission = p.enveloppe.as_ref();
-        if enveloppe_permission.verifier_exchanges(vec![Securite::L4Secure]) {
-            // Permission signee par un certificat 4.secure - autorisation globale
-
-            // On verifie si le certificat correspond a un des criteres mis dans la permission
-            if let Some(user_id) = &regles_permission.user_id {
-                match certificat_destination.get_user_id()? {
-                    Some(u) => {
-                        if u != user_id {
-                            debug!("verifier_autorisation_dechiffrage_specifique Mauvais user id {}", u);
-                            return Ok(false)
-                        }
-                    },
-                    None => return {
-                        debug!("verifier_autorisation_dechiffrage_specifique Certificat sans user_id (requis = {:?}), acces refuse", user_id);
-                        Ok(false)
-                    }
-                }
-            }
-
-            if let Some(domaine) = &regles_permission.domaines_permis {
-                let domaine_cle = &cle.domaine;
-                if ! domaine.contains(domaine_cle) {
-                    debug!("verifier_autorisation_dechiffrage_specifique Cle n'est pas d'un domaine permis {}", domaine_cle);
-                    return Ok(false)
-                }
-            }
-
-            // Aucune regle n'as ete rejetee, acces permis
-            return Ok(true)
-        }
-    }
-
-    // Reponse par defaut - acces refuse
-    Ok(false)
 }
 
 async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition) -> Result<(), Box<dyn Error>>
