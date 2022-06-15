@@ -182,6 +182,10 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesRedis {
             }
         }
 
+        for sec in [Securite::L3Protege, Securite::L4Secure] {
+            rk_volatils.push(ConfigRoutingExchange { routing_key: format!("evenement.{}.{}", DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION), exchange: sec.clone() });
+        }
+
         let commandes_protegees = vec![
             COMMANDE_RECHIFFRER_BATCH,
         ];
@@ -259,8 +263,8 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesRedis {
         consommer_transaction(middleware, message, self).await
     }
 
-    async fn consommer_evenement<M>(self: &'static Self, _middleware: &M, _message: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>> where M: Middleware + 'static {
-        todo!()
+    async fn consommer_evenement<M>(self: &'static Self, middleware: &M, message: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>> where M: Middleware + 'static {
+        consommer_evenement(middleware, self, message).await
     }
 
     async fn entretien<M>(&self, middleware: Arc<M>) where M: Middleware + 'static {
@@ -452,6 +456,23 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionna
         }
     } else {
         Err(format!("Autorisation commande invalide, acces refuse"))?
+    }
+}
+
+async fn consommer_evenement<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesRedis, m: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: ValidateurX509 + GenerateurMessages + RedisTrait + Chiffreur<CipherMgs3, Mgs3CipherKeys>
+{
+    debug!("consommer_evenement Consommer evenement : {:?}", &m.message);
+
+    // Autorisation : doit etre de niveau 3.protege ou 4.secure
+    match m.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure]) {
+        true => Ok(()),
+        false => Err(format!("consommer_evenement: Evenement invalide (pas 3.protege ou 4.secure)")),
+    }?;
+
+    match m.action.as_str() {
+        EVENEMENT_CLES_MANQUANTES_PARTITION => evenement_cle_manquante(middleware, gestionnaire, &m).await,
+        _ => Err(format!("consommer_transaction: Mauvais type d'action pour une transaction : {}", m.action))?,
     }
 }
 
@@ -1180,4 +1201,72 @@ async fn traiter_cles_manquantes_ca<M>(
     }
 
     Ok(())
+}
+
+async fn evenement_cle_manquante<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesRedis, m: &MessageValideAction)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: ValidateurX509 + GenerateurMessages + RedisTrait + Chiffreur<CipherMgs3, Mgs3CipherKeys>,
+{
+    debug!("evenement_cle_manquante Verifier si on peut transmettre la cle manquante {:?}", &m.message);
+    let event_non_dechiffrables: ReponseSynchroniserCles = m.message.get_msg().map_contenu(None)?;
+
+    let enveloppe = match m.message.certificat.clone() {
+        Some(e) => {
+            if e.verifier_roles(vec![RolesCertificats::MaitreDesCles]) {
+                e
+            } else {
+                debug!("evenement_cle_manquante Certificat sans role maitredescles, on rejette la demande");
+                return Ok(None)
+            }
+        },
+        None => return Ok(None)  // Type certificat inconnu
+    };
+
+    let partition = enveloppe.fingerprint.as_str();
+    let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
+        .exchanges(vec![Securite::L4Secure])
+        .partition(partition)
+        .build();
+
+    let hachages_bytes_list = event_non_dechiffrables.liste_hachage_bytes;
+
+    let enveloppe_privee = middleware.get_enveloppe_privee();
+    let fingerprint = enveloppe_privee.fingerprint().as_str();
+    let redis_dao = middleware.get_redis();
+    for hachage_bytes in hachages_bytes_list {
+        let cle_str = match redis_dao.get_cle(fingerprint, &hachage_bytes).await {
+            Ok(c) => match c {
+                Some(c)=> c,
+                None => {
+                    debug!("cle manquante n'est pas presente localement : {}", hachage_bytes);
+                    continue
+                }
+            },
+            Err(e) => {
+                error!("Erreur chargement cle manquant localement {} : {:?}", hachage_bytes, e);
+                continue
+            }
+        };
+
+        let commande = match serde_json::from_str::<TransactionCle>(cle_str.as_str()) {
+            Ok(cle) => {
+                match rechiffrer_pour_maitredescles(middleware, &cle) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        error!("traiter_cles_manquantes_ca Erreur traitement rechiffrage cle : {:?}", e);
+                        continue
+                    }
+                }
+            },
+            Err(e) => {
+                warn!("traiter_cles_manquantes_ca Erreur conversion document en cle : {:?}", e);
+                continue
+            }
+        };
+
+        debug!("Emettre cles rechiffrees pour CA : {:?}", commande);
+        middleware.transmettre_commande(routage_commande.clone(), &commande, false).await?;
+    }
+
+    Ok(None)
 }
