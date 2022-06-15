@@ -5,7 +5,7 @@ use std::fs::read_dir;
 use std::sync::Arc;
 
 use log::{debug, error, info, warn};
-use millegrilles_common_rust::{multibase, multibase::Base};
+use millegrilles_common_rust::{multibase, multibase::Base, serde_json};
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{doc, Document};
 use millegrilles_common_rust::certificats::{EnveloppeCertificat, EnveloppePrivee, ValidateurX509, VerificateurPermissions};
@@ -18,11 +18,11 @@ use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::constantes::Securite::L3Protege;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
-use millegrilles_common_rust::formatteur_messages::{MessageMilleGrille, MessageSerialise};
+use millegrilles_common_rust::formatteur_messages::{FormatteurMessage, MessageMilleGrille, MessageSerialise};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
 use millegrilles_common_rust::hachages::hacher_bytes;
 use millegrilles_common_rust::messages_generiques::MessageCedule;
-use millegrilles_common_rust::middleware::{Middleware, sauvegarder_transaction, sauvegarder_transaction_recue};
+use millegrilles_common_rust::middleware::{Middleware, sauvegarder_transaction, sauvegarder_transaction_recue, RedisTrait};
 use millegrilles_common_rust::mongo_dao::{ChampIndex, convertir_bson_deserializable, convertir_to_bson, IndexOptions, MongoDao};
 use millegrilles_common_rust::mongodb::Cursor;
 use millegrilles_common_rust::mongodb::options::{FindOptions, UpdateOptions};
@@ -574,7 +574,7 @@ impl DocumentRechiffrage {
 }
 
 async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesRedis) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage
+    where M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage + RedisTrait
 {
     debug!("Consommer requete : {:?}", &message.message);
 
@@ -688,7 +688,7 @@ where
 
 async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesRedis)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao
+    where M: GenerateurMessages + MongoDao + RedisTrait
 {
     debug!("consommer_commande : {:?}", &m.message);
 
@@ -728,7 +728,7 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionna
 
 async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesRedis)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao,
+    where M: GenerateurMessages + MongoDao + RedisTrait,
 {
     debug!("commande_sauvegarder_cle Consommer commande : {:?}", & m.message);
     let commande: CommandeSauvegarderCle = m.message.get_msg().map_contenu(None)?;
@@ -780,7 +780,23 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
     }
 
     // Sauvegarde cle dans redis
-    
+    let cle_redis = format!("{}.{}", middleware.get_enveloppe_privee().fingerprint(), commande.hachage_bytes);
+    let doc_redis = json!({
+        "cle": cle,
+        "hachage_bytes": &commande.hachage_bytes,
+        "domaine": &commande.domaine,
+        "format": &commande.format,
+        "identificateurs_document": &commande.identificateurs_document,
+        "iv": &commande.iv,
+        "tag": &commande.tag,
+        "confirmation_ca": false,
+        "dirty": false,
+    });
+    debug!("Conserver cle dans redis : {}", cle_redis);
+    let redis_dao = middleware.get_redis();
+    let enveloppe_privee = middleware.get_enveloppe_privee();
+    let hachage_bytes = commande.hachage_bytes.as_str();
+    redis_dao.save_cle_maitredescles(enveloppe_privee.fingerprint().as_str(), hachage_bytes, &doc_redis).await?;
 
     Ok(middleware.reponse_ok()?)
 }
@@ -879,7 +895,7 @@ async fn transaction_cle<M, T>(middleware: &M, transaction: T, gestionnaire: &Ge
 
 async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesRedis)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage + ValidateurX509
+    where M: GenerateurMessages + RedisTrait + VerificateurMessage + ValidateurX509
 {
     debug!("requete_dechiffrage Consommer requete : {:?}", & m.message);
     let requete: RequeteDechiffrage = m.message.get_msg().map_contenu(None)?;
@@ -929,10 +945,9 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
     }
 
     // Trouver les cles demandees et rechiffrer
-    let mut curseur = preparer_curseur_cles(
-        middleware, gestionnaire, &requete, permission.as_ref(), domaines_permis.as_ref()).await?;
-    let (cles, cles_trouvees) = rechiffrer_cles(
-        middleware, &m, &requete, enveloppe_privee, certificat.as_ref(), requete_autorisee_globalement, permission, &mut curseur).await?;
+    let cles = get_cles_redis_rechiffrees(
+        middleware, &requete, enveloppe_privee, certificat.as_ref(),
+        permission.as_ref(), domaines_permis.as_ref()).await?;
 
     // Preparer la reponse
     // Verifier si on a au moins une cle dans la reponse
@@ -944,7 +959,7 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
         });
         middleware.formatter_reponse(reponse, None)?
     } else {
-        if cles_trouvees {
+        if cles.len() > 0 {
             // On a trouve des cles mais aucunes n'ont ete rechiffrees (acces refuse)
             debug!("requete_dechiffrage Requete {:?} de dechiffrage {:?} refusee", m.correlation_id, &requete.liste_hachage_bytes);
             let refuse = json!({"ok": false, "err": "Autorisation refusee", "acces": CHAMP_ACCES_REFUSE, "code": 0});
@@ -1029,88 +1044,114 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
     Ok(Some(reponse))
 }
 
-async fn rechiffrer_cles<M>(
+// async fn rechiffrer_cles<M>(
+//     middleware: &M,
+//     m: &MessageValideAction,
+//     requete: &RequeteDechiffrage,
+//     enveloppe_privee: Arc<EnveloppePrivee>,
+//     certificat: &EnveloppeCertificat,
+//     requete_autorisee_globalement: bool,
+//     permission: Option<EnveloppePermission>,
+//     curseur: &mut Cursor<Document>
+// )
+//     -> Result<(HashMap<String, TransactionCle>, bool), Box<dyn Error>>
+//     where M: VerificateurMessage
+// {
+//     let mut cles: HashMap<String, TransactionCle> = HashMap::new();
+//     let mut cles_trouvees = false;  // Flag pour dire qu'on a matche au moins 1 cle
+//
+//     while let Some(rc) = curseur.next().await {
+//         debug!("rechiffrer_cles document {:?}", rc);
+//         cles_trouvees = true;  // On a trouve au moins une cle
+//         match rc {
+//             Ok(doc_cle) => {
+//                 match rechiffrer_cle_chiffree(enveloppe_privee.as_ref(), certificat, doc_cle) {
+//                     Ok(c) => cles.insert(hachage_bytes, cle),
+//                     None => continue  // Erreur rechiffage cle, on skip
+//                 }
+//             },
+//             Err(e) => error!("rechiffrer_cles: Erreur lecture curseur cle : {:?}", e)
+//         }
+//     }
+//
+//     Ok((cles, cles_trouvees))
+// }
+
+async fn get_cles_redis_rechiffrees<M>(
     middleware: &M,
-    m: &MessageValideAction,
     requete: &RequeteDechiffrage,
     enveloppe_privee: Arc<EnveloppePrivee>,
     certificat: &EnveloppeCertificat,
-    requete_autorisee_globalement: bool,
-    permission: Option<EnveloppePermission>,
-    curseur: &mut Cursor<Document>
-)
-    -> Result<(HashMap<String, TransactionCle>, bool), Box<dyn Error>>
-    where M: VerificateurMessage
-{
-    let mut cles: HashMap<String, TransactionCle> = HashMap::new();
-    let mut cles_trouvees = false;  // Flag pour dire qu'on a matche au moins 1 cle
-
-    while let Some(rc) = curseur.next().await {
-        debug!("rechiffrer_cles document {:?}", rc);
-        cles_trouvees = true;  // On a trouve au moins une cle
-        match rc {
-            Ok(doc_cle) => {
-                let mut cle: TransactionCle = match convertir_bson_deserializable::<TransactionCle>(doc_cle) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        error!("rechiffrer_cles Erreur conversion bson vers TransactionCle : {:?}", e);
-                        continue
-                    }
-                };
-                let hachage_bytes = cle.hachage_bytes.clone();
-
-                // Changer pour filtre avant coup (preparer_curseur)
-                // // Verifier l'autorisation de dechiffrage pour cette cle
-                // let requete_autorisee = match requete_autorisee_globalement {
-                //     true => true,
-                //     false => verifier_autorisation_dechiffrage_specifique(&certificat, permission.as_ref(), &cle)?
-                // };
-                // debug!("rechiffrer_cles Autorisation rechiffrage cle {} = {}", hachage_bytes, requete_autorisee);
-
-                // if requete_autorisee {
-                    match rechiffrer_cle(&mut cle, enveloppe_privee.as_ref(), certificat) {
-                        Ok(()) => {
-                            cles.insert(hachage_bytes, cle);
-                        },
-                        Err(e) => {
-                            error!("rechiffrer_cles Erreur rechiffrage cle {:?}", e);
-                            continue;  // Skip cette cle
-                        }
-                    }
-                // }
-            },
-            Err(e) => error!("rechiffrer_cles: Erreur lecture curseur cle : {:?}", e)
-        }
-    }
-
-    Ok((cles, cles_trouvees))
-}
-
-/// Prepare le curseur sur les cles demandees
-async fn preparer_curseur_cles<M>(
-    middleware: &M,
-    gestionnaire: &GestionnaireMaitreDesClesRedis,
-    requete: &RequeteDechiffrage,
     permission: Option<&EnveloppePermission>,
     domaines_permis: Option<&Vec<String>>
 )
-    -> Result<Cursor<Document>, Box<dyn Error>>
-    where M: MongoDao
+    -> Result<HashMap<String, TransactionCle>, Box<dyn Error>>
+    where M: RedisTrait + VerificateurMessage + FormatteurMessage
 {
-    if permission.is_some() {
-        Err(format!("Permission non supporte - FIX ME"))?;
+    let mut cles: HashMap<String, TransactionCle> = HashMap::new();
+
+    let redis_dao = middleware.get_redis();
+    let enveloppe_privee = middleware.get_enveloppe_privee();
+    let fingerprint = enveloppe_privee.fingerprint().as_str();
+
+    for hachage_bytes in &requete.liste_hachage_bytes {
+        match redis_dao.get_cle(fingerprint, hachage_bytes).await? {
+            Some(info_cle_str) => {
+                // Cle trouvee
+                let mut cle_transaction: TransactionCle = serde_json::from_str(info_cle_str.as_str())?;
+
+                // TODO : Verifier autorisation cle
+
+                // Rechiffrer
+                rechiffrer_cle(&mut cle_transaction, enveloppe_privee.as_ref(), certificat)?;
+
+                cles.insert(hachage_bytes.clone(), cle_transaction);
+            },
+            None => continue  // Pas trouve, skip
+        }
     }
 
-    let mut filtre = doc! {CHAMP_HACHAGE_BYTES: {"$in": &requete.liste_hachage_bytes}};
-    if let Some(d) = domaines_permis {
-        filtre.insert("domaine", doc!{"$in": d});
-    }
-    let nom_collection = gestionnaire.get_collection_cles();
-    debug!("requete_dechiffrage Filtre cles sur collection {} : {:?}", nom_collection, filtre);
+    debug!("Cles rechiffrees : {:?}", cles);
 
-    let collection = middleware.get_collection(nom_collection.as_str())?;
-    Ok(collection.find(filtre, None).await?)
+    Ok(cles)
 }
+
+// fn rechiffrer_cle_chiffree(enveloppe_privee: &EnveloppePrivee, certificat: &EnveloppeCertificat, doc_cle: Document)
+//     -> Result<TransactionCle, Box<dyn Error>>
+// {
+//     let mut cle: TransactionCle = convertir_bson_deserializable::<TransactionCle>(doc_cle)?;
+//     rechiffrer_cle(&mut cle, enveloppe_privee.as_ref(), certificat)?;
+//
+//     Ok(cle)
+// }
+
+/// Prepare le curseur sur les cles demandees
+// async fn get_cles_redis_rechiffrees<M>(
+//     middleware: &M,
+//     gestionnaire: &GestionnaireMaitreDesClesRedis,
+//     requete: &RequeteDechiffrage,
+//     permission: Option<&EnveloppePermission>,
+//     domaines_permis: Option<&Vec<String>>
+// )
+//     -> Result<HashMap<String, TransactionCle>, Box<dyn Error>>
+//     where M: RedisTrait
+// {
+//     if permission.is_some() {
+//         Err(format!("Permission non supporte - FIX ME"))?;
+//     }
+//
+//     let redis_dao = middleware.get_redis();
+//
+//     let mut filtre = doc! {CHAMP_HACHAGE_BYTES: {"$in": &requete.liste_hachage_bytes}};
+//     if let Some(d) = domaines_permis {
+//         filtre.insert("domaine", doc!{"$in": d});
+//     }
+//     let nom_collection = gestionnaire.get_collection_cles();
+//     debug!("requete_dechiffrage Filtre cles sur collection {} : {:?}", nom_collection, filtre);
+//
+//     let collection = middleware.get_collection(nom_collection.as_str())?;
+//     Ok(collection.find(filtre, None).await?)
+// }
 
 /// Verifier si la requete de dechiffrage est valide (autorisee) de maniere globale
 /// Les certificats 4.secure et delegations globales proprietaire donnent acces a toutes les cles
