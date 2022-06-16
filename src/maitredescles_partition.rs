@@ -712,7 +712,7 @@ async fn consommer_evenement<M>(middleware: &M, gestionnaire: &GestionnaireMaitr
 
 async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesPartition)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao
+    where M: GenerateurMessages + MongoDao + Chiffreur<CipherMgs3, Mgs3CipherKeys>
 {
     debug!("consommer_commande : {:?}", &m.message);
 
@@ -752,7 +752,7 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionna
 
 async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesPartition)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao,
+    where M: GenerateurMessages + MongoDao + Chiffreur<CipherMgs3, Mgs3CipherKeys>
 {
     debug!("commande_sauvegarder_cle Consommer commande : {:?}", & m.message);
     let commande: CommandeSauvegarderCle = m.message.get_msg().map_contenu(None)?;
@@ -801,6 +801,25 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
             .exchanges(vec![Securite::L4Secure])
             .build();
         middleware.soumettre_transaction(routage, &transaction, false).await?;
+
+        // Detecter si on doit rechiffrer et re-emettre la cles
+        // Survient si on a recu une commande sur un exchange autre que 4.secure et qu'il a moins de
+        // cles dans la commande que le nombre de cles de rechiffrage connues (incluant cert maitre des cles)
+        if let Some(exchange) = m.exchange.as_ref() {
+            if exchange != SECURITE_4_SECURE {
+                let pk_chiffrage = middleware.get_publickeys_chiffrage();
+                if pk_chiffrage.len() > commande.cles.len() {
+                    debug!("commande_sauvegarder_cle Nouvelle cle sur exchange != 4.secure, re-emettre a l'interne");
+                    let commande_cle_rechiffree = rechiffrer_pour_maitredescles(middleware, &transaction)?;
+                    let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
+                        .exchanges(vec![Securite::L4Secure])
+                        .build();
+                    middleware.transmettre_commande(
+                        routage_commande.clone(), &commande_cle_rechiffree, false).await?;
+                }
+            }
+        }
+
     }
 
     Ok(middleware.reponse_ok()?)
@@ -1516,7 +1535,7 @@ async fn traiter_cles_manquantes_ca<M>(
 
 async fn evenement_cle_manquante<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition, m: &MessageValideAction)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: ValidateurX509 + GenerateurMessages + MongoDao + Chiffreur<CipherMgs3, Mgs3CipherKeys>,
+    where M: ValidateurX509 + GenerateurMessages + MongoDao + Chiffreur<CipherMgs3, Mgs3CipherKeys>
 {
     debug!("evenement_cle_manquante Verifier si on peut transmettre la cle manquante {:?}", &m.message);
     let event_non_dechiffrables: ReponseSynchroniserCles = m.message.get_msg().map_contenu(None)?;
