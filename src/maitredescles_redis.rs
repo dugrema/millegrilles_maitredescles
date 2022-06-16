@@ -544,7 +544,7 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
 
 async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesRedis)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + RedisTrait
+    where M: GenerateurMessages + RedisTrait + Chiffreur<CipherMgs3, Mgs3CipherKeys>
 {
     debug!("commande_rechiffrer_batch Consommer commande : {:?}", & m.message);
     let commande: CommandeRechiffrerBatch = m.message.get_msg().map_contenu(None)?;
@@ -553,6 +553,23 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
     let fingerprint = gestionnaire.fingerprint.as_str();
     let redis_dao = middleware.get_redis();
     let enveloppe_privee = middleware.get_enveloppe_privee();
+    let fingerprint_ca = enveloppe_privee.enveloppe_ca.fingerprint.clone();
+
+    // Determiner si on doit rechiffrer pour d'autres maitre des cles
+    let cles_chiffrage = {
+        let mut cles_chiffrage = Vec::new();
+        for fingerprint_cert_cle in middleware.get_publickeys_chiffrage() {
+            let fingerprint_cle = fingerprint_cert_cle.fingerprint;
+            if fingerprint_cle != fingerprint && fingerprint_cle != fingerprint_ca {
+                cles_chiffrage.push(fingerprint_cert_cle.public_key);
+            }
+        }
+        cles_chiffrage
+    };
+
+    let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
+        .exchanges(vec![Securite::L4Secure])
+        .build();
 
     // Traiter chaque cle individuellement
     let liste_hachage_bytes: Vec<String> = commande.cles.iter().map(|c| c.hachage_bytes.to_owned()).collect();
@@ -570,6 +587,12 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
         });
 
         redis_dao.save_cle_maitredescles(enveloppe_privee.as_ref(), &info_cle.hachage_bytes, &doc_redis).await?;
+
+        // Rechiffrer pour tous les autres maitre des cles
+        if cles_chiffrage.len() > 0 {
+            let commande_rechiffree = rechiffrer_pour_maitredescles(middleware, &info_cle)?;
+            middleware.transmettre_commande(routage_commande.clone(), &commande_rechiffree, false).await?;
+        }
     }
 
     // Emettre un evenement pour confirmer le traitement.
