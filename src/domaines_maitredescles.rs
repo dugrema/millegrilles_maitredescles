@@ -340,14 +340,14 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
             match g {
                 TypeGestionnaire::Partition(g) => {
                     // Effectuer rechiffrage si on a fait une rotation de la cle privee
-                    if ! rechiffrage_complete {
-                        debug!("domaines_maitredescles.entretien Verification de rotation des cles");
-                        rechiffrage_complete = true;
-                        match g.migration_cles(middleware.as_ref(), g).await {
-                            Ok(()) => (),
-                            Err(e) => error!("entretien Erreur migration cles : {:?}", e)
-                        }
-                    }
+                    // if ! rechiffrage_complete {
+                    //     debug!("domaines_maitredescles.entretien Verification de rotation des cles");
+                    //     rechiffrage_complete = true;
+                    //     match g.migration_cles(middleware.as_ref(), g).await {
+                    //         Ok(()) => (),
+                    //         Err(e) => error!("entretien Erreur migration cles : {:?}", e)
+                    //     }
+                    // }
 
                     if prochain_sync < maintenant {
                         debug!("entretien Effectuer sync des cles du CA non disponibles localement");

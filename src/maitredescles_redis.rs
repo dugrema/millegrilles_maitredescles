@@ -544,52 +544,44 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
 
 async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesRedis)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages
+    where M: GenerateurMessages + RedisTrait
 {
     debug!("commande_rechiffrer_batch Consommer commande : {:?}", & m.message);
     let commande: CommandeRechiffrerBatch = m.message.get_msg().map_contenu(None)?;
     debug!("commande_rechiffrer_batch Commande parsed : {:?}", commande);
 
-    todo!("Fix me")
+    let fingerprint = gestionnaire.fingerprint.as_str();
+    let redis_dao = middleware.get_redis();
+    let enveloppe_privee = middleware.get_enveloppe_privee();
 
-    // let fingerprint = gestionnaire.fingerprint.as_str();
-    //
-    // let collection = middleware.get_collection(gestionnaire.get_collection_cles().as_str())?;
-    //
-    // // Traiter chaque cle individuellement
-    // let liste_hachage_bytes: Vec<String> = commande.cles.iter().map(|c| c.hachage_bytes.to_owned()).collect();
-    // for cle in commande.cles {
-    //     let mut doc_cle = convertir_to_bson(cle.clone())?;
-    //     doc_cle.insert("dirty", true);
-    //     doc_cle.insert("confirmation_ca", false);
-    //     doc_cle.insert(CHAMP_CREATION, Utc::now());
-    //     doc_cle.insert(CHAMP_MODIFICATION, Utc::now());
-    //     let filtre = doc! { "hachage_bytes": cle.hachage_bytes.as_str() };
-    //     let ops = doc! { "$setOnInsert": doc_cle };
-    //     let opts = UpdateOptions::builder().upsert(true).build();
-    //     let resultat = collection.update_one(filtre, ops, opts).await?;
-    //
-    //     if let Some(uid) = resultat.upserted_id {
-    //         debug!("commande_rechiffrer_batch Nouvelle cle insere _id: {}, generer transaction", uid);
-    //         let routage = RoutageMessageAction::builder(DOMAINE_NOM, TRANSACTION_CLE)
-    //             .partition(fingerprint)
-    //             .exchanges(vec![Securite::L4Secure])
-    //             .build();
-    //         middleware.soumettre_transaction(routage, &cle, false).await?;
-    //     }
-    //
-    // }
-    //
-    // // Emettre un evenement pour confirmer le traitement.
-    // // Utilise par le CA (confirme que les cles sont dechiffrables) et par le client (batch traitee)
-    // let routage_event = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_CLE_RECUE_PARTITION).build();
-    // let event_contenu = json!({
-    //     "correlation": &m.correlation_id,
-    //     "liste_hachage_bytes": liste_hachage_bytes,
-    // });
-    // middleware.emettre_evenement(routage_event, &event_contenu).await?;
-    //
-    // Ok(middleware.reponse_ok()?)
+    // Traiter chaque cle individuellement
+    let liste_hachage_bytes: Vec<String> = commande.cles.iter().map(|c| c.hachage_bytes.to_owned()).collect();
+    for info_cle in commande.cles {
+        debug!("commande_rechiffrer_batch Cle {:?}", info_cle);
+
+        let doc_redis = json!({
+            "cle": &info_cle.cle,
+            "hachage_bytes": &info_cle.hachage_bytes,
+            "domaine": &info_cle.domaine,
+            "format": &info_cle.format,
+            "identificateurs_document": &info_cle.identificateurs_document,
+            "iv": &info_cle.iv,
+            "tag": &info_cle.tag,
+        });
+
+        redis_dao.save_cle_maitredescles(enveloppe_privee.as_ref(), &info_cle.hachage_bytes, &doc_redis).await?;
+    }
+
+    // Emettre un evenement pour confirmer le traitement.
+    // Utilise par le CA (confirme que les cles sont dechiffrables) et par le client (batch traitee)
+    let routage_event = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_CLE_RECUE_PARTITION).build();
+    let event_contenu = json!({
+        "correlation": &m.correlation_id,
+        "liste_hachage_bytes": liste_hachage_bytes,
+    });
+    middleware.emettre_evenement(routage_event, &event_contenu).await?;
+
+    Ok(middleware.reponse_ok()?)
 }
 
 async fn aiguillage_transaction<M, T>(_middleware: &M, transaction: T, _gestionnaire: &GestionnaireMaitreDesClesRedis) -> Result<Option<MessageMilleGrille>, String>
