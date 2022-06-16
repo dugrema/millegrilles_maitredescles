@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::sync::Arc;
 
@@ -6,6 +6,8 @@ use log::debug;
 use millegrilles_common_rust::certificats::EnveloppeCertificat;
 use millegrilles_common_rust::chiffrage::{CommandeSauvegarderCle, FormatChiffrage};
 use millegrilles_common_rust::constantes::*;
+use millegrilles_common_rust::formatteur_messages::MessageMilleGrille;
+use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::messages_generiques::MessageCedule;
 use millegrilles_common_rust::middleware::Middleware;
 use millegrilles_common_rust::mongo_dao::{ChampIndex, IndexOptions, MongoDao};
@@ -22,6 +24,8 @@ pub const INDEX_NON_DECHIFFRABLES: &str = "index_non_dechiffrables";
 pub const NOM_Q_DECHIFFRAGE: &str = "MaitreDesCles/dechiffrage";
 
 pub const REQUETE_SYNCHRONISER_CLES: &str = "synchroniserCles";
+pub const REQUETE_DECHIFFRAGE: &str = "dechiffrage";
+pub const REQUETE_VERIFIER_PREUVE: &str = "verifierPreuve";
 
 // pub const COMMANDE_SAUVEGARDER_CLE: &str = "sauvegarderCle";
 pub const COMMANDE_CONFIRMER_CLES_SUR_CA: &str = "confirmerClesSurCa";
@@ -114,6 +118,30 @@ where M: Middleware + 'static {
     Ok(())
 }
 
+/// Emettre evenement de cles inconnues suite a une requete. Permet de faire la difference entre
+/// les cles de la requete et les cles connues.
+pub async fn emettre_cles_inconnues<M>(middleware: &M, requete: RequeteDechiffrage, cles_connues: Vec<String>)
+    -> Result<(), Box<dyn Error>>
+    where M: GenerateurMessages
+{
+    // Faire une demande interne de sync pour voir si les cles inconnues existent (async)
+    let routage_evenement_manquant = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION)
+        .exchanges(vec![Securite::L4Secure])
+        .build();
+
+    let mut set_cles = HashSet::new();
+    set_cles.extend(requete.liste_hachage_bytes.iter());
+    let mut set_cles_trouvees = HashSet::new();
+    set_cles_trouvees.extend(&cles_connues);
+    let set_diff = set_cles.difference(&set_cles_trouvees);
+    let liste_cles: Vec<String> = set_diff.into_iter().map(|m| m.to_string()).collect();
+    debug!("emettre_cles_inconnues Requete de cles inconnues : {:?}", liste_cles);
+
+    let evenement_cles_manquantes = ReponseSynchroniserCles { liste_hachage_bytes: liste_cles };
+
+    Ok(middleware.emettre_evenement(routage_evenement_manquant.clone(), &evenement_cles_manquantes).await?)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionCle {
     pub cle: String,
@@ -190,4 +218,11 @@ pub struct ReponseConfirmerClesSurCa {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CommandeRechiffrerBatch {
     pub cles: Vec<TransactionCle>
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RequeteDechiffrage {
+    pub liste_hachage_bytes: Vec<String>,
+    pub permission: Option<MessageMilleGrille>,
+    pub certificat_rechiffrage: Option<Vec<String>>,
 }

@@ -44,8 +44,6 @@ const NOM_COLLECTION_RECHIFFRAGE: &str = "MaitreDesCles/rechiffrage";
 // const NOM_Q_VOLATILS_GLOBAL: &str = "MaitreDesCles/volatils";
 
 const REQUETE_CERTIFICAT_MAITREDESCLES: &str = COMMANDE_CERT_MAITREDESCLES;
-const REQUETE_DECHIFFRAGE: &str = "dechiffrage";
-const REQUETE_VERIFIER_PREUVE: &str = "verifierPreuve";
 
 const COMMANDE_RECHIFFRER_BATCH: &str = "rechiffrerBatch";
 
@@ -177,7 +175,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
         ];
         let nom_partition = self.fingerprint.as_str();
 
-        for sec in [Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure] {
+        for sec in [Securite::L1Public, Securite::L2Prive, Securite::L3Protege] {
             rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE), exchange: sec.clone() });
             rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_VERIFIER_PREUVE), exchange: sec.clone() });
             rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_CERTIFICAT_MAITREDESCLES), exchange: sec.clone() });
@@ -191,6 +189,13 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
                 rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, commande), exchange: sec.clone() });
             }
         }
+
+        // Commande sauvegarder cle 4.secure pour redistribution des cles
+        rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE), exchange: Securite::L4Secure });
+
+        // Requetes de dechiffrage/preuve re-emise sur le bus 4.secure lorsque la cle est inconnue
+        rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE), exchange: Securite::L4Secure });
+        rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_VERIFIER_PREUVE), exchange: Securite::L4Secure });
 
         for sec in [Securite::L3Protege, Securite::L4Secure] {
             rk_volatils.push(ConfigRoutingExchange { routing_key: format!("evenement.{}.{}", DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION), exchange: sec.clone() });
@@ -798,9 +803,6 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
         middleware.soumettre_transaction(routage, &transaction, false).await?;
     }
 
-    // Sauvegarde cle dans redis
-
-
     Ok(middleware.reponse_ok()?)
 }
 
@@ -956,10 +958,17 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
     // Preparer la reponse
     // Verifier si on a au moins une cle dans la reponse
     let reponse = if cles.len() > 0 {
+
+        // Verifier si on a des cles inconnues
+        if cles.len() < requete.liste_hachage_bytes.len() {
+            let cles_connues = cles.keys().map(|s|s.to_owned()).collect();
+            emettre_cles_inconnues(middleware, requete, cles_connues).await?;
+        }
+
         let reponse = json!({
             "acces": CHAMP_ACCES_PERMIS,
             "code": 1,
-            "cles": cles,
+            "cles": &cles,
         });
         middleware.formatter_reponse(reponse, None)?
     } else {
@@ -971,6 +980,12 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
         } else {
             // On n'a pas trouve de cles
             debug!("requete_dechiffrage Requete {:?} de dechiffrage {:?}, cles inconnues", m.correlation_id, &requete.liste_hachage_bytes);
+
+            // Faire une demande interne de sync pour voir si les cles inconnues existent (async)
+            let cles_connues = cles.keys().map(|s|s.to_owned()).collect();
+            emettre_cles_inconnues(middleware, requete, cles_connues).await?;
+
+            // Retourner cle inconnu a l'usager
             let inconnu = json!({"ok": false, "err": "Cles inconnues", "acces": CHAMP_ACCES_CLE_INCONNUE, "code": 4});
             middleware.formatter_reponse(&inconnu, None)?
         }
@@ -1207,13 +1222,6 @@ async fn verifier_autorisation_dechiffrage_global<M>(middleware: &M, m: &Message
 
     // // Reponse par defaut - acces global refuse, permission OK si presente
     // Ok((false, permission))
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct RequeteDechiffrage {
-    liste_hachage_bytes: Vec<String>,
-    permission: Option<MessageMilleGrille>,
-    certificat_rechiffrage: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -72,21 +72,9 @@ fn charger_gestionnaires() -> Vec<&'static TypeGestionnaire> {
     let validateur = config.get_configuration_pki().get_validateur();
     let cert_ca = validateur.ca_cert();
     let fp_ca = calculer_fingerprint(cert_ca).expect("fingerprint cert ca");
-    // let fp_cert_ca = pem_iter.last().expect("ca");
-    // let fp_ca = fp_cert_ca.fingerprint.as_str();
 
     info!("Configuration du maitre des cles avec CA {} et Partition {}", fp_ca, partition);
 
-    // Charger valeur d'environnement au besoin
-    // let flag_ca = match activer_ca {
-    //     Some(a) => a,
-    //     None => {
-    //         match std::env::var("MG_MAITREDESCLES_CA") {
-    //             Ok(val) => val.as_str() == "1",
-    //             Err(_) => false
-    //         }
-    //     }
-    // };
     let (flag_ca, flag_partition, flag_redis) = match std::env::var("MG_MAITREDESCLES_MODE") {
         Ok(val) => {
             match val.as_str() {
@@ -262,6 +250,7 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
     let mut prochain_entretien_transactions = chrono::Utc::now();
     let intervalle_entretien_transactions = chrono::Duration::minutes(5);
 
+    // Intervalle sync certificats avec CA et autres maitre des cles
     let mut prochain_sync = chrono::Utc::now();
     let intervalle_sync = chrono::Duration::hours(6);
 
