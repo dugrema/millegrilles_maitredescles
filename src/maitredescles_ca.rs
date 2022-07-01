@@ -682,130 +682,130 @@ async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValideActio
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
 }
 
-#[cfg(test)]
-mod test_integration {
-    use millegrilles_common_rust::backup::CatalogueHoraire;
-    use millegrilles_common_rust::formatteur_messages::MessageSerialise;
-    use millegrilles_common_rust::generateur_messages::RoutageMessageAction;
-    use millegrilles_common_rust::middleware::IsConfigurationPki;
-    use millegrilles_common_rust::middleware_db::preparer_middleware_db;
-    use millegrilles_common_rust::mongo_dao::convertir_to_bson;
-    use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
-    use millegrilles_common_rust::recepteur_messages::TypeMessage;
-    use millegrilles_common_rust::tokio as tokio;
-
-    use crate::test_setup::setup;
-
-    use super::*;
-
-    #[tokio::test]
-    async fn test_requete_compte_non_dechiffrable() {
-        setup("test_requete_compte_non_dechiffrable");
-        let (middleware, _, _, mut futures) = preparer_middleware_db(Vec::new(), None);
-        let enveloppe_privee = middleware.get_enveloppe_privee();
-        let fingerprint = enveloppe_privee.fingerprint().as_str();
-
-        let gestionnaire = GestionnaireMaitreDesClesCa {fingerprint: fingerprint.into()};
-        futures.push(tokio::spawn(async move {
-
-            let contenu = json!({});
-            let message_mg = MessageMilleGrille::new_signer(
-                enveloppe_privee.as_ref(),
-                &contenu,
-                DOMAINE_NOM.into(),
-                REQUETE_COMPTER_CLES_NON_DECHIFFRABLES.into(),
-                None::<&str>,
-                None
-            ).expect("message");
-            let mut message = MessageSerialise::from_parsed(message_mg).expect("serialise");
-
-            // Injecter certificat utilise pour signer
-            message.certificat = Some(enveloppe_privee.enveloppe.clone());
-
-            let mva = MessageValideAction::new(
-                message, "dummy_q", "routing_key", "domaine", "action", TypeMessageOut::Requete);
-
-            let reponse = requete_compter_cles_non_dechiffrables(middleware.as_ref(), mva, &gestionnaire).await.expect("dechiffrage");
-            debug!("Reponse requete compte cles non dechiffrables : {:?}", reponse);
-
-        }));
-        // Execution async du test
-        futures.next().await.expect("resultat").expect("ok");
-    }
-
-    #[tokio::test]
-    async fn test_requete_cles_non_dechiffrable() {
-        setup("test_requete_cles_non_dechiffrable");
-        let (middleware, _, _, mut futures) = preparer_middleware_db(Vec::new(), None);
-        let enveloppe_privee = middleware.get_enveloppe_privee();
-        let fingerprint = enveloppe_privee.fingerprint().as_str();
-
-        let gestionnaire = GestionnaireMaitreDesClesCa {fingerprint: fingerprint.into()};
-        futures.push(tokio::spawn(async move {
-
-            let contenu = json!({
-                "limite": 5,
-                "page": 0,
-            });
-            let message_mg = MessageMilleGrille::new_signer(
-                enveloppe_privee.as_ref(),
-                &contenu,
-                DOMAINE_NOM.into(),
-                REQUETE_COMPTER_CLES_NON_DECHIFFRABLES.into(),
-                None::<&str>,
-                None
-            ).expect("message");
-            let mut message = MessageSerialise::from_parsed(message_mg).expect("serialise");
-
-            // Injecter certificat utilise pour signer
-            message.certificat = Some(enveloppe_privee.enveloppe.clone());
-
-            let mva = MessageValideAction::new(
-                message, "dummy_q", "routing_key", "domaine", "action", TypeMessageOut::Requete);
-
-            let reponse = requete_cles_non_dechiffrables(middleware.as_ref(), mva, &gestionnaire).await.expect("dechiffrage");
-            debug!("Reponse requete compte cles non dechiffrables : {:?}", reponse);
-
-        }));
-        // Execution async du test
-        futures.next().await.expect("resultat").expect("ok");
-    }
-
-    #[tokio::test]
-    async fn test_requete_synchronizer_cles() {
-        setup("test_requete_synchronizer_cles");
-        let (middleware, _, _, mut futures) = preparer_middleware_db(Vec::new(), None);
-        let enveloppe_privee = middleware.get_enveloppe_privee();
-        let fingerprint = enveloppe_privee.fingerprint().as_str();
-
-        let gestionnaire = GestionnaireMaitreDesClesCa {fingerprint: fingerprint.into()};
-        futures.push(tokio::spawn(async move {
-
-            let contenu = json!({
-                "limite": 5,
-                "page": 0,
-            });
-            let message_mg = MessageMilleGrille::new_signer(
-                enveloppe_privee.as_ref(),
-                &contenu,
-                DOMAINE_NOM.into(),
-                REQUETE_COMPTER_CLES_NON_DECHIFFRABLES.into(),
-                None::<&str>,
-                None
-            ).expect("message");
-            let mut message = MessageSerialise::from_parsed(message_mg).expect("serialise");
-
-            // Injecter certificat utilise pour signer
-            message.certificat = Some(enveloppe_privee.enveloppe.clone());
-
-            let mva = MessageValideAction::new(
-                message, "dummy_q", "routing_key", "domaine", "action", TypeMessageOut::Requete);
-
-            let reponse = requete_synchronizer_cles(middleware.as_ref(), mva, &gestionnaire).await.expect("dechiffrage");
-            debug!("test_requete_synchronizer_cles Reponse : {:?}", reponse);
-
-        }));
-        // Execution async du test
-        futures.next().await.expect("resultat").expect("ok");
-    }
-}
+// #[cfg(test)]
+// mod test_integration {
+//     use millegrilles_common_rust::backup::CatalogueHoraire;
+//     use millegrilles_common_rust::formatteur_messages::MessageSerialise;
+//     use millegrilles_common_rust::generateur_messages::RoutageMessageAction;
+//     use millegrilles_common_rust::middleware::IsConfigurationPki;
+//     use millegrilles_common_rust::middleware_db::preparer_middleware_db;
+//     use millegrilles_common_rust::mongo_dao::convertir_to_bson;
+//     use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
+//     use millegrilles_common_rust::recepteur_messages::TypeMessage;
+//     use millegrilles_common_rust::tokio as tokio;
+//
+//     use crate::test_setup::setup;
+//
+//     use super::*;
+//
+//     #[tokio::test]
+//     async fn test_requete_compte_non_dechiffrable() {
+//         setup("test_requete_compte_non_dechiffrable");
+//         let (middleware, _, _, mut futures) = preparer_middleware_db(Vec::new(), None);
+//         let enveloppe_privee = middleware.get_enveloppe_privee();
+//         let fingerprint = enveloppe_privee.fingerprint().as_str();
+//
+//         let gestionnaire = GestionnaireMaitreDesClesCa {fingerprint: fingerprint.into()};
+//         futures.push(tokio::spawn(async move {
+//
+//             let contenu = json!({});
+//             let message_mg = MessageMilleGrille::new_signer(
+//                 enveloppe_privee.as_ref(),
+//                 &contenu,
+//                 DOMAINE_NOM.into(),
+//                 REQUETE_COMPTER_CLES_NON_DECHIFFRABLES.into(),
+//                 None::<&str>,
+//                 None
+//             ).expect("message");
+//             let mut message = MessageSerialise::from_parsed(message_mg).expect("serialise");
+//
+//             // Injecter certificat utilise pour signer
+//             message.certificat = Some(enveloppe_privee.enveloppe.clone());
+//
+//             let mva = MessageValideAction::new(
+//                 message, "dummy_q", "routing_key", "domaine", "action", TypeMessageOut::Requete);
+//
+//             let reponse = requete_compter_cles_non_dechiffrables(middleware.as_ref(), mva, &gestionnaire).await.expect("dechiffrage");
+//             debug!("Reponse requete compte cles non dechiffrables : {:?}", reponse);
+//
+//         }));
+//         // Execution async du test
+//         futures.next().await.expect("resultat").expect("ok");
+//     }
+//
+//     #[tokio::test]
+//     async fn test_requete_cles_non_dechiffrable() {
+//         setup("test_requete_cles_non_dechiffrable");
+//         let (middleware, _, _, mut futures) = preparer_middleware_db(Vec::new(), None);
+//         let enveloppe_privee = middleware.get_enveloppe_privee();
+//         let fingerprint = enveloppe_privee.fingerprint().as_str();
+//
+//         let gestionnaire = GestionnaireMaitreDesClesCa {fingerprint: fingerprint.into()};
+//         futures.push(tokio::spawn(async move {
+//
+//             let contenu = json!({
+//                 "limite": 5,
+//                 "page": 0,
+//             });
+//             let message_mg = MessageMilleGrille::new_signer(
+//                 enveloppe_privee.as_ref(),
+//                 &contenu,
+//                 DOMAINE_NOM.into(),
+//                 REQUETE_COMPTER_CLES_NON_DECHIFFRABLES.into(),
+//                 None::<&str>,
+//                 None
+//             ).expect("message");
+//             let mut message = MessageSerialise::from_parsed(message_mg).expect("serialise");
+//
+//             // Injecter certificat utilise pour signer
+//             message.certificat = Some(enveloppe_privee.enveloppe.clone());
+//
+//             let mva = MessageValideAction::new(
+//                 message, "dummy_q", "routing_key", "domaine", "action", TypeMessageOut::Requete);
+//
+//             let reponse = requete_cles_non_dechiffrables(middleware.as_ref(), mva, &gestionnaire).await.expect("dechiffrage");
+//             debug!("Reponse requete compte cles non dechiffrables : {:?}", reponse);
+//
+//         }));
+//         // Execution async du test
+//         futures.next().await.expect("resultat").expect("ok");
+//     }
+//
+//     #[tokio::test]
+//     async fn test_requete_synchronizer_cles() {
+//         setup("test_requete_synchronizer_cles");
+//         let (middleware, _, _, mut futures) = preparer_middleware_db(Vec::new(), None);
+//         let enveloppe_privee = middleware.get_enveloppe_privee();
+//         let fingerprint = enveloppe_privee.fingerprint().as_str();
+//
+//         let gestionnaire = GestionnaireMaitreDesClesCa {fingerprint: fingerprint.into()};
+//         futures.push(tokio::spawn(async move {
+//
+//             let contenu = json!({
+//                 "limite": 5,
+//                 "page": 0,
+//             });
+//             let message_mg = MessageMilleGrille::new_signer(
+//                 enveloppe_privee.as_ref(),
+//                 &contenu,
+//                 DOMAINE_NOM.into(),
+//                 REQUETE_COMPTER_CLES_NON_DECHIFFRABLES.into(),
+//                 None::<&str>,
+//                 None
+//             ).expect("message");
+//             let mut message = MessageSerialise::from_parsed(message_mg).expect("serialise");
+//
+//             // Injecter certificat utilise pour signer
+//             message.certificat = Some(enveloppe_privee.enveloppe.clone());
+//
+//             let mva = MessageValideAction::new(
+//                 message, "dummy_q", "routing_key", "domaine", "action", TypeMessageOut::Requete);
+//
+//             let reponse = requete_synchronizer_cles(middleware.as_ref(), mva, &gestionnaire).await.expect("dechiffrage");
+//             debug!("test_requete_synchronizer_cles Reponse : {:?}", reponse);
+//
+//         }));
+//         // Execution async du test
+//         futures.next().await.expect("resultat").expect("ok");
+//     }
+// }
