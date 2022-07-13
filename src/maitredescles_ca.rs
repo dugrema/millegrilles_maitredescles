@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use log::{debug, error, warn};
 use millegrilles_common_rust::async_trait::async_trait;
-use millegrilles_common_rust::bson::{doc, Document};
+use millegrilles_common_rust::bson::{DateTime, doc, Document};
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chiffrage::CommandeSauvegarderCle;
 use millegrilles_common_rust::chrono::Utc;
@@ -426,6 +426,7 @@ async fn transaction_cle<M, T>(middleware: &M, transaction: T) -> Result<Option<
     let mut doc_bson_transaction = transaction.contenu();
 
     doc_bson_transaction.insert("non_dechiffrable", true);  // Flag non-dechiffrable par defaut (setOnInsert seulement)
+    doc_bson_transaction.insert(CHAMP_CREATION, DateTime::now());  // Flag non-dechiffrable par defaut (setOnInsert seulement)
 
     let filtre = doc! {CHAMP_HACHAGE_BYTES: hachage_bytes};
     let ops = doc! {
@@ -498,17 +499,17 @@ async fn requete_cles_non_dechiffrables<M>(middleware: &M, m: MessageValideActio
         }
 
         let hint = Hint::Name(INDEX_NON_DECHIFFRABLES.into());
-        let sort_doc = doc! {
-            CHAMP_NON_DECHIFFRABLE: 1,
-            CHAMP_CREATION: 1,
-        };
+        // let sort_doc = doc! {
+        //     CHAMP_NON_DECHIFFRABLE: 1,
+        //     CHAMP_CREATION: 1,
+        // };
         let opts = FindOptions::builder()
             .hint(hint)
-            .sort(sort_doc)
+            // .sort(sort_doc)
             .limit(Some(limite_docs as i64))
             .build();
+        debug!("requete_cles_non_dechiffrables filtre cles a rechiffrer : filtre {:?} opts {:?}", filtre, opts);
         let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
-        debug!("Requete batch cles filtre : {:?}", filtre);
         collection.find(filtre, opts).await?
     };
 
@@ -534,6 +535,7 @@ async fn requete_cles_non_dechiffrables<M>(middleware: &M, m: MessageValideActio
     }
 
     let reponse = json!({ "cles": cles, "date_creation_max": date_creation.as_ref() });
+    debug!("requete_cles_non_dechiffrables Reponse cles rechiffrable : {:?}", reponse);
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
 }
 
@@ -560,11 +562,11 @@ async fn requete_synchronizer_cles<M>(middleware: &M, m: MessageValideAction, _g
 
         let filtre = doc! {};
         let hint = Hint::Keys(doc!{"_id": 1});  // Index _id
-        let sort_doc = doc! {"_id": 1};
+        //let sort_doc = doc! {"_id": 1};
         let projection = doc!{CHAMP_HACHAGE_BYTES: 1};
         let opts = FindOptions::builder()
             .hint(hint)
-            .sort(sort_doc)
+            //.sort(sort_doc)
             .skip(Some(start_index as u64))
             .limit(Some(limite_docs as i64))
             .projection(Some(projection))
