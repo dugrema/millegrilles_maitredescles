@@ -184,6 +184,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
 
         // Commande sauvegarder cle 4.secure pour redistribution des cles
         rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE), exchange: Securite::L4Secure });
+        rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, COMMANDE_SAUVEGARDER_CLE), exchange: Securite::L4Secure });
 
         // Requetes de dechiffrage/preuve re-emise sur le bus 4.secure lorsque la cle est inconnue
         rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE), exchange: Securite::L4Secure });
@@ -1251,7 +1252,7 @@ async fn evenement_cle_manquante<M>(middleware: &M, gestionnaire: &GestionnaireM
     let partition = enveloppe.fingerprint.as_str();
     let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
         .exchanges(vec![Securite::L4Secure])
-        .partition(partition)
+        // .partition(partition)
         .build();
 
     let hachages_bytes = event_non_dechiffrables.liste_hachage_bytes;
