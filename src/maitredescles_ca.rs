@@ -390,9 +390,9 @@ async fn commande_reset_non_dechiffrable<M>(middleware: &M, m: MessageValideActi
     //let commande: CommandeSauvegarderCle = m.message.get_msg().map_contenu(None)?;
     //debug!("Commande sauvegarder cle parsed : {:?}", commande);
 
-    let filtre = doc! {"non_dechiffrable": false};
+    let filtre = doc! {CHAMP_NON_DECHIFFRABLE: false};
     let ops = doc! {
-        "$set": {"non_dechiffrable": true},
+        "$set": {CHAMP_NON_DECHIFFRABLE: true},
         "$currentDate": {CHAMP_MODIFICATION: true},
     };
     let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
@@ -425,7 +425,7 @@ async fn transaction_cle<M, T>(middleware: &M, transaction: T) -> Result<Option<
     let hachage_bytes = transaction_cle.hachage_bytes.as_str();
     let mut doc_bson_transaction = transaction.contenu();
 
-    doc_bson_transaction.insert("non_dechiffrable", true);  // Flag non-dechiffrable par defaut (setOnInsert seulement)
+    doc_bson_transaction.insert(CHAMP_NON_DECHIFFRABLE, true);  // Flag non-dechiffrable par defaut (setOnInsert seulement)
     doc_bson_transaction.insert(CHAMP_CREATION, DateTime::now());  // Flag non-dechiffrable par defaut (setOnInsert seulement)
 
     let filtre = doc! {CHAMP_HACHAGE_BYTES: hachage_bytes};
@@ -646,7 +646,10 @@ async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValideActio
     let mut cles_manquantes = HashSet::new();
     cles_manquantes.extend(requete.liste_hachage_bytes.clone());
 
-    let filtre = doc! [ CHAMP_HACHAGE_BYTES: {"$in": &requete.liste_hachage_bytes } ];
+    let filtre_update = doc! {
+        CHAMP_HACHAGE_BYTES: {"$in": &requete.liste_hachage_bytes },
+        CHAMP_NON_DECHIFFRABLE: true,
+    };
 
     // Marquer les cles recues comme dechiffrables sur au moins une partition
     let ops = doc! {
@@ -654,9 +657,10 @@ async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValideActio
         "$currentDate": { CHAMP_MODIFICATION: true }
     };
     let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
-    let resultat_update = collection.update_many(filtre.clone(), ops, None).await?;
+    let resultat_update = collection.update_many(filtre_update, ops, None).await?;
     debug!("commande_confirmer_cles_sur_ca Resultat update : {:?}", resultat_update);
 
+    let filtre = doc! { CHAMP_HACHAGE_BYTES: {"$in": &requete.liste_hachage_bytes } };
     let projection = doc! { CHAMP_HACHAGE_BYTES: 1 };
     let opts = FindOptions::builder().projection(projection).build();
     let mut curseur = collection.find(filtre, opts).await?;

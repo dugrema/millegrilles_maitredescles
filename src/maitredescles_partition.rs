@@ -100,10 +100,10 @@ impl GestionnaireMaitreDesClesPartition {
     }
 
     /// S'assure que le CA a toutes les cles presentes dans la partition
-    pub async fn confirmer_cles_ca<M>(&self, middleware: &M) -> Result<(), Box<dyn Error>>
+    pub async fn confirmer_cles_ca<M>(&self, middleware: &M, reset_flag: Option<bool>) -> Result<(), Box<dyn Error>>
         where M: GenerateurMessages + MongoDao + VerificateurMessage + Chiffreur<CipherMgs3, Mgs3CipherKeys>
     {
-        confirmer_cles_ca(middleware, self).await?;
+        confirmer_cles_ca(middleware, self, reset_flag).await?;
         Ok(())
     }
 
@@ -533,13 +533,6 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
 
     if let Some(uid) = resultat.upserted_id {
         debug!("commande_sauvegarder_cle Nouvelle cle insere _id: {}, generer transaction", uid);
-        // let transaction = TransactionCle::new_from_commande(&commande, fingerprint)?;
-        // let routage = RoutageMessageAction::builder(DOMAINE_NOM, TRANSACTION_CLE)
-        //     .partition(fingerprint)
-        //     .exchanges(vec![Securite::L4Secure])
-        //     .build();
-        // middleware.soumettre_transaction(routage, &transaction, false).await?;
-
         // Detecter si on doit rechiffrer et re-emettre la cles
         // Survient si on a recu une commande sur un exchange autre que 4.secure et qu'il a moins de
         // cles dans la commande que le nombre de cles de rechiffrage connues (incluant cert maitre des cles)
@@ -553,8 +546,7 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
                     let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
                         .exchanges(vec![Securite::L4Secure])
                         .build();
-                    middleware.transmettre_commande(
-                        routage_commande.clone(), &commande_cle_rechiffree, false).await?;
+                    middleware.transmettre_commande(routage_commande, &commande_cle_rechiffree, false).await?;
                 }
             }
         }
@@ -1088,17 +1080,26 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
 }
 
 /// S'assurer que le CA a toutes les cles de la partition. Permet aussi de resetter le flag non-dechiffrable.
-async fn confirmer_cles_ca<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition) -> Result<(), Box<dyn Error>>
+async fn confirmer_cles_ca<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition, reset_flag: Option<bool>) -> Result<(), Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + VerificateurMessage + Chiffreur<CipherMgs3, Mgs3CipherKeys>
 {
     let batch_size = 50;
 
-    debug!("confirmer_cles_ca Debut confirmation cles locales avec confirmation_ca=false");
+    debug!("confirmer_cles_ca Debut confirmation cles locales avec confirmation_ca=false (reset flag: {:?}", reset_flag);
+    if let Some(true) = reset_flag {
+        info!("Reset flag confirmation_ca a false");
+        let filtre = doc! { CHAMP_CONFIRMATION_CA: true };
+        let ops = doc! { "$set": {CHAMP_CONFIRMATION_CA: false } };
+        let collection = middleware.get_collection(gestionnaire.get_collection_cles().as_str())?;
+        collection.update_many(filtre, ops, None).await?;
+    }
 
     let mut curseur = {
-        let limit_cles = 5000;
+        // let limit_cles = 1000000;
         let filtre = doc! { CHAMP_CONFIRMATION_CA: false };
-        let opts = FindOptions::builder().limit(limit_cles).build();
+        let opts = FindOptions::builder()
+            // .limit(limit_cles)
+            .build();
         let collection = middleware.get_collection(gestionnaire.get_collection_cles().as_str())?;
         let curseur = collection.find(filtre, opts).await?;
         curseur
@@ -1138,7 +1139,7 @@ async fn emettre_cles_vers_ca<M>(
     where M: GenerateurMessages + MongoDao + VerificateurMessage + Chiffreur<CipherMgs3, Mgs3CipherKeys>
 {
     let hachage_bytes: Vec<String> = cles.keys().into_iter().map(|h| h.to_owned()).collect();
-    debug!("emettre_cles_vers_ca Batch cles {:?}", hachage_bytes);
+    debug!("emettre_cles_vers_ca Batch {:?} cles", hachage_bytes.len());
 
     let commande = ReponseSynchroniserCles {liste_hachage_bytes: hachage_bytes.clone()};
     let routage = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_CONFIRMER_CLES_SUR_CA)

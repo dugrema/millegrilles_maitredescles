@@ -255,7 +255,8 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
     let intervalle_sync = chrono::Duration::hours(6);
 
     let mut prochaine_confirmation_ca = chrono::Utc::now();
-    let intervalle_confirmation_ca = chrono::Duration::minutes(15);
+    let intervalle_confirmation_ca = chrono::Duration::minutes(5);
+    let mut reset_flag_confirmation_ca = true;
 
     let mut prochain_chargement_certificats_autres = chrono::Utc::now();
     let intervalle_chargement_certificats_autres = chrono::Duration::minutes(5);
@@ -367,8 +368,9 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
                         }
 
                         debug!("entretien Pousser les cles locales vers le CA");
-                        match g.confirmer_cles_ca(middleware.as_ref()).await {
+                        match g.confirmer_cles_ca(middleware.as_ref(), Some(reset_flag_confirmation_ca)).await {
                             Ok(()) => {
+                                reset_flag_confirmation_ca = false;
                                 prochaine_confirmation_ca = maintenant + intervalle_confirmation_ca;
                             },
                             Err(e) => warn!("entretien Erreur syncrhonization cles avec CA : {:?}", e)
@@ -405,8 +407,9 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
                         }
 
                         debug!("entretien Pousser les cles locales vers le CA");
-                        match g.confirmer_cles_ca(middleware.as_ref()).await {
+                        match g.confirmer_cles_ca(middleware.as_ref(), Some(reset_flag_confirmation_ca)).await {
                             Ok(()) => {
+                                reset_flag_confirmation_ca = false;
                                 prochaine_confirmation_ca = maintenant + intervalle_confirmation_ca;
                             },
                             Err(e) => warn!("entretien Erreur syncrhonization cles avec CA : {:?}", e)

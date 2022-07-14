@@ -5,7 +5,7 @@ use std::fs::read_dir;
 use std::sync::Arc;
 
 use log::{debug, error, info, warn};
-use millegrilles_common_rust::{multibase, multibase::Base, serde_json};
+use millegrilles_common_rust::{multibase, multibase::Base, redis, serde_json};
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{doc, Document};
 use millegrilles_common_rust::certificats::{EnveloppeCertificat, EnveloppePrivee, ValidateurX509, VerificateurPermissions};
@@ -99,10 +99,10 @@ impl GestionnaireMaitreDesClesRedis {
     }
 
     /// S'assure que le CA a toutes les cles presentes dans la partition
-    pub async fn confirmer_cles_ca<M>(&self, middleware: &M) -> Result<(), Box<dyn Error>>
+    pub async fn confirmer_cles_ca<M>(&self, middleware: &M, reset_flag: Option<bool>) -> Result<(), Box<dyn Error>>
         where M: GenerateurMessages +  RedisTrait + VerificateurMessage + Chiffreur<CipherMgs3, Mgs3CipherKeys>
     {
-        confirmer_cles_ca(middleware, self).await?;
+        confirmer_cles_ca(middleware, self, reset_flag).await?;
         Ok(())
     }
 
@@ -1050,6 +1050,7 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
     let enveloppe_privee = middleware.get_enveloppe_privee();
     let fingerprint = enveloppe_privee.fingerprint().as_str();
     let redis_dao = middleware.get_redis();
+    let mut connexion_redis = redis_dao.get_async_connection().await?;
 
     loop {
         let reponse = match middleware.transmettre_requete(routage_sync.clone(), &requete_sync).await? {
@@ -1073,11 +1074,11 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
         debug!("Recu liste_hachage_bytes a verifier : {:?}", liste_hachage_bytes);
 
         for hachage_bytes in liste_hachage_bytes.into_iter() {
-            match redis_dao.get_cle(fingerprint, &hachage_bytes).await? {
+            let cle = format!("cle:{}:{}", fingerprint, hachage_bytes);
+            let resultat: Option<String> = redis::cmd("GET").arg(cle).query_async(&mut connexion_redis).await?;
+            match resultat {
                 Some(c) => (),
-                None => {
-                    cles_manquantes.insert(hachage_bytes);
-                }
+                None => { cles_manquantes.insert(hachage_bytes); }
             }
         }
 
@@ -1086,6 +1087,7 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
         }
 
         if cles_manquantes.len() > 0 {
+            info!("Cles manquantes : {:?}", cles_manquantes);
             let liste_cles: Vec<String> = cles_manquantes.iter().map(|m| String::from(m.as_str())).collect();
             let evenement_cles_manquantes = ReponseSynchroniserCles { liste_hachage_bytes: liste_cles };
             middleware.emettre_evenement(routage_evenement_manquant.clone(), &evenement_cles_manquantes).await?;
@@ -1097,14 +1099,14 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
 }
 
 /// S'assurer que le CA a toutes les cles de la partition. Permet aussi de resetter le flag non-dechiffrable.
-async fn confirmer_cles_ca<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesRedis) -> Result<(), Box<dyn Error>>
+async fn confirmer_cles_ca<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesRedis, reset_flag: Option<bool>) -> Result<(), Box<dyn Error>>
     where M: GenerateurMessages + RedisTrait + VerificateurMessage + Chiffreur<CipherMgs3, Mgs3CipherKeys>
 {
-    let batch_size = 50;
+    let batch_size = 500;
 
     debug!("confirmer_cles_ca Debut confirmation cles locales avec confirmation_ca=false");
 
-    let limit_cles = 5000;
+    // let limit_cles = 5000;
 
     // let mut curseur = {
     //     let limit_cles = 5000;
@@ -1116,21 +1118,17 @@ async fn confirmer_cles_ca<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
     // };
     let enveloppe_privee = middleware.get_enveloppe_privee();
     let fingerprint = enveloppe_privee.fingerprint().as_str();
+    let cle = format!("cle_versCA:{}", fingerprint);
 
     let redis_dao = middleware.get_redis();
-    let cles_ca = redis_dao.get_cleversca_batch(fingerprint, Some(limit_cles)).await?;
-    debug!("confirmer_cles_ca Batch cle a confirmer avec CA : {:?}", cles_ca);
-    if cles_ca.len() == 0 {
-        debug!("confirmer_cles_ca Aucune cle a transmettre vers CA");
-        return Ok(())
-    }
+    let mut connexion_redis = redis_dao.get_async_connection().await?;
+    let mut iter_scan: redis::AsyncIter<String> = redis::cmd("SSCAN")
+        .arg(cle).cursor_arg(0).clone().iter_async(&mut connexion_redis).await?;
 
     let mut cles = Vec::new();
-
-    // Traiter cles en batch
-    for hachage_bytes in cles_ca {
+    while let Some(hachage_bytes) = iter_scan.next_item().await {
         cles.push(hachage_bytes);
-        if cles.len() == batch_size {
+        if cles.len() >= batch_size {
             emettre_cles_vers_ca(middleware, gestionnaire, &mut cles).await?;
             cles.clear();
         }
@@ -1140,6 +1138,29 @@ async fn confirmer_cles_ca<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
     if cles.len() > 0 {
         emettre_cles_vers_ca(middleware, gestionnaire, &mut cles).await?;
     }
+
+    // let cles_ca = redis_dao.get_cleversca_batch(fingerprint, Some(limit_cles)).await?;
+    // debug!("confirmer_cles_ca Batch cle a confirmer avec CA : {:?}", cles_ca);
+    // if cles_ca.len() == 0 {
+    //     debug!("confirmer_cles_ca Aucune cle a transmettre vers CA");
+    //     return Ok(())
+    // }
+    //
+    // let mut cles = Vec::new();
+    //
+    // // Traiter cles en batch
+    // for hachage_bytes in cles_ca {
+    //     cles.push(hachage_bytes);
+    //     if cles.len() == batch_size {
+    //         emettre_cles_vers_ca(middleware, gestionnaire, &mut cles).await?;
+    //         cles.clear();
+    //     }
+    // }
+    //
+    // // Derniere batch de cles
+    // if cles.len() > 0 {
+    //     emettre_cles_vers_ca(middleware, gestionnaire, &mut cles).await?;
+    // }
 
     debug!("confirmer_cles_ca Fin confirmation cles locales");
 
