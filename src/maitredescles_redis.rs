@@ -519,7 +519,8 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
     let redis_dao = middleware.get_redis();
     let enveloppe_privee = middleware.get_enveloppe_privee();
     let hachage_bytes = commande.hachage_bytes.as_str();
-    redis_dao.save_cle_maitredescles(enveloppe_privee.as_ref(), hachage_bytes, &doc_redis).await?;
+    let mut redis_connexion = redis_dao.get_async_connection().await?;
+    redis_dao.save_cle_maitredescles(enveloppe_privee.as_ref(), hachage_bytes, &doc_redis, &mut redis_connexion).await?;
 
     // Detecter si on doit rechiffrer et re-emettre la cles
     // Survient si on a recu une commande sur un exchange autre que 4.secure et qu'il a moins de
@@ -573,6 +574,7 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
         .build();
 
     // Traiter chaque cle individuellement
+    let mut redis_connexion = redis_dao.get_async_connection().await?;
     let liste_hachage_bytes: Vec<String> = commande.cles.iter().map(|c| c.hachage_bytes.to_owned()).collect();
     for info_cle in commande.cles {
         debug!("commande_rechiffrer_batch Cle {:?}", info_cle);
@@ -587,7 +589,7 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
             "tag": &info_cle.tag,
         });
 
-        redis_dao.save_cle_maitredescles(enveloppe_privee.as_ref(), &info_cle.hachage_bytes, &doc_redis).await?;
+        redis_dao.save_cle_maitredescles(enveloppe_privee.as_ref(), &info_cle.hachage_bytes, &doc_redis, &mut redis_connexion).await?;
 
         // Rechiffrer pour tous les autres maitre des cles
         if cles_chiffrage.len() > 0 {
@@ -1038,13 +1040,15 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
     where M: GenerateurMessages + VerificateurMessage + RedisTrait
 {
     // Requete vers CA pour obtenir la liste des cles connues
-    let mut requete_sync = RequeteSynchroniserCles {page: 0, limite: 1000};
+    let mut requete_sync = RequeteSynchroniserCles {page: 0, limite: 50};
     let routage_sync = RoutageMessageAction::builder(DOMAINE_NOM, REQUETE_SYNCHRONISER_CLES)
         .exchanges(vec![Securite::L4Secure])
         .build();
 
     let routage_evenement_manquant = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION)
         .exchanges(vec![Securite::L4Secure])
+        .ajouter_reply_q(true)
+        .timeout_blocking(5000)
         .build();
 
     let enveloppe_privee = middleware.get_enveloppe_privee();
@@ -1066,12 +1070,12 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
 
         let liste_hachage_bytes = reponse.liste_hachage_bytes;
         if liste_hachage_bytes.len() == 0 {
-            debug!("Traitement sync termine");
+            debug!("synchroniser_cles Traitement sync termine");
             break
         }
 
         let mut cles_manquantes = HashSet::new();
-        debug!("Recu liste_hachage_bytes a verifier : {:?}", liste_hachage_bytes);
+        debug!("synchroniser_cles Recu liste_hachage_bytes a verifier : {:?}", liste_hachage_bytes);
 
         for hachage_bytes in liste_hachage_bytes.into_iter() {
             let cle = format!("cle:{}:{}", fingerprint, hachage_bytes);
@@ -1087,10 +1091,43 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
         }
 
         if cles_manquantes.len() > 0 {
-            info!("Cles manquantes : {:?}", cles_manquantes);
+            info!("Cles manquantes nb: {}", cles_manquantes.len());
             let liste_cles: Vec<String> = cles_manquantes.iter().map(|m| String::from(m.as_str())).collect();
             let evenement_cles_manquantes = ReponseSynchroniserCles { liste_hachage_bytes: liste_cles };
-            middleware.emettre_evenement(routage_evenement_manquant.clone(), &evenement_cles_manquantes).await?;
+            let reponse = middleware.transmettre_requete(routage_evenement_manquant.clone(), &evenement_cles_manquantes).await?;
+            debug!("Reponse  {:?}", reponse);
+            if let TypeMessage::Valide(m) = reponse {
+                let message_serialise = m.message;
+                let commandes: Vec<CommandeSauvegarderCle> = message_serialise.parsed.map_contenu(Some("cles"))?;
+
+                for commande in commandes {
+                    let hachage_bytes = commande.hachage_bytes.as_str();
+
+                    let fingerprint = gestionnaire.fingerprint.as_str();
+
+                    let cle = match commande.cles.get(fingerprint) {
+                        Some(cle) => cle.as_str(),
+                        None => {
+                            let message = format!("maitredescles_ca.synchroniser_cles: Erreur validation - commande sauvegarder cles ne contient pas la cle locale ({}) : {:?}", fingerprint, commande);
+                            warn!("{}", message);
+                            continue
+                        }
+                    };
+
+                    let doc_redis = json!({
+                        "cle": cle,
+                        "hachage_bytes": &commande.hachage_bytes,
+                        "domaine": &commande.domaine,
+                        "format": &commande.format,
+                        "identificateurs_document": &commande.identificateurs_document,
+                        "iv": &commande.iv,
+                        "tag": &commande.tag,
+                        // "confirmation_ca": false,
+                        // "dirty": false,
+                    });
+                    redis_dao.save_cle_maitredescles(&enveloppe_privee, hachage_bytes, &doc_redis, &mut connexion_redis).await?;
+                }
+            }
         }
 
     }
@@ -1293,7 +1330,7 @@ async fn evenement_cle_manquante<M>(middleware: &M, gestionnaire: &GestionnaireM
     let partition = enveloppe.fingerprint.as_str();
     let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
         .exchanges(vec![Securite::L4Secure])
-        // .partition(partition)
+        .partition(partition)
         .build();
 
     let hachages_bytes_list = event_non_dechiffrables.liste_hachage_bytes;
