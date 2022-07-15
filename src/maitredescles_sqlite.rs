@@ -594,62 +594,53 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
     debug!("commande_rechiffrer_batch Commande parsed : {:?}", commande);
 
     let fingerprint = gestionnaire.fingerprint.as_str();
-    todo!("fix me");
-    // let redis_dao = middleware.get_redis();
-    // let enveloppe_privee = middleware.get_enveloppe_privee();
-    // let fingerprint_ca = enveloppe_privee.enveloppe_ca.fingerprint.clone();
-    //
-    // // Determiner si on doit rechiffrer pour d'autres maitre des cles
-    // let cles_chiffrage = {
-    //     let mut cles_chiffrage = Vec::new();
-    //     for fingerprint_cert_cle in middleware.get_publickeys_chiffrage() {
-    //         let fingerprint_cle = fingerprint_cert_cle.fingerprint;
-    //         if fingerprint_cle != fingerprint && fingerprint_cle != fingerprint_ca {
-    //             cles_chiffrage.push(fingerprint_cert_cle.public_key);
-    //         }
-    //     }
-    //     cles_chiffrage
-    // };
-    //
-    // let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
-    //     .exchanges(vec![Securite::L4Secure])
-    //     .build();
-    //
-    // // Traiter chaque cle individuellement
+    let connexion = gestionnaire.ouvrir_connection(middleware);
+
+    let enveloppe_privee = middleware.get_enveloppe_privee();
+    let fingerprint_ca = enveloppe_privee.enveloppe_ca.fingerprint.clone();
+
+    // Determiner si on doit rechiffrer pour d'autres maitre des cles
+    let cles_chiffrage = {
+        let mut cles_chiffrage = Vec::new();
+        for fingerprint_cert_cle in middleware.get_publickeys_chiffrage() {
+            let fingerprint_cle = fingerprint_cert_cle.fingerprint;
+            if fingerprint_cle != fingerprint && fingerprint_cle != fingerprint_ca {
+                cles_chiffrage.push(fingerprint_cert_cle.public_key);
+            }
+        }
+        cles_chiffrage
+    };
+
+    let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
+        .exchanges(vec![Securite::L4Secure])
+        .build();
+
+    // Traiter chaque cle individuellement
     // let mut redis_connexion = redis_dao.get_async_connection().await?;
-    // let liste_hachage_bytes: Vec<String> = commande.cles.iter().map(|c| c.hachage_bytes.to_owned()).collect();
-    // for info_cle in commande.cles {
-    //     debug!("commande_rechiffrer_batch Cle {:?}", info_cle);
-    //
-    //     let doc_redis = json!({
-    //         "cle": &info_cle.cle,
-    //         "hachage_bytes": &info_cle.hachage_bytes,
-    //         "domaine": &info_cle.domaine,
-    //         "format": &info_cle.format,
-    //         "identificateurs_document": &info_cle.identificateurs_document,
-    //         "iv": &info_cle.iv,
-    //         "tag": &info_cle.tag,
-    //     });
-    //
-    //     redis_dao.save_cle_maitredescles(enveloppe_privee.as_ref(), &info_cle.hachage_bytes, &doc_redis, &mut redis_connexion).await?;
-    //
-    //     // Rechiffrer pour tous les autres maitre des cles
-    //     if cles_chiffrage.len() > 0 {
-    //         let commande_rechiffree = rechiffrer_pour_maitredescles(middleware, &info_cle)?;
-    //         middleware.transmettre_commande(routage_commande.clone(), &commande_rechiffree, false).await?;
-    //     }
-    // }
-    //
-    // // Emettre un evenement pour confirmer le traitement.
-    // // Utilise par le CA (confirme que les cles sont dechiffrables) et par le client (batch traitee)
-    // let routage_event = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_CLE_RECUE_PARTITION).build();
-    // let event_contenu = json!({
-    //     "correlation": &m.correlation_id,
-    //     "liste_hachage_bytes": liste_hachage_bytes,
-    // });
-    // middleware.emettre_evenement(routage_event, &event_contenu).await?;
-    //
-    // Ok(middleware.reponse_ok()?)
+    let liste_hachage_bytes: Vec<String> = commande.cles.iter().map(|c| c.hachage_bytes.to_owned()).collect();
+    for info_cle in commande.cles {
+        debug!("commande_rechiffrer_batch Cle {:?}", info_cle);
+
+        let commande: CommandeSauvegarderCle = info_cle.clone().into_commande(fingerprint);
+        sauvegarder_cle(&connexion, fingerprint, &info_cle.cle, &commande)?;
+
+        // Rechiffrer pour tous les autres maitre des cles
+        if cles_chiffrage.len() > 0 {
+            let commande_rechiffree = rechiffrer_pour_maitredescles(middleware, &info_cle)?;
+            middleware.transmettre_commande(routage_commande.clone(), &commande_rechiffree, false).await?;
+        }
+    }
+
+    // Emettre un evenement pour confirmer le traitement.
+    // Utilise par le CA (confirme que les cles sont dechiffrables) et par le client (batch traitee)
+    let routage_event = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_CLE_RECUE_PARTITION).build();
+    let event_contenu = json!({
+        "correlation": &m.correlation_id,
+        "liste_hachage_bytes": liste_hachage_bytes,
+    });
+    middleware.emettre_evenement(routage_event, &event_contenu).await?;
+
+    Ok(middleware.reponse_ok()?)
 }
 
 async fn aiguillage_transaction<M, T>(_middleware: &M, transaction: T, _gestionnaire: &GestionnaireMaitreDesClesSQLite) -> Result<Option<MessageMilleGrille>, String>
@@ -1365,44 +1356,35 @@ async fn evenement_cle_manquante<M>(middleware: &M, gestionnaire: &GestionnaireM
 
     let enveloppe_privee = middleware.get_enveloppe_privee();
     let fingerprint = enveloppe_privee.fingerprint().as_str();
-    todo!("fix me");
-    // let redis_dao = middleware.get_redis();
-    // for hachage_bytes in hachages_bytes_list {
-    //     let cle_str = match redis_dao.get_cle(fingerprint, &hachage_bytes).await {
-    //         Ok(c) => match c {
-    //             Some(c)=> c,
-    //             None => {
-    //                 debug!("cle manquante n'est pas presente localement : {}", hachage_bytes);
-    //                 continue
-    //             }
-    //         },
-    //         Err(e) => {
-    //             error!("Erreur chargement cle manquant localement {} : {:?}", hachage_bytes, e);
-    //             continue
-    //         }
-    //     };
-    //
-    //     let commande = match serde_json::from_str::<TransactionCle>(cle_str.as_str()) {
-    //         Ok(cle) => {
-    //             match rechiffrer_pour_maitredescles(middleware, &cle) {
-    //                 Ok(c) => c,
-    //                 Err(e) => {
-    //                     error!("traiter_cles_manquantes_ca Erreur traitement rechiffrage cle : {:?}", e);
-    //                     continue
-    //                 }
-    //             }
-    //         },
-    //         Err(e) => {
-    //             warn!("traiter_cles_manquantes_ca Erreur conversion document en cle : {:?}", e);
-    //             continue
-    //         }
-    //     };
-    //
-    //     debug!("Emettre cles rechiffrees pour CA : {:?}", commande);
-    //     middleware.transmettre_commande(routage_commande.clone(), &commande, false).await?;
-    // }
-    //
-    // Ok(None)
+
+    let connexion = gestionnaire.ouvrir_connection(middleware);
+
+    for hachage_bytes in hachages_bytes_list {
+        let commande = match charger_cle(&connexion, fingerprint, hachage_bytes.as_str()) {
+            Ok(cle) => match cle {
+                Some(cle) => match rechiffrer_pour_maitredescles(middleware, &cle) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        error!("evenement_cle_manquante Erreur traitement rechiffrage cle : {:?}", e);
+                        continue
+                    }
+                },
+                None => {
+                    warn!("evenement_cle_manquante Cle inconnue : {:?}", hachage_bytes);
+                    continue
+                }
+            },
+            Err(e) => {
+                warn!("evenement_cle_manquante Erreur conversion document en cle : {:?}", e);
+                continue
+            }
+        };
+
+        debug!("evenement_cle_manquante Emettre cles rechiffrees pour CA : {:?}", commande);
+        middleware.transmettre_commande(routage_commande.clone(), &commande, false).await?;
+    }
+
+    Ok(None)
 }
 
 fn sauvegarder_cle<S,T>(connection: &Connection, fingerprint_: S, cle_: T, commande: &CommandeSauvegarderCle) -> Result<(), Box<dyn Error>>

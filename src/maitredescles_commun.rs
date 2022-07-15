@@ -177,6 +177,26 @@ impl TransactionCle {
             tag: commande.tag.clone(),
         })
     }
+
+    pub fn into_commande<S>(self, fingerprint: S) -> CommandeSauvegarderCle
+        where S: Into<String>
+    {
+        let fingerprint_ = fingerprint.into();
+        let mut cles: HashMap<String, String> = HashMap::new();
+        cles.insert(fingerprint_, self.cle);
+        CommandeSauvegarderCle {
+            cles,
+            domaine: self.domaine,
+            partition: self.partition,
+            format: self.format,
+            hachage_bytes: self.hachage_bytes,
+            identificateurs_document: self.identificateurs_document,
+            iv: self.iv,
+            tag: self.tag,
+            fingerprint_partitions: None
+        }
+    }
+
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
