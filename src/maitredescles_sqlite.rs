@@ -1177,7 +1177,7 @@ async fn confirmer_cles_ca<M>(middleware: Arc<M>, gestionnaire: &'static Gestion
 
     let (tx_batch, rx_batch) = mpsc::channel(1);
     let middleware_1 = middleware.clone();
-    let task_lecture = tokio::task::spawn_blocking(move || curseur_lire_cles(middleware_1, gestionnaire, tx_batch));
+    let task_lecture = tokio::task::spawn_blocking(move || curseur_lire_cles(middleware_1, gestionnaire, tx_batch, batch_size));
     let task_emission = tokio::task::spawn(emettre_batch_cles_versca(middleware, gestionnaire, rx_batch));
 
     let mut futures = FuturesUnordered::new();
@@ -1201,15 +1201,15 @@ async fn emettre_batch_cles_versca<M>(middleware: Arc<M>, gestionnaire: &Gestion
     }
 }
 
-fn curseur_lire_cles<M>(middleware: Arc<M>, gestionnaire: &GestionnaireMaitreDesClesSQLite, tx_batch: mpsc::Sender<Vec<String>>)
+fn curseur_lire_cles<M>(middleware: Arc<M>, gestionnaire: &GestionnaireMaitreDesClesSQLite, tx_batch: mpsc::Sender<Vec<String>>, batch_size: usize)
     where M: Middleware + 'static
 {
-    if let Err(e) = __curseur_lire_cles(middleware, gestionnaire, tx_batch) {
+    if let Err(e) = __curseur_lire_cles(middleware, gestionnaire, tx_batch, batch_size) {
         error!("curseur_lire_cles Erreur traitement cles : {:?}", e)
     }
 }
 
-fn __curseur_lire_cles<M>(middleware: Arc<M>, gestionnaire: &GestionnaireMaitreDesClesSQLite, tx_batch: mpsc::Sender<Vec<String>>)
+fn __curseur_lire_cles<M>(middleware: Arc<M>, gestionnaire: &GestionnaireMaitreDesClesSQLite, tx_batch: mpsc::Sender<Vec<String>>, batch_size: usize)
     -> Result<(), Box<dyn Error>>
     where M: Middleware + 'static
 {
@@ -1219,8 +1219,6 @@ fn __curseur_lire_cles<M>(middleware: Arc<M>, gestionnaire: &GestionnaireMaitreD
     let mut prepared_statement = connexion.prepare(
         "SELECT hachage_bytes FROM cles WHERE fingerprint = ? AND confirmation_ca = 0")?;
     prepared_statement.bind(1, fingerprint)?;
-
-    let batch_size = 500;
 
     let mut batch_cles = Vec::new();
     while State::Done != prepared_statement.next()? {
