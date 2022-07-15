@@ -74,11 +74,16 @@ impl GestionnaireMaitreDesClesSQLite {
         }
     }
 
-    fn ouvrir_connection<M>(&self, middleware: &M) -> Connection where M: IsConfigNoeud {
+    fn ouvrir_connection<M>(&self, middleware: &M, read_only: bool) -> Connection where M: IsConfigNoeud {
         let sqlite_path = middleware.get_configuration_noeud().sqlite_path.as_ref().expect("preparer_database sqlite");
         let db_path = format!("{}/{}", sqlite_path, "maitredescles_sqlite1.sqlite");
         debug!("Ouverture fichier sqlite : {}", db_path);
-        sqlite::open(db_path).expect("preparer_database open sqlite")
+        if read_only {
+            let flags = sqlite::OpenFlags::new().set_read_only();
+            Connection::open_with_flags(db_path, flags).expect("preparer_database open sqlite")
+        } else {
+            sqlite::open(db_path).expect("preparer_database open sqlite")
+        }
     }
 
     /// Retourne une version tronquee du nom de partition
@@ -267,7 +272,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesSQLite {
 
     async fn preparer_database<M>(&self, middleware: &M) -> Result<(), String> where M: Middleware + 'static {
         // Preparer la base de donnees sqlite
-        let connection = self.ouvrir_connection(middleware);
+        let connection = self.ouvrir_connection(middleware, false);
         connection.execute(
                 "
                 CREATE TABLE IF NOT EXISTS cles (
@@ -547,24 +552,7 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
         }
     };
 
-    // // Sauvegarde cle dans redis
-    // let cle_redis = format!("{}.{}", middleware.get_enveloppe_privee().fingerprint(), commande.hachage_bytes);
-    // let doc_redis = json!({
-    //     "cle": cle,
-    //     "hachage_bytes": &commande.hachage_bytes,
-    //     "domaine": &commande.domaine,
-    //     "format": &commande.format,
-    //     "identificateurs_document": &commande.identificateurs_document,
-    //     "iv": &commande.iv,
-    //     "tag": &commande.tag,
-    //     // "confirmation_ca": false,
-    //     // "dirty": false,
-    // });
-    // debug!("Conserver cle dans redis : {}", cle_redis);
-    // let enveloppe_privee = middleware.get_enveloppe_privee();
-    // let hachage_bytes = commande.hachage_bytes.as_str();
-
-    let connection = gestionnaire.ouvrir_connection(middleware);
+    let connection = gestionnaire.ouvrir_connection(middleware, false);
     sauvegarder_cle(&connection, fingerprint, cle, &commande)?;
 
     // Detecter si on doit rechiffrer et re-emettre la cles
@@ -598,7 +586,7 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
     debug!("commande_rechiffrer_batch Commande parsed : {:?}", commande);
 
     let fingerprint = gestionnaire.fingerprint.as_str();
-    let connexion = gestionnaire.ouvrir_connection(middleware);
+    let connexion = gestionnaire.ouvrir_connection(middleware, false);
 
     let enveloppe_privee = middleware.get_enveloppe_privee();
     let fingerprint_ca = enveloppe_privee.enveloppe_ca.fingerprint.clone();
@@ -622,6 +610,7 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
     // Traiter chaque cle individuellement
     // let mut redis_connexion = redis_dao.get_async_connection().await?;
     let liste_hachage_bytes: Vec<String> = commande.cles.iter().map(|c| c.hachage_bytes.to_owned()).collect();
+    connexion.execute("BEGIN TRANSACTION;")?;
     for info_cle in commande.cles {
         debug!("commande_rechiffrer_batch Cle {:?}", info_cle);
 
@@ -634,6 +623,7 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
             middleware.transmettre_commande(routage_commande.clone(), &commande_rechiffree, false).await?;
         }
     }
+    connexion.execute("COMMIT;")?;
 
     // Emettre un evenement pour confirmer le traitement.
     // Utilise par le CA (confirme que les cles sont dechiffrables) et par le client (batch traitee)
@@ -710,7 +700,7 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
     }
 
     // Trouver les cles demandees et rechiffrer
-    let mut connection = gestionnaire.ouvrir_connection(middleware);
+    let mut connection = gestionnaire.ouvrir_connection(middleware, true);
     let cles = get_cles_sqlite_rechiffrees(
         middleware, &mut connection, &requete, enveloppe_privee, certificat.as_ref(),
         permission.as_ref(), domaines_permis.as_ref()).await?;
@@ -782,7 +772,7 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
     }
 
     // Trouver les cles en reference
-    let connexion = gestionnaire.ouvrir_connection(middleware);
+    let connexion = gestionnaire.ouvrir_connection(middleware, true);
     let cle_privee = enveloppe_privee.cle_privee();
 
     let statement_cles = connexion.prepare(
@@ -1095,7 +1085,7 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
 
     let enveloppe_privee = middleware.get_enveloppe_privee();
     let fingerprint = enveloppe_privee.fingerprint().as_str();
-    let connexion = gestionnaire.ouvrir_connection(middleware);
+    let connexion = gestionnaire.ouvrir_connection(middleware, false);
 
     loop {
         let reponse = match middleware.transmettre_requete(routage_sync.clone(), &requete_sync).await? {
@@ -1142,6 +1132,7 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
                 let message_serialise = m.message;
                 let commandes: Vec<CommandeSauvegarderCle> = message_serialise.parsed.map_contenu(Some("cles"))?;
 
+                connexion.execute("BEGIN TRANSACTION;")?;
                 for commande in commandes {
                     let hachage_bytes = commande.hachage_bytes.as_str();
 
@@ -1158,6 +1149,7 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
 
                     sauvegarder_cle(&connexion, fingerprint, cle, &commande)?;
                 }
+                connexion.execute("COMMIT;")?;
             }
         }
 
@@ -1213,7 +1205,7 @@ fn __curseur_lire_cles<M>(middleware: Arc<M>, gestionnaire: &GestionnaireMaitreD
     -> Result<(), Box<dyn Error>>
     where M: Middleware + 'static
 {
-    let connexion = gestionnaire.ouvrir_connection(middleware.as_ref());
+    let connexion = gestionnaire.ouvrir_connection(middleware.as_ref(), true);
     let enveloppe_privee = middleware.get_enveloppe_privee();
     let fingerprint = enveloppe_privee.fingerprint().as_str();
     let mut prepared_statement = connexion.prepare(
@@ -1284,7 +1276,7 @@ async fn traiter_cles_manquantes_ca<M>(
     let fingerprint = enveloppe_privee.fingerprint().as_str();
 
     // Marquer cles emises comme confirmees par CA si pas dans la liste de manquantes
-    let connexion = gestionnaire.ouvrir_connection(middleware);
+    let connexion = gestionnaire.ouvrir_connection(middleware, false);
 
     {
         let cles_confirmees: Vec<&String> = cles_emises.iter()
@@ -1377,7 +1369,7 @@ async fn evenement_cle_manquante<M>(middleware: &M, gestionnaire: &GestionnaireM
     let enveloppe_privee = middleware.get_enveloppe_privee();
     let fingerprint = enveloppe_privee.fingerprint().as_str();
 
-    let connexion = gestionnaire.ouvrir_connection(middleware);
+    let connexion = gestionnaire.ouvrir_connection(middleware, true);
 
     for hachage_bytes in hachages_bytes_list {
         let commande = match charger_cle(&connexion, fingerprint, hachage_bytes.as_str()) {
