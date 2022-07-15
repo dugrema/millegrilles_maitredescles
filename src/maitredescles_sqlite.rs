@@ -752,71 +752,67 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
 /// Confirme que le demandeur a bien en sa possession (via methode tierce) les cles secretes.
 async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesSQLite)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + VerificateurMessage + ValidateurX509
+    where M: GenerateurMessages + VerificateurMessage + ValidateurX509 + IsConfigNoeud
 {
     debug!("requete_verifier_preuve Consommer requete : {:?}", & m.message);
     let requete: RequeteVerifierPreuve = m.message.get_msg().map_contenu(None)?;
     debug!("requete_verifier_preuve cle parsed : {:?}", requete);
 
-    todo!("requete_verifier_preuve Fix me")
-    //
-    // let domaines = match m.message.certificat.as_ref() {
-    //     Some(c) => {
-    //         match c.get_domaines()? {
-    //             Some(d) => Ok(d.to_owned()),
-    //             None => Err(format!("maitredescles_partition.requete_verifier_preuve Aucuns domaines dans certificat demandeur"))
-    //         }
-    //     },
-    //     None => Err(format!("maitredescles_partition.requete_verifier_preuve Erreur chargement certificat"))
-    // }?;
-    //
-    // let enveloppe_privee = middleware.get_enveloppe_privee();
-    //
-    // let liste_hachage_bytes: Vec<&str> = requete.cles.keys().map(|k| k.as_str()).collect();
-    // let mut liste_verification: HashMap<String, bool> = HashMap::new();
-    // for hachage in &liste_hachage_bytes {
-    //     liste_verification.insert(hachage.to_string(), false);
-    // }
-    //
-    // // Trouver les cles en reference
-    // let mut filtre = doc! {
-    //     CHAMP_HACHAGE_BYTES: {"$in": &liste_hachage_bytes},
-    //     TRANSACTION_CHAMP_DOMAINE: {"$in": &domaines}
-    // };
-    // let nom_collection = gestionnaire.get_collection_cles();
-    // debug!("requete_dechiffrage Filtre cles sur collection {} : {:?}", nom_collection, filtre);
-    //
-    // let collection = middleware.get_collection(nom_collection.as_str())?;
-    // let mut curseur = collection.find(filtre, None).await?;
-    //
-    // let cle_privee = enveloppe_privee.cle_privee();
-    // while let Some(rc) = curseur.next().await {
-    //     let doc_cle = rc?;
-    //     let mut cle_mongo_chiffree: TransactionCle = match convertir_bson_deserializable::<TransactionCle>(doc_cle) {
-    //         Ok(c) => c,
-    //         Err(e) => {
-    //             error!("requete_verifier_preuve Erreur conversion bson vers TransactionCle : {:?}", e);
-    //             continue
-    //         }
-    //     };
-    //     let cle_mongo_dechiffree = dechiffrer_asymetrique_multibase(cle_privee, cle_mongo_chiffree.cle.as_str())?;
-    //     let hachage_bytes = cle_mongo_chiffree.hachage_bytes.as_str();
-    //     if let Some(cle_preuve) = requete.cles.get(hachage_bytes) {
-    //         let cle_preuve_dechiffree = dechiffrer_asymetrique_multibase(cle_privee, cle_preuve.as_str())?;
-    //         if cle_mongo_dechiffree == cle_preuve_dechiffree {
-    //             // La cle preuve correspond a la cle dans la base de donnees, verification OK
-    //             liste_verification.insert(hachage_bytes.into(), true);
-    //         }
-    //     }
-    // }
-    //
-    // // Preparer la reponse
-    // let reponse_json = json!({
-    //     "verification": liste_verification,
-    // });
-    // let reponse = middleware.formatter_reponse(reponse_json, None)?;
-    //
-    // Ok(Some(reponse))
+    let domaines = match m.message.certificat.as_ref() {
+        Some(c) => {
+            match c.get_domaines()? {
+                Some(d) => Ok(d.to_owned()),
+                None => Err(format!("maitredescles_partition.requete_verifier_preuve Aucuns domaines dans certificat demandeur"))
+            }
+        },
+        None => Err(format!("maitredescles_partition.requete_verifier_preuve Erreur chargement certificat"))
+    }?;
+
+    let enveloppe_privee = middleware.get_enveloppe_privee();
+    let fingerprint = enveloppe_privee.fingerprint().as_str();
+
+    let liste_hachage_bytes: Vec<&str> = requete.cles.keys().map(|k| k.as_str()).collect();
+    let mut liste_verification: HashMap<String, bool> = HashMap::new();
+    for hachage in &liste_hachage_bytes {
+        liste_verification.insert(hachage.to_string(), false);
+    }
+
+    // Trouver les cles en reference
+    let connexion = gestionnaire.ouvrir_connection(middleware);
+    let cle_privee = enveloppe_privee.cle_privee();
+
+    let statement_cles = connexion.prepare(
+        "SELECT hachage_bytes, domaine, cle FROM cles WHERE hachage_bytes = ? AND fingerprint = ?")?;
+    for hachage_bytes in requete.cles.keys() {
+        let transaction_cle = match charger_cle(&connexion, fingerprint, hachage_bytes) {
+            Ok(c) => match c{
+                Some(c) => c,
+                None => continue
+            },
+            Err(e) => {
+                error!("Erreur chargement cle {} : {:?}", hachage_bytes, e);
+                continue
+            }
+        };
+
+        let cle_mongo_dechiffree = dechiffrer_asymetrique_multibase(cle_privee, transaction_cle.cle.as_str())?;
+        let hachage_bytes = transaction_cle.hachage_bytes.as_str();
+        if let Some(cle_preuve) = requete.cles.get(hachage_bytes) {
+            let cle_preuve_dechiffree = dechiffrer_asymetrique_multibase(cle_privee, cle_preuve.as_str())?;
+            if cle_mongo_dechiffree == cle_preuve_dechiffree {
+                // La cle preuve correspond a la cle dans la base de donnees, verification OK
+                liste_verification.insert(hachage_bytes.into(), true);
+            }
+        }
+    }
+
+    // Preparer la reponse
+    let reponse_json = json!({
+        "verification": liste_verification,
+    });
+    let reponse = middleware.formatter_reponse(reponse_json, None)?;
+
+    Ok(Some(reponse))
 }
 
 async fn get_cles_sqlite_rechiffrees<M>(
