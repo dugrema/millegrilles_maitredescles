@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::error::Error;
 use std::fs::read_dir;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use log::{debug, error, info, warn};
 use millegrilles_common_rust::{multibase, multibase::Base, redis, serde_json};
@@ -17,10 +17,12 @@ use millegrilles_common_rust::configuration::{ConfigMessages, IsConfigNoeud};
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::formatteur_messages::{FormatteurMessage, MessageMilleGrille, MessageSerialise};
+use millegrilles_common_rust::futures::stream::FuturesUnordered;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
 use millegrilles_common_rust::hachages::hacher_bytes;
 use millegrilles_common_rust::messages_generiques::MessageCedule;
 use millegrilles_common_rust::middleware::{Middleware, sauvegarder_transaction, sauvegarder_transaction_recue};
+use millegrilles_common_rust::middleware_db::MiddlewareDb;
 use millegrilles_common_rust::mongo_dao::MongoDao;
 use millegrilles_common_rust::multihash::Code;
 use millegrilles_common_rust::openssl::pkey::{PKey, Private};
@@ -31,12 +33,14 @@ use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::json;
 use millegrilles_common_rust::tokio::fs::File as File_tokio;
 use millegrilles_common_rust::tokio::io::AsyncReadExt;
+use millegrilles_common_rust::tokio::sync::mpsc;
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::transactions::{EtatTransaction, marquer_transaction, TraiterTransaction, Transaction, TransactionImpl};
 use millegrilles_common_rust::verificateur::VerificateurMessage;
 use sqlite::{Connection, State};
 
 use crate::maitredescles_commun::*;
+use crate::tokio;
 
 const NOM_COLLECTION_RECHIFFRAGE: &str = "MaitreDesCles/rechiffrage";
 
@@ -107,8 +111,8 @@ impl GestionnaireMaitreDesClesSQLite {
     }
 
     /// S'assure que le CA a toutes les cles presentes dans la partition
-    pub async fn confirmer_cles_ca<M>(&self, middleware: &M, reset_flag: Option<bool>) -> Result<(), Box<dyn Error>>
-        where M: GenerateurMessages + IsConfigNoeud + VerificateurMessage + Chiffreur<CipherMgs3, Mgs3CipherKeys>
+    pub async fn confirmer_cles_ca<M>(&'static self, middleware: Arc<M>, reset_flag: Option<bool>) -> Result<(), Box<dyn Error>>
+        where M: Middleware + 'static
     {
         confirmer_cles_ca(middleware, self, reset_flag).await?;
         Ok(())
@@ -1128,10 +1132,6 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
             }
         }
 
-        // for cle_manquante in &cles_manquantes {
-        //     redis_dao.ajouter_cle_manquante(enveloppe_privee.as_ref(), cle_manquante).await?;
-        // }
-
         if cles_manquantes.len() > 0 {
             info!("Cles manquantes nb: {}", cles_manquantes.len());
             let liste_cles: Vec<String> = cles_manquantes.iter().map(|m| String::from(m.as_str())).collect();
@@ -1167,50 +1167,76 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
 }
 
 /// S'assurer que le CA a toutes les cles de la partition. Permet aussi de resetter le flag non-dechiffrable.
-async fn confirmer_cles_ca<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesSQLite, reset_flag: Option<bool>) -> Result<(), Box<dyn Error>>
-    where M: GenerateurMessages + IsConfigNoeud + VerificateurMessage + Chiffreur<CipherMgs3, Mgs3CipherKeys>
+async fn confirmer_cles_ca<M>(middleware: Arc<M>, gestionnaire: &'static GestionnaireMaitreDesClesSQLite, reset_flag: Option<bool>)
+    -> Result<(), Box<dyn Error>>
+    where M: Middleware + 'static
 {
     let batch_size = 500;
 
     debug!("confirmer_cles_ca Debut confirmation cles locales avec confirmation_ca=false");
 
-    // let limit_cles = 5000;
+    let (tx_batch, rx_batch) = mpsc::channel(1);
+    let middleware_1 = middleware.clone();
+    let task_lecture = tokio::task::spawn_blocking(move || curseur_lire_cles(middleware_1, gestionnaire, tx_batch));
+    let task_emission = tokio::task::spawn(emettre_batch_cles_versca(middleware, gestionnaire, rx_batch));
 
-    // let mut curseur = {
-    //     let limit_cles = 5000;
-    //     let filtre = doc! { CHAMP_CONFIRMATION_CA: false };
-    //     let opts = FindOptions::builder().limit(limit_cles).build();
-    //     let collection = middleware.get_collection(gestionnaire.get_collection_cles().as_str())?;
-    //     let curseur = collection.find(filtre, opts).await?;
-    //     curseur
-    // };
+    let mut futures = FuturesUnordered::new();
+    futures.push(task_lecture);
+    futures.push(task_emission);
+
+    let resultat = futures.next().await;
+    debug!("confirmer_cles_ca Fin confirmation cles locales, resultat : {:?}", resultat);
+
+    Ok(())
+}
+
+async fn emettre_batch_cles_versca<M>(middleware: Arc<M>, gestionnaire: &GestionnaireMaitreDesClesSQLite, mut rx_batch: mpsc::Receiver<Vec<String>>)
+    where M: Middleware + 'static
+{
+    while let Some(hachage_bytes) = rx_batch.recv().await {
+        match emettre_cles_vers_ca(middleware.as_ref(), gestionnaire, &hachage_bytes).await {
+            Ok(()) => (),
+            Err(e) => error!("emettre_batch_cles_versca Erreur traitement batch cles : {:?}", e)
+        }
+    }
+}
+
+fn curseur_lire_cles<M>(middleware: Arc<M>, gestionnaire: &GestionnaireMaitreDesClesSQLite, tx_batch: mpsc::Sender<Vec<String>>)
+    where M: Middleware + 'static
+{
+    if let Err(e) = __curseur_lire_cles(middleware, gestionnaire, tx_batch) {
+        error!("curseur_lire_cles Erreur traitement cles : {:?}", e)
+    }
+}
+
+fn __curseur_lire_cles<M>(middleware: Arc<M>, gestionnaire: &GestionnaireMaitreDesClesSQLite, tx_batch: mpsc::Sender<Vec<String>>)
+    -> Result<(), Box<dyn Error>>
+    where M: Middleware + 'static
+{
+    let connexion = gestionnaire.ouvrir_connection(middleware.as_ref());
     let enveloppe_privee = middleware.get_enveloppe_privee();
     let fingerprint = enveloppe_privee.fingerprint().as_str();
+    let mut prepared_statement = connexion.prepare(
+        "SELECT hachage_bytes FROM cles WHERE fingerprint = ? AND confirmation_ca = 0")?;
+    prepared_statement.bind(1, fingerprint)?;
 
-    let mut cles = Vec::new();
+    let batch_size = 500;
 
-    let connexion = gestionnaire.ouvrir_connection(middleware);
-    {
-        let mut prepared_statement = connexion.prepare(
-            "SELECT hachage_bytes FROM cles WHERE fingerprint = ? AND confirmation_ca = 0")?;
-        prepared_statement.bind(1, fingerprint)?;
-        debug!("confirmer_cles_ca Charger cles fingerprint {}", fingerprint);
-        while State::Done != prepared_statement.next()? {
-            let hachage_bytes: String = prepared_statement.read(0)?;
-            cles.push(hachage_bytes);
-            // if cles.len() >= batch_size {
-            //     emettre_cles_vers_ca(middleware, gestionnaire, &mut cles).await?;
-            //     cles.clear();
-            // }
+    let mut batch_cles = Vec::new();
+    while State::Done != prepared_statement.next()? {
+        let hachage_bytes: String = prepared_statement.read(0)?;
+        batch_cles.push(hachage_bytes);
+        if batch_cles.len() >= batch_size {
+            debug!("__curseur_lire_cles Emettre batch cles");
+            tx_batch.blocking_send(batch_cles)?;
+            batch_cles = Vec::new();
         }
     }
 
-    // Derniere batch de cles
-    if cles.len() > 0 {
-        emettre_cles_vers_ca(middleware, gestionnaire, &mut cles).await?;
+    if batch_cles.len() > 0 {
+        debug!("__curseur_lire_cles Emetre derniere batch de {} cles", batch_cles.len());
+        tx_batch.blocking_send(batch_cles)?;
     }
-
-    debug!("confirmer_cles_ca Fin confirmation cles locales");
 
     Ok(())
 }
@@ -1219,7 +1245,7 @@ async fn confirmer_cles_ca<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
 /// Marque les cles presentes sur la partition et CA comme confirmation_ca=true
 /// Rechiffre et emet vers le CA les cles manquantes
 async fn emettre_cles_vers_ca<M>(
-    middleware: &M, gestionnaire: &GestionnaireMaitreDesClesSQLite, hachage_bytes: &mut Vec<String>)
+    middleware: &M, gestionnaire: &GestionnaireMaitreDesClesSQLite, hachage_bytes: &Vec<String>)
     -> Result<(), Box<dyn Error>>
     where M: GenerateurMessages + IsConfigNoeud + VerificateurMessage + Chiffreur<CipherMgs3, Mgs3CipherKeys>
 {

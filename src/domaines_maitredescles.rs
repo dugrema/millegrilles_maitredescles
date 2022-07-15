@@ -228,7 +228,7 @@ async fn executer(mut futures: FuturesUnordered<JoinHandle<()>>) {
 
 /// Thread d'entretien
 async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnaires: Vec<&'static TypeGestionnaire>)
-    where M: Middleware
+    where M: Middleware + 'static
 {
     let mut certificat_emis = false;
 
@@ -426,7 +426,7 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
                         }
 
                         debug!("entretien Pousser les cles locales vers le CA");
-                        match g.confirmer_cles_ca(middleware.as_ref(), Some(reset_flag_confirmation_ca)).await {
+                        match g.confirmer_cles_ca(middleware.clone(), Some(reset_flag_confirmation_ca)).await {
                             Ok(()) => {
                                 reset_flag_confirmation_ca = false;
                                 prochaine_confirmation_ca = maintenant + intervalle_confirmation_ca;
