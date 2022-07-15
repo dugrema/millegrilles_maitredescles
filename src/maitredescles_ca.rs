@@ -74,7 +74,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesCa {
         false
     }
 
-    async fn preparer_index_mongodb_custom<M>(&self, middleware: &M) -> Result<(), String> where M: MongoDao {
+    async fn preparer_database<M>(&self, middleware: &M) -> Result<(), String> where M: Middleware + 'static {
         preparer_index_mongodb_custom(middleware, NOM_COLLECTION_CLES).await
     }
 

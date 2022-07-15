@@ -253,7 +253,36 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesSQLite {
         false
     }
 
-    async fn preparer_index_mongodb_custom<M>(&self, _middleware: &M) -> Result<(), String> where M: MongoDao {
+    async fn preparer_database<M>(&self, middleware: &M) -> Result<(), String> where M: Middleware + 'static {
+        // Preparer la base de donnees sqlite
+
+        let sqlite_path = middleware.get_configuration_noeud().sqlite_path.as_ref().expect("preparer_database sqlite");
+        let db_path = format!("{}/{}", sqlite_path, "maitredescles_sqlite1.sqlite");
+        debug!("Ouverture fichier sqlite : {}", db_path);
+        let connection = sqlite::open(db_path).expect("preparer_database open sqlite");
+        connection.execute(
+                "
+                CREATE TABLE IF NOT EXISTS cles (
+                    hachage_bytes TEXT PRIMARY KEY,
+                    fingerprint TEXT NOT NULL,
+                    cle TEXT NOT NULL,
+                    iv TEXT NOT NULL,
+                    tag TEXT,
+                    format TEXT NOT NULL,
+                    identificateurs_document TEXT,
+                    confirmation_ca INT NOT NULL
+                    );
+
+                CREATE TABLE IF NOT EXISTS identificateurs_document (
+                    hachage_bytes TEXT NOT NULL,
+                    cle TEXT NOT NULL,
+                    valeur TEXT NOT NULL,
+                    CONSTRAINT identificateurs_document_pk PRIMARY KEY (hachage_bytes, cle),
+                    CONSTRAINT cles_fk FOREIGN KEY (hachage_bytes) REFERENCES cles (hachage_bytes) ON DELETE CASCADE
+                );
+                ",
+            ).expect("execute creer table");
+
         Ok(())
     }
 

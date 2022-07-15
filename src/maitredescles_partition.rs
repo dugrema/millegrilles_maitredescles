@@ -259,7 +259,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
         false
     }
 
-    async fn preparer_index_mongodb_custom<M>(&self, middleware: &M) -> Result<(), String> where M: MongoDao {
+    async fn preparer_database<M>(&self, middleware: &M) -> Result<(), String> where M: Middleware + 'static {
         let nom_collection_cles = self.get_collection_cles();
         preparer_index_mongodb_custom(middleware, nom_collection_cles.as_str()).await?;
         preparer_index_mongodb_partition(middleware, self).await?;
