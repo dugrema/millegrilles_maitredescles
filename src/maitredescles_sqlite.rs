@@ -267,21 +267,30 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesSQLite {
         connection.execute(
                 "
                 CREATE TABLE IF NOT EXISTS cles (
-                    hachage_bytes TEXT PRIMARY KEY,
+                    hachage_bytes TEXT NOT NULL,
                     fingerprint TEXT NOT NULL,
                     cle TEXT NOT NULL,
                     iv TEXT NOT NULL,
                     tag TEXT,
                     format TEXT NOT NULL,
-                    confirmation_ca INT NOT NULL
+                    domaine TEXT NOT NULL,
+                    confirmation_ca INT NOT NULL,
+                    CONSTRAINT cles_pk PRIMARY KEY (hachage_bytes, fingerprint, cle)
                     );
 
                 CREATE TABLE IF NOT EXISTS identificateurs_document (
                     hachage_bytes TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
                     cle TEXT NOT NULL,
                     valeur TEXT NOT NULL,
-                    CONSTRAINT identificateurs_document_pk PRIMARY KEY (hachage_bytes, cle),
-                    CONSTRAINT cles_fk FOREIGN KEY (hachage_bytes) REFERENCES cles (hachage_bytes) ON DELETE CASCADE
+                    CONSTRAINT identificateurs_document_pk PRIMARY KEY (hachage_bytes, fingerprint, cle),
+                    CONSTRAINT cles_fk FOREIGN KEY (hachage_bytes, fingerprint) REFERENCES cles (hachage_bytes, fingerprint) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS cles_ca (
+                    hachage_bytes TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    CONSTRAINT cles_ca_pk PRIMARY KEY (hachage_bytes, fingerprint)
                 );
                 ",
             ).expect("execute creer table");
@@ -1111,16 +1120,18 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
         let mut cles_manquantes = HashSet::new();
         debug!("synchroniser_cles Recu liste_hachage_bytes a verifier : {:?}", liste_hachage_bytes);
 
-        for hachage_bytes in liste_hachage_bytes.into_iter() {
-            let cle = format!("cle:{}:{}", fingerprint, hachage_bytes);
+        {
             let mut prepared_statement_checkcle = connexion.prepare("SELECT hachage_bytes FROM cles WHERE hachage_bytes = ?")?;
-            prepared_statement_checkcle.bind(1, hachage_bytes.as_str())?;
-            let resultat = prepared_statement_checkcle.next()?;
-            match resultat {
-                State::Row => (),
-                State::Done => { cles_manquantes.insert(hachage_bytes); }
+            for hachage_bytes in liste_hachage_bytes.into_iter() {
+                let cle = format!("cle:{}:{}", fingerprint, hachage_bytes);
+                prepared_statement_checkcle.bind(1, hachage_bytes.as_str())?;
+                let resultat = prepared_statement_checkcle.next()?;
+                match resultat {
+                    State::Row => (),
+                    State::Done => { cles_manquantes.insert(hachage_bytes); }
+                }
+                prepared_statement_checkcle.reset()?;
             }
-            prepared_statement_checkcle.reset()?;
         }
 
         // for cle_manquante in &cles_manquantes {
@@ -1181,55 +1192,33 @@ async fn confirmer_cles_ca<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
     // };
     let enveloppe_privee = middleware.get_enveloppe_privee();
     let fingerprint = enveloppe_privee.fingerprint().as_str();
-    let cle = format!("cle_versCA:{}", fingerprint);
+
+    let mut cles = Vec::new();
+
+    let connexion = gestionnaire.ouvrir_connection(middleware);
+    {
+        let mut prepared_statement = connexion.prepare(
+            "SELECT hachage_bytes FROM cles WHERE fingerprint = ? AND confirmation_ca = 0")?;
+        prepared_statement.bind(1, fingerprint)?;
+        debug!("confirmer_cles_ca Charger cles fingerprint {}", fingerprint);
+        while State::Done != prepared_statement.next()? {
+            let hachage_bytes: String = prepared_statement.read(0)?;
+            cles.push(hachage_bytes);
+            // if cles.len() >= batch_size {
+            //     emettre_cles_vers_ca(middleware, gestionnaire, &mut cles).await?;
+            //     cles.clear();
+            // }
+        }
+    }
+
+    // Derniere batch de cles
+    if cles.len() > 0 {
+        emettre_cles_vers_ca(middleware, gestionnaire, &mut cles).await?;
+    }
+
+    debug!("confirmer_cles_ca Fin confirmation cles locales");
 
     Ok(())
-    //todo!("Fix me");
-    // let redis_dao = middleware.get_redis();
-    // let mut connexion_redis = redis_dao.get_async_connection().await?;
-    // let mut iter_scan: redis::AsyncIter<String> = redis::cmd("SSCAN")
-    //     .arg(cle).cursor_arg(0).clone().iter_async(&mut connexion_redis).await?;
-    //
-    // let mut cles = Vec::new();
-    // while let Some(hachage_bytes) = iter_scan.next_item().await {
-    //     cles.push(hachage_bytes);
-    //     if cles.len() >= batch_size {
-    //         emettre_cles_vers_ca(middleware, gestionnaire, &mut cles).await?;
-    //         cles.clear();
-    //     }
-    // }
-    //
-    // // Derniere batch de cles
-    // if cles.len() > 0 {
-    //     emettre_cles_vers_ca(middleware, gestionnaire, &mut cles).await?;
-    // }
-    //
-    // // let cles_ca = redis_dao.get_cleversca_batch(fingerprint, Some(limit_cles)).await?;
-    // // debug!("confirmer_cles_ca Batch cle a confirmer avec CA : {:?}", cles_ca);
-    // // if cles_ca.len() == 0 {
-    // //     debug!("confirmer_cles_ca Aucune cle a transmettre vers CA");
-    // //     return Ok(())
-    // // }
-    // //
-    // // let mut cles = Vec::new();
-    // //
-    // // // Traiter cles en batch
-    // // for hachage_bytes in cles_ca {
-    // //     cles.push(hachage_bytes);
-    // //     if cles.len() == batch_size {
-    // //         emettre_cles_vers_ca(middleware, gestionnaire, &mut cles).await?;
-    // //         cles.clear();
-    // //     }
-    // // }
-    // //
-    // // // Derniere batch de cles
-    // // if cles.len() > 0 {
-    // //     emettre_cles_vers_ca(middleware, gestionnaire, &mut cles).await?;
-    // // }
-    //
-    // debug!("confirmer_cles_ca Fin confirmation cles locales");
-    //
-    // Ok(())
 }
 
 /// Emet un message vers CA pour verifier quels cles sont manquantes (sur le CA)
@@ -1277,61 +1266,56 @@ async fn traiter_cles_manquantes_ca<M>(
     let fingerprint = enveloppe_privee.fingerprint().as_str();
 
     // Marquer cles emises comme confirmees par CA si pas dans la liste de manquantes
-    todo!("fix me");
-    // let redis_dao = middleware.get_redis();
-    // {
-    //     let cles_confirmees: Vec<&String> = cles_emises.iter()
-    //         .filter(|c| !cles_manquantes.contains(c))
-    //         .collect();
-    //     debug!("traiter_cles_manquantes_ca Cles confirmees par le CA: {:?}", cles_confirmees);
-    //     for hachage_bytes in cles_confirmees {
-    //         redis_dao.retirer_cleca_manquante(fingerprint, hachage_bytes).await?;
-    //     }
-    // }
-    //
-    // // Rechiffrer et emettre les cles manquantes.
-    // {
-    //     let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
-    //         .exchanges(vec![Securite::L4Secure])
-    //         .build();
-    //
-    //     for hachage_bytes in cles_manquantes {
-    //         let cle_str = match redis_dao.get_cle(fingerprint, hachage_bytes).await {
-    //             Ok(c) => match c {
-    //                 Some(c)=> c,
-    //                 None => {
-    //                     debug!("cle manquante n'est pas presente localement : {}", hachage_bytes);
-    //                     continue
-    //                 }
-    //             },
-    //             Err(e) => {
-    //                 error!("Erreur chargement cle manquant localement {} : {:?}", hachage_bytes, e);
-    //                 continue
-    //             }
-    //         };
-    //
-    //         let commande = match serde_json::from_str::<TransactionCle>(cle_str.as_str()) {
-    //             Ok(cle) => {
-    //                 match rechiffrer_pour_maitredescles(middleware, &cle) {
-    //                     Ok(c) => c,
-    //                     Err(e) => {
-    //                         error!("traiter_cles_manquantes_ca Erreur traitement rechiffrage cle : {:?}", e);
-    //                         continue
-    //                     }
-    //                 }
-    //             },
-    //             Err(e) => {
-    //                 warn!("traiter_cles_manquantes_ca Erreur conversion document en cle : {:?}", e);
-    //                 continue
-    //             }
-    //         };
-    //
-    //         debug!("Emettre cles rechiffrees pour CA : {:?}", commande);
-    //         middleware.transmettre_commande(routage_commande.clone(), &commande, false).await?;
-    //     }
-    // }
-    //
-    // Ok(())
+    let connexion = gestionnaire.ouvrir_connection(middleware);
+
+    {
+        let cles_confirmees: Vec<&String> = cles_emises.iter()
+            .filter(|c| !cles_manquantes.contains(c))
+            .collect();
+        debug!("traiter_cles_manquantes_ca Cles confirmees par le CA: {:?}", cles_confirmees);
+        let mut statement = connexion.prepare("UPDATE cles SET confirmation_ca = 1 WHERE hachage_bytes = ? AND fingerprint = ?")?;
+        for hachage_bytes in cles_confirmees {
+            // redis_dao.retirer_cleca_manquante(fingerprint, hachage_bytes).await?;
+            statement.bind(1, hachage_bytes.as_str())?;
+            statement.bind(2, fingerprint)?;
+            statement.next()?;
+            statement.reset()?;
+        }
+    }
+
+    // Rechiffrer et emettre les cles manquantes.
+    {
+        let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
+            .exchanges(vec![Securite::L4Secure])
+            .build();
+
+        for hachage_bytes in cles_manquantes {
+
+            let commande = match charger_cle(&connexion, hachage_bytes, fingerprint) {
+                Ok(c) => match c {
+                    Some(cle) => {
+                        match rechiffrer_pour_maitredescles(middleware, &cle) {
+                            Ok(c) => c,
+                            Err(e) => {
+                                error!("traiter_cles_manquantes_ca Erreur traitement rechiffrage cle : {:?}", e);
+                                continue;
+                            }
+                        }
+                    },
+                    None => continue
+                },
+                Err(e) => {
+                    error!("traiter_cles_manquantes_ca Erreur conversion sqlite en cle : {:?}", e);
+                    continue;
+                }
+            };
+
+            debug!("Emettre cles rechiffrees pour CA : {:?}", commande);
+            middleware.transmettre_commande(routage_commande.clone(), &commande, false).await?;
+        }
+    }
+
+    Ok(())
 }
 
 async fn evenement_cle_manquante<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesSQLite, m: &MessageValideAction)
@@ -1416,12 +1400,12 @@ fn sauvegarder_cle<S,T>(connection: &Connection, fingerprint_: S, cle_: T, comma
     let mut prepared_statement_cle = connection
         .prepare("
             INSERT INTO cles
-            VALUES(?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?)
         ")?;
     let mut prepared_statement_identificateurs = connection
         .prepare("
             INSERT INTO identificateurs_document
-            VALUES(?, ?, ?)
+            VALUES(?, ?, ?, ?)
         ")?;
 
     let format_str: String = serde_json::to_string(&commande.format)?.replace("\"", "");
@@ -1437,11 +1421,77 @@ fn sauvegarder_cle<S,T>(connection: &Connection, fingerprint_: S, cle_: T, comma
     prepared_statement_cle.bind(4, commande.iv.as_str())?;
     prepared_statement_cle.bind(5, commande.tag.as_str())?;
     prepared_statement_cle.bind(6, format_str.as_str())?;
-    prepared_statement_cle.bind(7, 0)?;
+    prepared_statement_cle.bind(7, commande.domaine.as_str())?;
+    prepared_statement_cle.bind(8, 0)?;
 
     debug!("Conserver cle dans sqlite : {}", commande.hachage_bytes);
-    let resultat = prepared_statement_cle.next();
+    let resultat = prepared_statement_cle.next()?;
     debug!("Resultat ajout cle dans sqlite : {:?}", resultat);
 
+    if State::Done != resultat {
+        Err(format!("Erreur insertion cle {:?} (Resultat {:?})", commande.hachage_bytes, resultat))?
+    }
+
+    for (cle, valeur) in &commande.identificateurs_document {
+        prepared_statement_identificateurs.bind(1, commande.hachage_bytes.as_str())?;
+        prepared_statement_identificateurs.bind(2, fingerprint)?;
+        prepared_statement_identificateurs.bind(3, cle.as_str())?;
+        prepared_statement_identificateurs.bind(4, valeur.as_str())?;
+        let resultat = prepared_statement_identificateurs.next()?;
+        prepared_statement_identificateurs.reset()?;
+    }
+
     Ok(())
+}
+
+fn charger_cle<S,T>(connexion: &Connection, fingerprint_: S, hachage_bytes_: T)
+    -> Result<Option<TransactionCle>, Box<dyn Error>>
+    where S: AsRef<str>, T: AsRef<str>
+{
+    let hachage_bytes = hachage_bytes_.as_ref();
+    let fingerprint = fingerprint_.as_ref();
+
+    let mut statement = connexion.prepare(
+        "SELECT hachage_bytes, cle, iv, tag, format, domaine \
+        FROM cles WHERE hachage_bytes = ? AND fingerprint = ?"
+    )?;
+    statement.bind(1, hachage_bytes)?;
+    statement.bind(2, fingerprint)?;
+    match statement.next()? {
+        State::Row => (),
+        State::Done => return Ok(None)
+    }
+
+    let mut statement_id = connexion.prepare("SELECT cle, valeur FROM identificateurs_document WHERE hachage_bytes = ? AND fingerprint = ?")?;
+    statement_id.bind(1, hachage_bytes)?;
+    statement_id.bind(2, fingerprint)?;
+    let mut identificateurs_document = HashMap::new();
+    while State::Done != statement_id.next()? {
+        let cle: String = statement_id.read(1)?;
+        let valeur: String = statement_id.read(2)?;
+        identificateurs_document.insert(cle, valeur);
+    }
+
+    let mut cles: HashMap<String, String> = HashMap::new();
+    cles.insert(hachage_bytes.to_owned(), statement.read(1)?);
+
+    let format_str: String = statement.read(4)?;
+    let format_chiffrage = match format_str.as_str() {
+        "mgs2" => FormatChiffrage::mgs2,
+        "mgs3" => FormatChiffrage::mgs3,
+        _ => Err(format!("Format chiffrage inconnu : {}", format_str))?
+    };
+
+    let commande = TransactionCle {
+        cle: statement.read(1)?,
+        domaine: statement.read(5)?,
+        partition: None,
+        format: format_chiffrage,
+        hachage_bytes: hachage_bytes.to_owned(),
+        identificateurs_document,
+        iv: statement.read(2)?,
+        tag: statement.read(3)?,
+    };
+
+    Ok(Some(commande))
 }
