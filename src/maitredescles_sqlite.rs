@@ -1072,7 +1072,7 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
     where M: GenerateurMessages + VerificateurMessage + IsConfigNoeud
 {
     // Requete vers CA pour obtenir la liste des cles connues
-    let mut requete_sync = RequeteSynchroniserCles {page: 0, limite: 50};
+    let mut requete_sync = RequeteSynchroniserCles {page: 0, limite: 250};
     let routage_sync = RoutageMessageAction::builder(DOMAINE_NOM, REQUETE_SYNCHRONISER_CLES)
         .exchanges(vec![Securite::L4Secure])
         .build();
