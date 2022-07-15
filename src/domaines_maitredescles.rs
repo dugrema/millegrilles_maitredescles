@@ -25,11 +25,12 @@ use millegrilles_common_rust::transactions::resoumettre_transactions;
 use crate::maitredescles_ca::GestionnaireMaitreDesClesCa;
 use crate::maitredescles_partition::{emettre_certificat_maitredescles, GestionnaireMaitreDesClesPartition};
 use crate::maitredescles_redis::{GestionnaireMaitreDesClesRedis};
+use crate::maitredescles_sqlite::{GestionnaireMaitreDesClesSQLite};
 
 const DUREE_ATTENTE: u64 = 20000;
 
 // Creer espace static pour conserver les gestionnaires
-static mut GESTIONNAIRES: [TypeGestionnaire; 3] = [TypeGestionnaire::None, TypeGestionnaire::None, TypeGestionnaire::None];
+static mut GESTIONNAIRES: [TypeGestionnaire; 2] = [TypeGestionnaire::None, TypeGestionnaire::None];
 
 /// Enum pour distinger les types de gestionnaires.
 #[derive(Clone, Debug)]
@@ -37,6 +38,7 @@ enum TypeGestionnaire {
     CA(Arc<GestionnaireMaitreDesClesCa>),
     Partition(Arc<GestionnaireMaitreDesClesPartition>),
     Redis(Arc<GestionnaireMaitreDesClesRedis>),
+    SQLite(Arc<GestionnaireMaitreDesClesSQLite>),
     None
 }
 
@@ -75,16 +77,17 @@ fn charger_gestionnaires() -> Vec<&'static TypeGestionnaire> {
 
     info!("Configuration du maitre des cles avec CA {} et Partition {}", fp_ca, partition);
 
-    let (flag_ca, flag_partition, flag_redis) = match std::env::var("MG_MAITREDESCLES_MODE") {
+    let (flag_ca, flag_partition, flag_redis, flag_sqlite) = match std::env::var("MG_MAITREDESCLES_MODE") {
         Ok(val) => {
             match val.as_str() {
-                "ca" => (true, false, false),       // ca
-                "partition" => (true, true, false), // ca + partition
-                "redis" => (false, false, true),    // redis
-                _=> (true, true, false),            // Defaut = ca + partition
+                "ca" => (true, false, false, false),       // ca
+                "partition" => (true, true, false, false), // ca + partition
+                "redis" => (false, false, true, false),    // redis
+                "sqlite" => (false, false, false, true),   // sqlite
+                _=> (true, true, false, false),            // Defaut = ca + partition
             }
         },
-        Err(_) => (true, true, false)
+        Err(_) => (true, true, false, false)
     };
 
     // Inserer les gestionnaires dans la variable static - permet d'obtenir lifetime 'static
@@ -95,16 +98,22 @@ fn charger_gestionnaires() -> Vec<&'static TypeGestionnaire> {
             GESTIONNAIRES[0] = TypeGestionnaire::CA(Arc::new(GestionnaireMaitreDesClesCa { fingerprint: fp_ca.into() }));
             vec_gestionnaires.push(&GESTIONNAIRES[0]);
         }
+
+        // Types mutuellement exclusifs
         if flag_partition {
             info!("Activation gestionnaire partition {}", partition);
             GESTIONNAIRES[1] = TypeGestionnaire::Partition(Arc::new(GestionnaireMaitreDesClesPartition::new(partition.into())));
             vec_gestionnaires.push(&GESTIONNAIRES[1]);
-        }
-        if flag_redis {
+        } else if flag_redis {
             info!("Activation gestionnaire redis {}", partition);
-            GESTIONNAIRES[2] = TypeGestionnaire::Redis(Arc::new(GestionnaireMaitreDesClesRedis::new(partition.into())));
-            vec_gestionnaires.push(&GESTIONNAIRES[2]);
+            GESTIONNAIRES[1] = TypeGestionnaire::Redis(Arc::new(GestionnaireMaitreDesClesRedis::new(partition.into())));
+            vec_gestionnaires.push(&GESTIONNAIRES[1]);
+        } else if flag_sqlite {
+            info!("Activation gestionnaire sqlite {}", partition);
+            GESTIONNAIRES[1] = TypeGestionnaire::SQLite(Arc::new(GestionnaireMaitreDesClesSQLite::new(partition.into())));
+            vec_gestionnaires.push(&GESTIONNAIRES[1]);
         }
+
         vec_gestionnaires
     }
 }
@@ -123,6 +132,9 @@ async fn build(gestionnaires: Vec<&'static TypeGestionnaire>) -> (FuturesUnorder
                     queues.extend(g.preparer_queues());
                 },
                 TypeGestionnaire::Redis(g) => {
+                    queues.extend(g.preparer_queues());
+                },
+                TypeGestionnaire::SQLite(g) => {
                     queues.extend(g.preparer_queues());
                 },
                 TypeGestionnaire::None => ()
@@ -149,15 +161,6 @@ async fn build(gestionnaires: Vec<&'static TypeGestionnaire>) -> (FuturesUnorder
         Some(Mutex::new(callbacks))
     };
 
-    // Preparer middleware avec acces direct aux tables Pki (le domaine est local)
-    // let (
-    //     middleware,
-    //     rx_messages_verifies,
-    //     rx_messages_verif_reply,
-    //     rx_triggers,
-    //     future_recevoir_messages
-    // ) = preparer_middleware_db(queues, listeners);
-
     let middleware_hooks = preparer_middleware_db(queues, listeners);
     let middleware = middleware_hooks.middleware;
 
@@ -174,13 +177,16 @@ async fn build(gestionnaires: Vec<&'static TypeGestionnaire>) -> (FuturesUnorder
                     futures_g,
                 ) = match g {
                     TypeGestionnaire::CA(g) => {
-                        g.preparer_threads(middleware.clone()).await.expect("gestionnaire")
+                        g.preparer_threads(middleware.clone()).await.expect("gestionnaire CA")
                     },
                     TypeGestionnaire::Partition(g) => {
-                        g.preparer_threads(middleware.clone()).await.expect("gestionnaire")
+                        g.preparer_threads(middleware.clone()).await.expect("gestionnaire partition")
                     },
                     TypeGestionnaire::Redis(g) => {
-                        g.preparer_threads(middleware.clone()).await.expect("gestionnaire")
+                        g.preparer_threads(middleware.clone()).await.expect("gestionnaire redis")
+                    },
+                    TypeGestionnaire::SQLite(g) => {
+                        g.preparer_threads(middleware.clone()).await.expect("gestionnaire sqlite")
                     },
                     TypeGestionnaire::None => (HashMap::new(), FuturesUnordered::new()),
                 };
@@ -238,6 +244,9 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
                     coll_docs_strings.push(String::from(g.get_collection_transactions()));
                 },
                 TypeGestionnaire::Redis(g) => {
+                    coll_docs_strings.push(String::from(g.get_collection_transactions()));
+                },
+                TypeGestionnaire::SQLite(g) => {
                     coll_docs_strings.push(String::from(g.get_collection_transactions()));
                 },
                 TypeGestionnaire::None => ()
@@ -340,15 +349,6 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
         for g in &gestionnaires {
             match g {
                 TypeGestionnaire::Partition(g) => {
-                    // Effectuer rechiffrage si on a fait une rotation de la cle privee
-                    // if ! rechiffrage_complete {
-                    //     debug!("domaines_maitredescles.entretien Verification de rotation des cles");
-                    //     rechiffrage_complete = true;
-                    //     match g.migration_cles(middleware.as_ref(), g).await {
-                    //         Ok(()) => (),
-                    //         Err(e) => error!("entretien Erreur migration cles : {:?}", e)
-                    //     }
-                    // }
 
                     if prochain_sync < maintenant {
                         debug!("entretien Effectuer sync des cles du CA non disponibles localement");
@@ -379,16 +379,6 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
 
                 },
                 TypeGestionnaire::Redis(g) => {
-                    // Effectuer rechiffrage si on a fait une rotation de la cle privee
-                    // if ! rechiffrage_complete {
-                    //     debug!("domaines_maitredescles.entretien Verification de rotation des cles");
-                    //     rechiffrage_complete = true;
-                    //     match g.migration_cles(middleware.as_ref(), g).await {
-                    //         Ok(()) => (),
-                    //         Err(e) => error!("entretien Erreur migration cles : {:?}", e)
-                    //     }
-                    // }
-
                     if prochain_sync < maintenant {
                         debug!("entretien Effectuer sync des cles du CA non disponibles localement");
                         match g.synchroniser_cles(middleware.as_ref()).await {
@@ -416,6 +406,34 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
                         }
                     }
 
+                },
+                TypeGestionnaire::SQLite(g) => {
+                    if prochain_sync < maintenant {
+                        debug!("entretien Effectuer sync des cles du CA non disponibles localement");
+                        match g.synchroniser_cles(middleware.as_ref()).await {
+                            Ok(()) => {
+                                prochain_sync = maintenant + intervalle_sync;
+                            },
+                            Err(e) => warn!("entretien Erreur syncrhonization cles avec CA : {:?}", e)
+                        }
+                    }
+
+                    if prochaine_confirmation_ca < maintenant {
+                        // Emettre certificat local (pas vraiment a la bonne place)
+                        match g.emettre_certificat_maitredescles(middleware.as_ref(), None).await {
+                            Ok(_) => (),
+                            Err(e) => error!("Erreur emission certificat de maitre des cles : {:?}", e)
+                        }
+
+                        debug!("entretien Pousser les cles locales vers le CA");
+                        match g.confirmer_cles_ca(middleware.as_ref(), Some(reset_flag_confirmation_ca)).await {
+                            Ok(()) => {
+                                reset_flag_confirmation_ca = false;
+                                prochaine_confirmation_ca = maintenant + intervalle_confirmation_ca;
+                            },
+                            Err(e) => warn!("entretien Erreur syncrhonization cles avec CA : {:?}", e)
+                        }
+                    }
                 },
                 _ => ()
             }
