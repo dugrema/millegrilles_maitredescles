@@ -9,18 +9,18 @@ use millegrilles_common_rust::{multibase, multibase::Base, redis, serde_json};
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{doc, Document};
 use millegrilles_common_rust::certificats::{EnveloppeCertificat, EnveloppePrivee, ValidateurX509, VerificateurPermissions};
-use millegrilles_common_rust::chiffrage::{Chiffreur, ChiffreurMgs3, CommandeSauvegarderCle, dechiffrer_asymetrique_multibase, rechiffrer_asymetrique_multibase};
+use millegrilles_common_rust::chiffrage::{Chiffreur, ChiffreurMgs3, CommandeSauvegarderCle, dechiffrer_asymetrique_multibase, FormatChiffrage, rechiffrer_asymetrique_multibase};
 use millegrilles_common_rust::chiffrage_chacha20poly1305::{CipherMgs3, Mgs3CipherKeys};
 use millegrilles_common_rust::chiffrage_ed25519::dechiffrer_asymmetrique_ed25519;
 use millegrilles_common_rust::chrono::Utc;
-use millegrilles_common_rust::configuration::ConfigMessages;
+use millegrilles_common_rust::configuration::{ConfigMessages, IsConfigNoeud};
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::formatteur_messages::{FormatteurMessage, MessageMilleGrille, MessageSerialise};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
 use millegrilles_common_rust::hachages::hacher_bytes;
 use millegrilles_common_rust::messages_generiques::MessageCedule;
-use millegrilles_common_rust::middleware::{Middleware, sauvegarder_transaction, sauvegarder_transaction_recue, RedisTrait};
+use millegrilles_common_rust::middleware::{Middleware, sauvegarder_transaction, sauvegarder_transaction_recue};
 use millegrilles_common_rust::mongo_dao::MongoDao;
 use millegrilles_common_rust::multihash::Code;
 use millegrilles_common_rust::openssl::pkey::{PKey, Private};
@@ -34,6 +34,7 @@ use millegrilles_common_rust::tokio::io::AsyncReadExt;
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::transactions::{EtatTransaction, marquer_transaction, TraiterTransaction, Transaction, TransactionImpl};
 use millegrilles_common_rust::verificateur::VerificateurMessage;
+use sqlite::Connection;
 
 use crate::maitredescles_commun::*;
 
@@ -69,6 +70,13 @@ impl GestionnaireMaitreDesClesSQLite {
         }
     }
 
+    fn ouvrir_connection<M>(&self, middleware: &M) -> Connection where M: IsConfigNoeud {
+        let sqlite_path = middleware.get_configuration_noeud().sqlite_path.as_ref().expect("preparer_database sqlite");
+        let db_path = format!("{}/{}", sqlite_path, "maitredescles_sqlite1.sqlite");
+        debug!("Ouverture fichier sqlite : {}", db_path);
+        sqlite::open(db_path).expect("preparer_database open sqlite")
+    }
+
     /// Retourne une version tronquee du nom de partition
     /// Utilise pour nommer certaines ressources (e.g. collections Mongo)
     pub fn get_partition_tronquee(&self) -> String {
@@ -92,7 +100,7 @@ impl GestionnaireMaitreDesClesSQLite {
 
     /// Verifie si le CA a des cles qui ne sont pas connues localement
     pub async fn synchroniser_cles<M>(&self, middleware: &M) -> Result<(), Box<dyn Error>>
-        where M: GenerateurMessages + VerificateurMessage + Chiffreur<CipherMgs3, Mgs3CipherKeys> + RedisTrait
+        where M: GenerateurMessages + VerificateurMessage + Chiffreur<CipherMgs3, Mgs3CipherKeys> + IsConfigNoeud
     {
         synchroniser_cles(middleware, self).await?;
         Ok(())
@@ -100,7 +108,7 @@ impl GestionnaireMaitreDesClesSQLite {
 
     /// S'assure que le CA a toutes les cles presentes dans la partition
     pub async fn confirmer_cles_ca<M>(&self, middleware: &M, reset_flag: Option<bool>) -> Result<(), Box<dyn Error>>
-        where M: GenerateurMessages +  RedisTrait + VerificateurMessage + Chiffreur<CipherMgs3, Mgs3CipherKeys>
+        where M: GenerateurMessages + IsConfigNoeud + VerificateurMessage + Chiffreur<CipherMgs3, Mgs3CipherKeys>
     {
         confirmer_cles_ca(middleware, self, reset_flag).await?;
         Ok(())
@@ -255,11 +263,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesSQLite {
 
     async fn preparer_database<M>(&self, middleware: &M) -> Result<(), String> where M: Middleware + 'static {
         // Preparer la base de donnees sqlite
-
-        let sqlite_path = middleware.get_configuration_noeud().sqlite_path.as_ref().expect("preparer_database sqlite");
-        let db_path = format!("{}/{}", sqlite_path, "maitredescles_sqlite1.sqlite");
-        debug!("Ouverture fichier sqlite : {}", db_path);
-        let connection = sqlite::open(db_path).expect("preparer_database open sqlite");
+        let connection = self.ouvrir_connection(middleware);
         connection.execute(
                 "
                 CREATE TABLE IF NOT EXISTS cles (
@@ -269,7 +273,6 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesSQLite {
                     iv TEXT NOT NULL,
                     tag TEXT,
                     format TEXT NOT NULL,
-                    identificateurs_document TEXT,
                     confirmation_ca INT NOT NULL
                     );
 
@@ -342,7 +345,7 @@ impl DocumentRechiffrage {
 }
 
 async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesSQLite) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: ValidateurX509 + GenerateurMessages + VerificateurMessage + RedisTrait
+    where M: ValidateurX509 + GenerateurMessages + VerificateurMessage + IsConfigNoeud
 {
     debug!("Consommer requete : {:?}", &message.message);
 
@@ -456,7 +459,7 @@ where
 
 async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesSQLite)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + RedisTrait + Chiffreur<CipherMgs3, Mgs3CipherKeys>
+    where M: GenerateurMessages + IsConfigNoeud + Chiffreur<CipherMgs3, Mgs3CipherKeys>
 {
     debug!("consommer_commande : {:?}", &m.message);
 
@@ -495,7 +498,7 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionna
 }
 
 async fn consommer_evenement<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesSQLite, m: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: ValidateurX509 + GenerateurMessages + RedisTrait + Chiffreur<CipherMgs3, Mgs3CipherKeys>
+    where M: ValidateurX509 + GenerateurMessages + IsConfigNoeud + Chiffreur<CipherMgs3, Mgs3CipherKeys>
 {
     debug!("consommer_evenement Consommer evenement : {:?}", &m.message);
 
@@ -513,7 +516,7 @@ async fn consommer_evenement<M>(middleware: &M, gestionnaire: &GestionnaireMaitr
 
 async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesSQLite)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + RedisTrait + Chiffreur<CipherMgs3, Mgs3CipherKeys>
+    where M: GenerateurMessages + IsConfigNoeud + Chiffreur<CipherMgs3, Mgs3CipherKeys>
 {
     debug!("commande_sauvegarder_cle Consommer commande : {:?}", & m.message);
     let commande: CommandeSauvegarderCle = m.message.get_msg().map_contenu(None)?;
@@ -531,25 +534,25 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
         }
     };
 
-    // Sauvegarde cle dans redis
-    let cle_redis = format!("{}.{}", middleware.get_enveloppe_privee().fingerprint(), commande.hachage_bytes);
-    let doc_redis = json!({
-        "cle": cle,
-        "hachage_bytes": &commande.hachage_bytes,
-        "domaine": &commande.domaine,
-        "format": &commande.format,
-        "identificateurs_document": &commande.identificateurs_document,
-        "iv": &commande.iv,
-        "tag": &commande.tag,
-        // "confirmation_ca": false,
-        // "dirty": false,
-    });
-    debug!("Conserver cle dans redis : {}", cle_redis);
-    let redis_dao = middleware.get_redis();
-    let enveloppe_privee = middleware.get_enveloppe_privee();
-    let hachage_bytes = commande.hachage_bytes.as_str();
-    let mut redis_connexion = redis_dao.get_async_connection().await?;
-    redis_dao.save_cle_maitredescles(enveloppe_privee.as_ref(), hachage_bytes, &doc_redis, &mut redis_connexion).await?;
+    // // Sauvegarde cle dans redis
+    // let cle_redis = format!("{}.{}", middleware.get_enveloppe_privee().fingerprint(), commande.hachage_bytes);
+    // let doc_redis = json!({
+    //     "cle": cle,
+    //     "hachage_bytes": &commande.hachage_bytes,
+    //     "domaine": &commande.domaine,
+    //     "format": &commande.format,
+    //     "identificateurs_document": &commande.identificateurs_document,
+    //     "iv": &commande.iv,
+    //     "tag": &commande.tag,
+    //     // "confirmation_ca": false,
+    //     // "dirty": false,
+    // });
+    // debug!("Conserver cle dans redis : {}", cle_redis);
+    // let enveloppe_privee = middleware.get_enveloppe_privee();
+    // let hachage_bytes = commande.hachage_bytes.as_str();
+
+    let connection = gestionnaire.ouvrir_connection(middleware);
+    sauvegarder_cle(&connection, fingerprint, cle, &commande)?;
 
     // Detecter si on doit rechiffrer et re-emettre la cles
     // Survient si on a recu une commande sur un exchange autre que 4.secure et qu'il a moins de
@@ -575,68 +578,69 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
 
 async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesSQLite)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + RedisTrait + Chiffreur<CipherMgs3, Mgs3CipherKeys>
+    where M: GenerateurMessages + IsConfigNoeud + Chiffreur<CipherMgs3, Mgs3CipherKeys>
 {
     debug!("commande_rechiffrer_batch Consommer commande : {:?}", & m.message);
     let commande: CommandeRechiffrerBatch = m.message.get_msg().map_contenu(None)?;
     debug!("commande_rechiffrer_batch Commande parsed : {:?}", commande);
 
     let fingerprint = gestionnaire.fingerprint.as_str();
-    let redis_dao = middleware.get_redis();
-    let enveloppe_privee = middleware.get_enveloppe_privee();
-    let fingerprint_ca = enveloppe_privee.enveloppe_ca.fingerprint.clone();
-
-    // Determiner si on doit rechiffrer pour d'autres maitre des cles
-    let cles_chiffrage = {
-        let mut cles_chiffrage = Vec::new();
-        for fingerprint_cert_cle in middleware.get_publickeys_chiffrage() {
-            let fingerprint_cle = fingerprint_cert_cle.fingerprint;
-            if fingerprint_cle != fingerprint && fingerprint_cle != fingerprint_ca {
-                cles_chiffrage.push(fingerprint_cert_cle.public_key);
-            }
-        }
-        cles_chiffrage
-    };
-
-    let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
-        .exchanges(vec![Securite::L4Secure])
-        .build();
-
-    // Traiter chaque cle individuellement
-    let mut redis_connexion = redis_dao.get_async_connection().await?;
-    let liste_hachage_bytes: Vec<String> = commande.cles.iter().map(|c| c.hachage_bytes.to_owned()).collect();
-    for info_cle in commande.cles {
-        debug!("commande_rechiffrer_batch Cle {:?}", info_cle);
-
-        let doc_redis = json!({
-            "cle": &info_cle.cle,
-            "hachage_bytes": &info_cle.hachage_bytes,
-            "domaine": &info_cle.domaine,
-            "format": &info_cle.format,
-            "identificateurs_document": &info_cle.identificateurs_document,
-            "iv": &info_cle.iv,
-            "tag": &info_cle.tag,
-        });
-
-        redis_dao.save_cle_maitredescles(enveloppe_privee.as_ref(), &info_cle.hachage_bytes, &doc_redis, &mut redis_connexion).await?;
-
-        // Rechiffrer pour tous les autres maitre des cles
-        if cles_chiffrage.len() > 0 {
-            let commande_rechiffree = rechiffrer_pour_maitredescles(middleware, &info_cle)?;
-            middleware.transmettre_commande(routage_commande.clone(), &commande_rechiffree, false).await?;
-        }
-    }
-
-    // Emettre un evenement pour confirmer le traitement.
-    // Utilise par le CA (confirme que les cles sont dechiffrables) et par le client (batch traitee)
-    let routage_event = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_CLE_RECUE_PARTITION).build();
-    let event_contenu = json!({
-        "correlation": &m.correlation_id,
-        "liste_hachage_bytes": liste_hachage_bytes,
-    });
-    middleware.emettre_evenement(routage_event, &event_contenu).await?;
-
-    Ok(middleware.reponse_ok()?)
+    todo!("fix me");
+    // let redis_dao = middleware.get_redis();
+    // let enveloppe_privee = middleware.get_enveloppe_privee();
+    // let fingerprint_ca = enveloppe_privee.enveloppe_ca.fingerprint.clone();
+    //
+    // // Determiner si on doit rechiffrer pour d'autres maitre des cles
+    // let cles_chiffrage = {
+    //     let mut cles_chiffrage = Vec::new();
+    //     for fingerprint_cert_cle in middleware.get_publickeys_chiffrage() {
+    //         let fingerprint_cle = fingerprint_cert_cle.fingerprint;
+    //         if fingerprint_cle != fingerprint && fingerprint_cle != fingerprint_ca {
+    //             cles_chiffrage.push(fingerprint_cert_cle.public_key);
+    //         }
+    //     }
+    //     cles_chiffrage
+    // };
+    //
+    // let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
+    //     .exchanges(vec![Securite::L4Secure])
+    //     .build();
+    //
+    // // Traiter chaque cle individuellement
+    // let mut redis_connexion = redis_dao.get_async_connection().await?;
+    // let liste_hachage_bytes: Vec<String> = commande.cles.iter().map(|c| c.hachage_bytes.to_owned()).collect();
+    // for info_cle in commande.cles {
+    //     debug!("commande_rechiffrer_batch Cle {:?}", info_cle);
+    //
+    //     let doc_redis = json!({
+    //         "cle": &info_cle.cle,
+    //         "hachage_bytes": &info_cle.hachage_bytes,
+    //         "domaine": &info_cle.domaine,
+    //         "format": &info_cle.format,
+    //         "identificateurs_document": &info_cle.identificateurs_document,
+    //         "iv": &info_cle.iv,
+    //         "tag": &info_cle.tag,
+    //     });
+    //
+    //     redis_dao.save_cle_maitredescles(enveloppe_privee.as_ref(), &info_cle.hachage_bytes, &doc_redis, &mut redis_connexion).await?;
+    //
+    //     // Rechiffrer pour tous les autres maitre des cles
+    //     if cles_chiffrage.len() > 0 {
+    //         let commande_rechiffree = rechiffrer_pour_maitredescles(middleware, &info_cle)?;
+    //         middleware.transmettre_commande(routage_commande.clone(), &commande_rechiffree, false).await?;
+    //     }
+    // }
+    //
+    // // Emettre un evenement pour confirmer le traitement.
+    // // Utilise par le CA (confirme que les cles sont dechiffrables) et par le client (batch traitee)
+    // let routage_event = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_CLE_RECUE_PARTITION).build();
+    // let event_contenu = json!({
+    //     "correlation": &m.correlation_id,
+    //     "liste_hachage_bytes": liste_hachage_bytes,
+    // });
+    // middleware.emettre_evenement(routage_event, &event_contenu).await?;
+    //
+    // Ok(middleware.reponse_ok()?)
 }
 
 async fn aiguillage_transaction<M, T>(_middleware: &M, transaction: T, _gestionnaire: &GestionnaireMaitreDesClesSQLite) -> Result<Option<MessageMilleGrille>, String>
@@ -652,7 +656,7 @@ async fn aiguillage_transaction<M, T>(_middleware: &M, transaction: T, _gestionn
 
 async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesSQLite)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + RedisTrait + VerificateurMessage + ValidateurX509
+    where M: GenerateurMessages + IsConfigNoeud + VerificateurMessage + ValidateurX509
 {
     debug!("requete_dechiffrage Consommer requete : {:?}", & m.message);
     let requete: RequeteDechiffrage = m.message.get_msg().map_contenu(None)?;
@@ -702,8 +706,9 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
     }
 
     // Trouver les cles demandees et rechiffrer
-    let cles = get_cles_redis_rechiffrees(
-        middleware, &requete, enveloppe_privee, certificat.as_ref(),
+    let mut connection = gestionnaire.ouvrir_connection(middleware);
+    let cles = get_cles_sqlite_rechiffrees(
+        middleware, &mut connection, &requete, enveloppe_privee, certificat.as_ref(),
         permission.as_ref(), domaines_permis.as_ref()).await?;
 
     // Preparer la reponse
@@ -814,8 +819,9 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
     // Ok(Some(reponse))
 }
 
-async fn get_cles_redis_rechiffrees<M>(
+async fn get_cles_sqlite_rechiffrees<M>(
     middleware: &M,
+    connection: &mut Connection,
     requete: &RequeteDechiffrage,
     enveloppe_privee: Arc<EnveloppePrivee>,
     certificat: &EnveloppeCertificat,
@@ -823,39 +829,39 @@ async fn get_cles_redis_rechiffrees<M>(
     domaines_permis: Option<&Vec<String>>
 )
     -> Result<HashMap<String, TransactionCle>, Box<dyn Error>>
-    where M: RedisTrait + VerificateurMessage + FormatteurMessage
+    where M: VerificateurMessage + FormatteurMessage
 {
     let mut cles: HashMap<String, TransactionCle> = HashMap::new();
 
-    let redis_dao = middleware.get_redis();
     let enveloppe_privee = middleware.get_enveloppe_privee();
     let fingerprint = enveloppe_privee.fingerprint().as_str();
 
     for hachage_bytes in &requete.liste_hachage_bytes {
-        match redis_dao.get_cle(fingerprint, hachage_bytes).await? {
-            Some(info_cle_str) => {
-                // Cle trouvee
-                let mut cle_transaction: TransactionCle = serde_json::from_str(info_cle_str.as_str())?;
-
-                // Verifier autorisation du domaine
-                match domaines_permis {
-                    Some(domaines) => {
-                        let domaine_cle = &cle_transaction.domaine;
-                        if domaines.contains(domaine_cle) == false {
-                            debug!("Demande de rechiffrage de {} refusee, certificat ne supporte pas domaine {}", hachage_bytes, domaine_cle);
-                            continue
-                        }
-                    },
-                    None => ()
-                }
-
-                // Rechiffrer
-                rechiffrer_cle(&mut cle_transaction, enveloppe_privee.as_ref(), certificat)?;
-
-                cles.insert(hachage_bytes.clone(), cle_transaction);
-            },
-            None => continue  // Pas trouve, skip
-        }
+        todo!("charger cle")
+        // match redis_dao.get_cle(fingerprint, hachage_bytes).await? {
+        //     Some(info_cle_str) => {
+        //         // Cle trouvee
+        //         let mut cle_transaction: TransactionCle = serde_json::from_str(info_cle_str.as_str())?;
+        //
+        //         // Verifier autorisation du domaine
+        //         match domaines_permis {
+        //             Some(domaines) => {
+        //                 let domaine_cle = &cle_transaction.domaine;
+        //                 if domaines.contains(domaine_cle) == false {
+        //                     debug!("Demande de rechiffrage de {} refusee, certificat ne supporte pas domaine {}", hachage_bytes, domaine_cle);
+        //                     continue
+        //                 }
+        //             },
+        //             None => ()
+        //         }
+        //
+        //         // Rechiffrer
+        //         rechiffrer_cle(&mut cle_transaction, enveloppe_privee.as_ref(), certificat)?;
+        //
+        //         cles.insert(hachage_bytes.clone(), cle_transaction);
+        //     },
+        //     None => continue  // Pas trouve, skip
+        // }
     }
 
     debug!("Cles rechiffrees : {:?}", cles);
@@ -1066,7 +1072,7 @@ fn verifier_autorisation_dechiffrage_specifique(
 }
 
 async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesSQLite) -> Result<(), Box<dyn Error>>
-    where M: GenerateurMessages + VerificateurMessage + RedisTrait
+    where M: GenerateurMessages + VerificateurMessage + IsConfigNoeud
 {
     // Requete vers CA pour obtenir la liste des cles connues
     let mut requete_sync = RequeteSynchroniserCles {page: 0, limite: 50};
@@ -1082,91 +1088,92 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
 
     let enveloppe_privee = middleware.get_enveloppe_privee();
     let fingerprint = enveloppe_privee.fingerprint().as_str();
-    let redis_dao = middleware.get_redis();
-    let mut connexion_redis = redis_dao.get_async_connection().await?;
-
-    loop {
-        let reponse = match middleware.transmettre_requete(routage_sync.clone(), &requete_sync).await? {
-            TypeMessage::Valide(reponse) => {
-                reponse.message.get_msg().map_contenu::<ReponseSynchroniserCles>(None)?
-            },
-            _ => {
-                warn!("synchroniser_cles Mauvais type de reponse recu, on abort");
-                break
-            }
-        };
-        requete_sync.page += 1;  // Incrementer page pour prochaine requete
-
-        let liste_hachage_bytes = reponse.liste_hachage_bytes;
-        if liste_hachage_bytes.len() == 0 {
-            debug!("synchroniser_cles Traitement sync termine");
-            break
-        }
-
-        let mut cles_manquantes = HashSet::new();
-        debug!("synchroniser_cles Recu liste_hachage_bytes a verifier : {:?}", liste_hachage_bytes);
-
-        for hachage_bytes in liste_hachage_bytes.into_iter() {
-            let cle = format!("cle:{}:{}", fingerprint, hachage_bytes);
-            let resultat: Option<String> = redis::cmd("GET").arg(cle).query_async(&mut connexion_redis).await?;
-            match resultat {
-                Some(c) => (),
-                None => { cles_manquantes.insert(hachage_bytes); }
-            }
-        }
-
-        for cle_manquante in &cles_manquantes {
-            redis_dao.ajouter_cle_manquante(enveloppe_privee.as_ref(), cle_manquante).await?;
-        }
-
-        if cles_manquantes.len() > 0 {
-            info!("Cles manquantes nb: {}", cles_manquantes.len());
-            let liste_cles: Vec<String> = cles_manquantes.iter().map(|m| String::from(m.as_str())).collect();
-            let evenement_cles_manquantes = ReponseSynchroniserCles { liste_hachage_bytes: liste_cles };
-            let reponse = middleware.transmettre_requete(routage_evenement_manquant.clone(), &evenement_cles_manquantes).await?;
-            debug!("Reponse  {:?}", reponse);
-            if let TypeMessage::Valide(m) = reponse {
-                let message_serialise = m.message;
-                let commandes: Vec<CommandeSauvegarderCle> = message_serialise.parsed.map_contenu(Some("cles"))?;
-
-                for commande in commandes {
-                    let hachage_bytes = commande.hachage_bytes.as_str();
-
-                    let fingerprint = gestionnaire.fingerprint.as_str();
-
-                    let cle = match commande.cles.get(fingerprint) {
-                        Some(cle) => cle.as_str(),
-                        None => {
-                            let message = format!("maitredescles_ca.synchroniser_cles: Erreur validation - commande sauvegarder cles ne contient pas la cle locale ({}) : {:?}", fingerprint, commande);
-                            warn!("{}", message);
-                            continue
-                        }
-                    };
-
-                    let doc_redis = json!({
-                        "cle": cle,
-                        "hachage_bytes": &commande.hachage_bytes,
-                        "domaine": &commande.domaine,
-                        "format": &commande.format,
-                        "identificateurs_document": &commande.identificateurs_document,
-                        "iv": &commande.iv,
-                        "tag": &commande.tag,
-                        // "confirmation_ca": false,
-                        // "dirty": false,
-                    });
-                    redis_dao.save_cle_maitredescles(&enveloppe_privee, hachage_bytes, &doc_redis, &mut connexion_redis).await?;
-                }
-            }
-        }
-
-    }
-
-    Ok(())
+    todo!("fix me");
+    // let redis_dao = middleware.get_redis();
+    // let mut connexion_redis = redis_dao.get_async_connection().await?;
+    //
+    // loop {
+    //     let reponse = match middleware.transmettre_requete(routage_sync.clone(), &requete_sync).await? {
+    //         TypeMessage::Valide(reponse) => {
+    //             reponse.message.get_msg().map_contenu::<ReponseSynchroniserCles>(None)?
+    //         },
+    //         _ => {
+    //             warn!("synchroniser_cles Mauvais type de reponse recu, on abort");
+    //             break
+    //         }
+    //     };
+    //     requete_sync.page += 1;  // Incrementer page pour prochaine requete
+    //
+    //     let liste_hachage_bytes = reponse.liste_hachage_bytes;
+    //     if liste_hachage_bytes.len() == 0 {
+    //         debug!("synchroniser_cles Traitement sync termine");
+    //         break
+    //     }
+    //
+    //     let mut cles_manquantes = HashSet::new();
+    //     debug!("synchroniser_cles Recu liste_hachage_bytes a verifier : {:?}", liste_hachage_bytes);
+    //
+    //     for hachage_bytes in liste_hachage_bytes.into_iter() {
+    //         let cle = format!("cle:{}:{}", fingerprint, hachage_bytes);
+    //         let resultat: Option<String> = redis::cmd("GET").arg(cle).query_async(&mut connexion_redis).await?;
+    //         match resultat {
+    //             Some(c) => (),
+    //             None => { cles_manquantes.insert(hachage_bytes); }
+    //         }
+    //     }
+    //
+    //     for cle_manquante in &cles_manquantes {
+    //         redis_dao.ajouter_cle_manquante(enveloppe_privee.as_ref(), cle_manquante).await?;
+    //     }
+    //
+    //     if cles_manquantes.len() > 0 {
+    //         info!("Cles manquantes nb: {}", cles_manquantes.len());
+    //         let liste_cles: Vec<String> = cles_manquantes.iter().map(|m| String::from(m.as_str())).collect();
+    //         let evenement_cles_manquantes = ReponseSynchroniserCles { liste_hachage_bytes: liste_cles };
+    //         let reponse = middleware.transmettre_requete(routage_evenement_manquant.clone(), &evenement_cles_manquantes).await?;
+    //         debug!("Reponse  {:?}", reponse);
+    //         if let TypeMessage::Valide(m) = reponse {
+    //             let message_serialise = m.message;
+    //             let commandes: Vec<CommandeSauvegarderCle> = message_serialise.parsed.map_contenu(Some("cles"))?;
+    //
+    //             for commande in commandes {
+    //                 let hachage_bytes = commande.hachage_bytes.as_str();
+    //
+    //                 let fingerprint = gestionnaire.fingerprint.as_str();
+    //
+    //                 let cle = match commande.cles.get(fingerprint) {
+    //                     Some(cle) => cle.as_str(),
+    //                     None => {
+    //                         let message = format!("maitredescles_ca.synchroniser_cles: Erreur validation - commande sauvegarder cles ne contient pas la cle locale ({}) : {:?}", fingerprint, commande);
+    //                         warn!("{}", message);
+    //                         continue
+    //                     }
+    //                 };
+    //
+    //                 let doc_redis = json!({
+    //                     "cle": cle,
+    //                     "hachage_bytes": &commande.hachage_bytes,
+    //                     "domaine": &commande.domaine,
+    //                     "format": &commande.format,
+    //                     "identificateurs_document": &commande.identificateurs_document,
+    //                     "iv": &commande.iv,
+    //                     "tag": &commande.tag,
+    //                     // "confirmation_ca": false,
+    //                     // "dirty": false,
+    //                 });
+    //                 redis_dao.save_cle_maitredescles(&enveloppe_privee, hachage_bytes, &doc_redis, &mut connexion_redis).await?;
+    //             }
+    //         }
+    //     }
+    //
+    // }
+    //
+    // Ok(())
 }
 
 /// S'assurer que le CA a toutes les cles de la partition. Permet aussi de resetter le flag non-dechiffrable.
 async fn confirmer_cles_ca<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesSQLite, reset_flag: Option<bool>) -> Result<(), Box<dyn Error>>
-    where M: GenerateurMessages + RedisTrait + VerificateurMessage + Chiffreur<CipherMgs3, Mgs3CipherKeys>
+    where M: GenerateurMessages + IsConfigNoeud + VerificateurMessage + Chiffreur<CipherMgs3, Mgs3CipherKeys>
 {
     let batch_size = 500;
 
@@ -1186,38 +1193,16 @@ async fn confirmer_cles_ca<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
     let fingerprint = enveloppe_privee.fingerprint().as_str();
     let cle = format!("cle_versCA:{}", fingerprint);
 
-    let redis_dao = middleware.get_redis();
-    let mut connexion_redis = redis_dao.get_async_connection().await?;
-    let mut iter_scan: redis::AsyncIter<String> = redis::cmd("SSCAN")
-        .arg(cle).cursor_arg(0).clone().iter_async(&mut connexion_redis).await?;
-
-    let mut cles = Vec::new();
-    while let Some(hachage_bytes) = iter_scan.next_item().await {
-        cles.push(hachage_bytes);
-        if cles.len() >= batch_size {
-            emettre_cles_vers_ca(middleware, gestionnaire, &mut cles).await?;
-            cles.clear();
-        }
-    }
-
-    // Derniere batch de cles
-    if cles.len() > 0 {
-        emettre_cles_vers_ca(middleware, gestionnaire, &mut cles).await?;
-    }
-
-    // let cles_ca = redis_dao.get_cleversca_batch(fingerprint, Some(limit_cles)).await?;
-    // debug!("confirmer_cles_ca Batch cle a confirmer avec CA : {:?}", cles_ca);
-    // if cles_ca.len() == 0 {
-    //     debug!("confirmer_cles_ca Aucune cle a transmettre vers CA");
-    //     return Ok(())
-    // }
+    todo!("Fix me");
+    // let redis_dao = middleware.get_redis();
+    // let mut connexion_redis = redis_dao.get_async_connection().await?;
+    // let mut iter_scan: redis::AsyncIter<String> = redis::cmd("SSCAN")
+    //     .arg(cle).cursor_arg(0).clone().iter_async(&mut connexion_redis).await?;
     //
     // let mut cles = Vec::new();
-    //
-    // // Traiter cles en batch
-    // for hachage_bytes in cles_ca {
+    // while let Some(hachage_bytes) = iter_scan.next_item().await {
     //     cles.push(hachage_bytes);
-    //     if cles.len() == batch_size {
+    //     if cles.len() >= batch_size {
     //         emettre_cles_vers_ca(middleware, gestionnaire, &mut cles).await?;
     //         cles.clear();
     //     }
@@ -1227,10 +1212,33 @@ async fn confirmer_cles_ca<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
     // if cles.len() > 0 {
     //     emettre_cles_vers_ca(middleware, gestionnaire, &mut cles).await?;
     // }
-
-    debug!("confirmer_cles_ca Fin confirmation cles locales");
-
-    Ok(())
+    //
+    // // let cles_ca = redis_dao.get_cleversca_batch(fingerprint, Some(limit_cles)).await?;
+    // // debug!("confirmer_cles_ca Batch cle a confirmer avec CA : {:?}", cles_ca);
+    // // if cles_ca.len() == 0 {
+    // //     debug!("confirmer_cles_ca Aucune cle a transmettre vers CA");
+    // //     return Ok(())
+    // // }
+    // //
+    // // let mut cles = Vec::new();
+    // //
+    // // // Traiter cles en batch
+    // // for hachage_bytes in cles_ca {
+    // //     cles.push(hachage_bytes);
+    // //     if cles.len() == batch_size {
+    // //         emettre_cles_vers_ca(middleware, gestionnaire, &mut cles).await?;
+    // //         cles.clear();
+    // //     }
+    // // }
+    // //
+    // // // Derniere batch de cles
+    // // if cles.len() > 0 {
+    // //     emettre_cles_vers_ca(middleware, gestionnaire, &mut cles).await?;
+    // // }
+    //
+    // debug!("confirmer_cles_ca Fin confirmation cles locales");
+    //
+    // Ok(())
 }
 
 /// Emet un message vers CA pour verifier quels cles sont manquantes (sur le CA)
@@ -1239,7 +1247,7 @@ async fn confirmer_cles_ca<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
 async fn emettre_cles_vers_ca<M>(
     middleware: &M, gestionnaire: &GestionnaireMaitreDesClesSQLite, hachage_bytes: &mut Vec<String>)
     -> Result<(), Box<dyn Error>>
-    where M: GenerateurMessages + RedisTrait + VerificateurMessage + Chiffreur<CipherMgs3, Mgs3CipherKeys>
+    where M: GenerateurMessages + IsConfigNoeud + VerificateurMessage + Chiffreur<CipherMgs3, Mgs3CipherKeys>
 {
     // let hachage_bytes: Vec<String> = cles.keys().into_iter().map(|h| h.to_owned()).collect();
     debug!("emettre_cles_vers_ca Batch cles {:?}", hachage_bytes);
@@ -1272,71 +1280,72 @@ async fn traiter_cles_manquantes_ca<M>(
     middleware: &M, gestionnaire: &GestionnaireMaitreDesClesSQLite, cles_emises: &Vec<String>, cles_manquantes: &Vec<String>
 )
     -> Result<(), Box<dyn Error>>
-    where M: RedisTrait + GenerateurMessages + Chiffreur<CipherMgs3, Mgs3CipherKeys>
+    where M: IsConfigNoeud + GenerateurMessages + Chiffreur<CipherMgs3, Mgs3CipherKeys>
 {
     let enveloppe_privee = middleware.get_enveloppe_privee();
     let fingerprint = enveloppe_privee.fingerprint().as_str();
 
     // Marquer cles emises comme confirmees par CA si pas dans la liste de manquantes
-    let redis_dao = middleware.get_redis();
-    {
-        let cles_confirmees: Vec<&String> = cles_emises.iter()
-            .filter(|c| !cles_manquantes.contains(c))
-            .collect();
-        debug!("traiter_cles_manquantes_ca Cles confirmees par le CA: {:?}", cles_confirmees);
-        for hachage_bytes in cles_confirmees {
-            redis_dao.retirer_cleca_manquante(fingerprint, hachage_bytes).await?;
-        }
-    }
-
-    // Rechiffrer et emettre les cles manquantes.
-    {
-        let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
-            .exchanges(vec![Securite::L4Secure])
-            .build();
-
-        for hachage_bytes in cles_manquantes {
-            let cle_str = match redis_dao.get_cle(fingerprint, hachage_bytes).await {
-                Ok(c) => match c {
-                    Some(c)=> c,
-                    None => {
-                        debug!("cle manquante n'est pas presente localement : {}", hachage_bytes);
-                        continue
-                    }
-                },
-                Err(e) => {
-                    error!("Erreur chargement cle manquant localement {} : {:?}", hachage_bytes, e);
-                    continue
-                }
-            };
-
-            let commande = match serde_json::from_str::<TransactionCle>(cle_str.as_str()) {
-                Ok(cle) => {
-                    match rechiffrer_pour_maitredescles(middleware, &cle) {
-                        Ok(c) => c,
-                        Err(e) => {
-                            error!("traiter_cles_manquantes_ca Erreur traitement rechiffrage cle : {:?}", e);
-                            continue
-                        }
-                    }
-                },
-                Err(e) => {
-                    warn!("traiter_cles_manquantes_ca Erreur conversion document en cle : {:?}", e);
-                    continue
-                }
-            };
-
-            debug!("Emettre cles rechiffrees pour CA : {:?}", commande);
-            middleware.transmettre_commande(routage_commande.clone(), &commande, false).await?;
-        }
-    }
-
-    Ok(())
+    todo!("fix me");
+    // let redis_dao = middleware.get_redis();
+    // {
+    //     let cles_confirmees: Vec<&String> = cles_emises.iter()
+    //         .filter(|c| !cles_manquantes.contains(c))
+    //         .collect();
+    //     debug!("traiter_cles_manquantes_ca Cles confirmees par le CA: {:?}", cles_confirmees);
+    //     for hachage_bytes in cles_confirmees {
+    //         redis_dao.retirer_cleca_manquante(fingerprint, hachage_bytes).await?;
+    //     }
+    // }
+    //
+    // // Rechiffrer et emettre les cles manquantes.
+    // {
+    //     let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
+    //         .exchanges(vec![Securite::L4Secure])
+    //         .build();
+    //
+    //     for hachage_bytes in cles_manquantes {
+    //         let cle_str = match redis_dao.get_cle(fingerprint, hachage_bytes).await {
+    //             Ok(c) => match c {
+    //                 Some(c)=> c,
+    //                 None => {
+    //                     debug!("cle manquante n'est pas presente localement : {}", hachage_bytes);
+    //                     continue
+    //                 }
+    //             },
+    //             Err(e) => {
+    //                 error!("Erreur chargement cle manquant localement {} : {:?}", hachage_bytes, e);
+    //                 continue
+    //             }
+    //         };
+    //
+    //         let commande = match serde_json::from_str::<TransactionCle>(cle_str.as_str()) {
+    //             Ok(cle) => {
+    //                 match rechiffrer_pour_maitredescles(middleware, &cle) {
+    //                     Ok(c) => c,
+    //                     Err(e) => {
+    //                         error!("traiter_cles_manquantes_ca Erreur traitement rechiffrage cle : {:?}", e);
+    //                         continue
+    //                     }
+    //                 }
+    //             },
+    //             Err(e) => {
+    //                 warn!("traiter_cles_manquantes_ca Erreur conversion document en cle : {:?}", e);
+    //                 continue
+    //             }
+    //         };
+    //
+    //         debug!("Emettre cles rechiffrees pour CA : {:?}", commande);
+    //         middleware.transmettre_commande(routage_commande.clone(), &commande, false).await?;
+    //     }
+    // }
+    //
+    // Ok(())
 }
 
 async fn evenement_cle_manquante<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesSQLite, m: &MessageValideAction)
                                     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: ValidateurX509 + GenerateurMessages + RedisTrait + Chiffreur<CipherMgs3, Mgs3CipherKeys>,
+    where M: ValidateurX509 + GenerateurMessages + IsConfigNoeud + Chiffreur<CipherMgs3, Mgs3CipherKeys>,
 {
     debug!("evenement_cle_manquante Verifier si on peut transmettre la cle manquante {:?}", &m.message);
     let event_non_dechiffrables: ReponseSynchroniserCles = m.message.get_msg().map_contenu(None)?;
@@ -1366,41 +1375,82 @@ async fn evenement_cle_manquante<M>(middleware: &M, gestionnaire: &GestionnaireM
 
     let enveloppe_privee = middleware.get_enveloppe_privee();
     let fingerprint = enveloppe_privee.fingerprint().as_str();
-    let redis_dao = middleware.get_redis();
-    for hachage_bytes in hachages_bytes_list {
-        let cle_str = match redis_dao.get_cle(fingerprint, &hachage_bytes).await {
-            Ok(c) => match c {
-                Some(c)=> c,
-                None => {
-                    debug!("cle manquante n'est pas presente localement : {}", hachage_bytes);
-                    continue
-                }
-            },
-            Err(e) => {
-                error!("Erreur chargement cle manquant localement {} : {:?}", hachage_bytes, e);
-                continue
-            }
-        };
+    todo!("fix me");
+    // let redis_dao = middleware.get_redis();
+    // for hachage_bytes in hachages_bytes_list {
+    //     let cle_str = match redis_dao.get_cle(fingerprint, &hachage_bytes).await {
+    //         Ok(c) => match c {
+    //             Some(c)=> c,
+    //             None => {
+    //                 debug!("cle manquante n'est pas presente localement : {}", hachage_bytes);
+    //                 continue
+    //             }
+    //         },
+    //         Err(e) => {
+    //             error!("Erreur chargement cle manquant localement {} : {:?}", hachage_bytes, e);
+    //             continue
+    //         }
+    //     };
+    //
+    //     let commande = match serde_json::from_str::<TransactionCle>(cle_str.as_str()) {
+    //         Ok(cle) => {
+    //             match rechiffrer_pour_maitredescles(middleware, &cle) {
+    //                 Ok(c) => c,
+    //                 Err(e) => {
+    //                     error!("traiter_cles_manquantes_ca Erreur traitement rechiffrage cle : {:?}", e);
+    //                     continue
+    //                 }
+    //             }
+    //         },
+    //         Err(e) => {
+    //             warn!("traiter_cles_manquantes_ca Erreur conversion document en cle : {:?}", e);
+    //             continue
+    //         }
+    //     };
+    //
+    //     debug!("Emettre cles rechiffrees pour CA : {:?}", commande);
+    //     middleware.transmettre_commande(routage_commande.clone(), &commande, false).await?;
+    // }
+    //
+    // Ok(None)
+}
 
-        let commande = match serde_json::from_str::<TransactionCle>(cle_str.as_str()) {
-            Ok(cle) => {
-                match rechiffrer_pour_maitredescles(middleware, &cle) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        error!("traiter_cles_manquantes_ca Erreur traitement rechiffrage cle : {:?}", e);
-                        continue
-                    }
-                }
-            },
-            Err(e) => {
-                warn!("traiter_cles_manquantes_ca Erreur conversion document en cle : {:?}", e);
-                continue
-            }
-        };
+fn sauvegarder_cle<S,T>(connection: &Connection, fingerprint_: S, cle_: T, commande: &CommandeSauvegarderCle) -> Result<(), Box<dyn Error>>
+    where S: AsRef<str>, T: AsRef<str>
+{
+    let cle = cle_.as_ref();
+    let fingerprint = fingerprint_.as_ref();
 
-        debug!("Emettre cles rechiffrees pour CA : {:?}", commande);
-        middleware.transmettre_commande(routage_commande.clone(), &commande, false).await?;
-    }
+    // Sauvegarde cle dans sqlite
+    let mut prepared_statement_cle = connection
+        .prepare("
+            INSERT INTO cles
+            VALUES(?, ?, ?, ?, ?, ?, ?)
+        ")?;
+    let mut prepared_statement_identificateurs = connection
+        .prepare("
+            INSERT INTO identificateurs_document
+            VALUES(?, ?, ?)
+        ")?;
 
-    Ok(None)
+    let format_str: String = serde_json::to_string(&commande.format)?;
+
+    // let format_str = match commande.format {
+    //     FormatChiffrage::mgs2 => "mgs2",
+    //     FormatChiffrage::mgs3 => "mgs3",
+    // };
+
+    prepared_statement_cle.bind(1, commande.hachage_bytes.as_str())?;
+    prepared_statement_cle.bind(2, fingerprint)?;
+    prepared_statement_cle.bind(3, cle)?;
+    prepared_statement_cle.bind(4, commande.iv.as_str())?;
+    prepared_statement_cle.bind(5, commande.tag.as_str())?;
+    prepared_statement_cle.bind(6, format_str.as_str())?;
+    prepared_statement_cle.bind(7, 0)?;
+
+    debug!("Conserver cle dans sqlite : {}", commande.hachage_bytes);
+    let resultat = prepared_statement_cle.next();
+    debug!("Resultat ajout cle dans sqlite : {:?}", resultat);
+
+    Ok(())
 }
