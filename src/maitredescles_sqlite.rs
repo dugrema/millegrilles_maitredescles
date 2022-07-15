@@ -830,7 +830,7 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
 
 async fn get_cles_sqlite_rechiffrees<M>(
     middleware: &M,
-    connection: &mut Connection,
+    connexion: &mut Connection,
     requete: &RequeteDechiffrage,
     enveloppe_privee: Arc<EnveloppePrivee>,
     certificat: &EnveloppeCertificat,
@@ -846,31 +846,38 @@ async fn get_cles_sqlite_rechiffrees<M>(
     let fingerprint = enveloppe_privee.fingerprint().as_str();
 
     for hachage_bytes in &requete.liste_hachage_bytes {
-        todo!("charger cle")
-        // match redis_dao.get_cle(fingerprint, hachage_bytes).await? {
-        //     Some(info_cle_str) => {
-        //         // Cle trouvee
-        //         let mut cle_transaction: TransactionCle = serde_json::from_str(info_cle_str.as_str())?;
-        //
-        //         // Verifier autorisation du domaine
-        //         match domaines_permis {
-        //             Some(domaines) => {
-        //                 let domaine_cle = &cle_transaction.domaine;
-        //                 if domaines.contains(domaine_cle) == false {
-        //                     debug!("Demande de rechiffrage de {} refusee, certificat ne supporte pas domaine {}", hachage_bytes, domaine_cle);
-        //                     continue
-        //                 }
-        //             },
-        //             None => ()
-        //         }
-        //
-        //         // Rechiffrer
-        //         rechiffrer_cle(&mut cle_transaction, enveloppe_privee.as_ref(), certificat)?;
-        //
-        //         cles.insert(hachage_bytes.clone(), cle_transaction);
-        //     },
-        //     None => continue  // Pas trouve, skip
-        // }
+        let mut cle_transaction = match charger_cle(connexion, fingerprint, hachage_bytes) {
+            Ok(c) => match c{
+                Some(c) => c,
+                None => {
+                    warn!("get_cles_sqlite_rechiffrees Cle inconnue : {}", hachage_bytes);
+                    continue
+                }
+            },
+            Err(e) => {
+                error!("get_cles_sqlite_rechiffrees Erreur chargement cle {} : {:?}", hachage_bytes, e);
+                continue;
+            }
+        };
+
+        debug!("get_cles_sqlite_rechiffrees Rechiffrer cle : {:?}", cle_transaction);
+
+        // Verifier autorisation du domaine
+        match domaines_permis {
+            Some(domaines) => {
+                let domaine_cle = &cle_transaction.domaine;
+                if domaines.contains(domaine_cle) == false {
+                    debug!("get_cles_sqlite_rechiffrees Demande de rechiffrage de {} refusee, certificat ne supporte pas domaine {}", hachage_bytes, domaine_cle);
+                    continue
+                }
+            },
+            None => ()
+        }
+
+        // Rechiffrer
+        rechiffrer_cle(&mut cle_transaction, enveloppe_privee.as_ref(), certificat)?;
+
+        cles.insert(hachage_bytes.clone(), cle_transaction);
     }
 
     debug!("Cles rechiffrees : {:?}", cles);
@@ -1162,7 +1169,7 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
                         }
                     };
 
-                    sauvegarder_cle(&connexion, fingerprint, hachage_bytes, &commande)?;
+                    sauvegarder_cle(&connexion, fingerprint, cle, &commande)?;
                 }
             }
         }
@@ -1337,10 +1344,18 @@ async fn evenement_cle_manquante<M>(middleware: &M, gestionnaire: &GestionnaireM
         None => return Ok(None)  // Type certificat inconnu
     };
 
+    let partition = enveloppe.fingerprint.as_str();
+    let enveloppe_privee = middleware.get_enveloppe_privee();
+    let partition_locale = enveloppe_privee.fingerprint().as_str();
+
+    if partition == partition_locale {
+        // Evenement emis par la partition locale - on l'ignore
+        return Ok(None)
+    }
+
     // S'assurer que le certificat de maitre des cles recus est dans la liste de rechiffrage
     middleware.recevoir_certificat_chiffrage(&m.message).await?;
 
-    let partition = enveloppe.fingerprint.as_str();
     let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
         .exchanges(vec![Securite::L4Secure])
         .partition(partition)
@@ -1410,11 +1425,6 @@ fn sauvegarder_cle<S,T>(connection: &Connection, fingerprint_: S, cle_: T, comma
 
     let format_str: String = serde_json::to_string(&commande.format)?.replace("\"", "");
 
-    // let format_str = match commande.format {
-    //     FormatChiffrage::mgs2 => "mgs2",
-    //     FormatChiffrage::mgs3 => "mgs3",
-    // };
-
     prepared_statement_cle.bind(1, commande.hachage_bytes.as_str())?;
     prepared_statement_cle.bind(2, fingerprint)?;
     prepared_statement_cle.bind(3, cle)?;
@@ -1462,13 +1472,14 @@ fn charger_cle<S,T>(connexion: &Connection, fingerprint_: S, hachage_bytes_: T)
         State::Done => return Ok(None)
     }
 
-    let mut statement_id = connexion.prepare("SELECT cle, valeur FROM identificateurs_document WHERE hachage_bytes = ? AND fingerprint = ?")?;
+    let mut statement_id = connexion.prepare(
+        "SELECT cle, valeur FROM identificateurs_document WHERE hachage_bytes = ? AND fingerprint = ?")?;
     statement_id.bind(1, hachage_bytes)?;
     statement_id.bind(2, fingerprint)?;
     let mut identificateurs_document = HashMap::new();
     while State::Done != statement_id.next()? {
-        let cle: String = statement_id.read(1)?;
-        let valeur: String = statement_id.read(2)?;
+        let cle: String = statement_id.read(0)?;
+        let valeur: String = statement_id.read(1)?;
         identificateurs_document.insert(cle, valeur);
     }
 
