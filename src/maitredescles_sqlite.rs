@@ -1214,6 +1214,11 @@ async fn confirmer_cles_ca<M>(middleware: Arc<M>, gestionnaire: &'static Gestion
 
     let connexion = gestionnaire.ouvrir_connection(middleware.as_ref(), false);
 
+    if let Some(true) = reset_flag {
+        debug!("confirmer_cles_ca Reset flag confirmation_ca = 0");
+        connexion.execute("UPDATE cles SET confirmation_ca = 0;")?;
+    }
+
     // Boucle de traitement, le break survient quand il ne reste aucun row avec confirmation_ca = 0
     loop {
         // Lire une batch de cles
@@ -1523,13 +1528,15 @@ fn sauvegarder_cle<S,T>(connection: &Connection, fingerprint_: S, cle_: T, comma
 {
     let cle = cle_.as_ref();
     let fingerprint = fingerprint_.as_ref();
+    let hachage_bytes = commande.hachage_bytes.as_str();
 
     {
         let mut prepared_statement_verifier = connection
             .prepare("SELECT hachage_bytes FROM cles WHERE hachage_bytes = ?")?;
-        prepared_statement_verifier.bind(1, cle)?;
+        prepared_statement_verifier.bind(1, hachage_bytes)?;
         if State::Row == prepared_statement_verifier.next()? {
             // Skip, la cle existe deja
+            debug!("sauvegarder_cle Skip cle existante {}", hachage_bytes);
             return Ok(())
         }
     }
