@@ -60,6 +60,7 @@ const CHAMP_CONFIRMATION_CA: &str = "confirmation_ca";
 pub struct GestionnaireMaitreDesClesSQLite {
     pub fingerprint: String,
     connexion_read_only: Mutex<Option<Connection>>,
+    connexion_sauvegarder_cle: Mutex<Option<Connection>>,
 }
 
 impl Clone for GestionnaireMaitreDesClesSQLite {
@@ -67,6 +68,7 @@ impl Clone for GestionnaireMaitreDesClesSQLite {
         GestionnaireMaitreDesClesSQLite {
             fingerprint: self.fingerprint.clone(),
             connexion_read_only: Mutex::new(None),
+            connexion_sauvegarder_cle: Mutex::new(None),
         }
     }
 }
@@ -88,6 +90,7 @@ impl GestionnaireMaitreDesClesSQLite {
         Self {
             fingerprint: String::from(fingerprint),
             connexion_read_only: Mutex::new(None),
+            connexion_sauvegarder_cle: Mutex::new(None),
         }
     }
 
@@ -112,6 +115,17 @@ impl GestionnaireMaitreDesClesSQLite {
         }
 
         &self.connexion_read_only
+    }
+
+    fn ouvrir_connection_sauvegardercle<M>(&self, middleware: &M) -> &Mutex<Option<Connection>> where M: IsConfigNoeud {
+        let mut guard = self.connexion_sauvegarder_cle.lock().expect("ouvrir_connection_sauvegardercle lock");
+
+        if guard.is_none() {
+            let connexion = self.ouvrir_connection(middleware, false);
+            *guard = Some(connexion);
+        }
+
+        &self.connexion_sauvegarder_cle
     }
 
     /// Retourne une version tronquee du nom de partition
@@ -571,8 +585,19 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
         }
     };
 
-    let connection = gestionnaire.ouvrir_connection(middleware, false);
-    sauvegarder_cle(&connection, fingerprint, cle, &commande)?;
+    {
+        let connexion_guard = gestionnaire.ouvrir_connection_sauvegardercle(middleware)
+            .lock().expect("requete_dechiffrage connection lock");
+        let connexion = connexion_guard.as_ref().expect("requete_dechiffrage connection Some");
+        connexion.execute("BEGIN;")?;
+        match sauvegarder_cle(connexion, fingerprint, cle, &commande) {
+            Ok(()) => connexion.execute("COMMIT;")?,
+            Err(e) => {
+                connexion.execute("ROLLBACK;")?;
+                Err(e)?
+            }
+        }
+    }
 
     // Detecter si on doit rechiffrer et re-emettre la cles
     // Survient si on a recu une commande sur un exchange autre que 4.secure et qu'il a moins de
@@ -1095,12 +1120,13 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
     let mut requete_sync = RequeteSynchroniserCles {page: 0, limite: 250};
     let routage_sync = RoutageMessageAction::builder(DOMAINE_NOM, REQUETE_SYNCHRONISER_CLES)
         .exchanges(vec![Securite::L4Secure])
+        .timeout_blocking(30000)
         .build();
 
     let routage_evenement_manquant = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION)
         .exchanges(vec![Securite::L4Secure])
         .ajouter_reply_q(true)
-        .timeout_blocking(5000)
+        .timeout_blocking(20000)
         .build();
 
     let enveloppe_privee = middleware.get_enveloppe_privee();
@@ -1178,78 +1204,151 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
     Ok(())
 }
 
-/// S'assurer que le CA a toutes les cles de la partition. Permet aussi de resetter le flag non-dechiffrable.
 async fn confirmer_cles_ca<M>(middleware: Arc<M>, gestionnaire: &'static GestionnaireMaitreDesClesSQLite, reset_flag: Option<bool>)
     -> Result<(), Box<dyn Error>>
     where M: Middleware + 'static
 {
-    let batch_size = 500;
+    let batch_size = 250;
 
-    debug!("confirmer_cles_ca Debut confirmation cles locales avec confirmation_ca=false");
+    debug!("confirmer_cles_ca Debut confirmation cles locales avec confirmation_ca=0");
 
-    let (tx_batch, rx_batch) = mpsc::channel(1);
-    let middleware_1 = middleware.clone();
-    let task_lecture = tokio::task::spawn_blocking(move || curseur_lire_cles(middleware_1, gestionnaire, tx_batch, batch_size));
-    let task_emission = tokio::task::spawn(emettre_batch_cles_versca(middleware, gestionnaire, rx_batch));
+    let connexion = gestionnaire.ouvrir_connection(middleware.as_ref(), false);
 
-    let mut futures = FuturesUnordered::new();
-    futures.push(task_lecture);
-    futures.push(task_emission);
+    // Boucle de traitement, le break survient quand il ne reste aucun row avec confirmation_ca = 0
+    loop {
+        // Lire une batch de cles
+        let batch_cles = {
+            let mut prepared_statement = connexion.prepare("SELECT hachage_bytes FROM cles WHERE confirmation_ca = 0 LIMIT ?")?;
+            prepared_statement.bind(1, batch_size)?;
+            let mut batch_cles = Vec::new();
 
-    let resultat = futures.next().await;
-    debug!("confirmer_cles_ca Fin confirmation cles locales, resultat : {:?}", resultat);
+            let mut cursor = prepared_statement.into_cursor();
+            while let Some(row) = cursor.next()? {
+                let hachage_bytes: String = row[0].as_string().expect("__curseur_lire_cles hachage_bytes").to_owned();
+                batch_cles.push(hachage_bytes);
+            }
 
-    Ok(())
-}
+            batch_cles
+        };
 
-async fn emettre_batch_cles_versca<M>(middleware: Arc<M>, gestionnaire: &GestionnaireMaitreDesClesSQLite, mut rx_batch: mpsc::Receiver<Vec<String>>)
-    where M: Middleware + 'static
-{
-    while let Some(hachage_bytes) = rx_batch.recv().await {
-        match emettre_cles_vers_ca(middleware.as_ref(), gestionnaire, &hachage_bytes).await {
+        // Condition de fin, aucunes cles restantes.
+        if batch_cles.len() == 0 {
+            break;
+        }
+
+        match emettre_cles_vers_ca(middleware.as_ref(), gestionnaire, &batch_cles).await {
             Ok(()) => (),
             Err(e) => error!("emettre_batch_cles_versca Erreur traitement batch cles : {:?}", e)
         }
-    }
-}
 
-fn curseur_lire_cles<M>(middleware: Arc<M>, gestionnaire: &GestionnaireMaitreDesClesSQLite, tx_batch: mpsc::Sender<Vec<String>>, batch_size: usize)
-    where M: Middleware + 'static
-{
-    if let Err(e) = __curseur_lire_cles(middleware, gestionnaire, tx_batch, batch_size) {
-        error!("curseur_lire_cles Erreur traitement cles : {:?}", e)
-    }
-}
-
-fn __curseur_lire_cles<M>(middleware: Arc<M>, gestionnaire: &GestionnaireMaitreDesClesSQLite, tx_batch: mpsc::Sender<Vec<String>>, batch_size: usize)
-    -> Result<(), Box<dyn Error>>
-    where M: Middleware + 'static
-{
-    // Ouvrir une nouvelle connexion read-only - va etre conservee pour la duree de lecture du statement
-    let connexion = gestionnaire.ouvrir_connection(middleware.as_ref(), true);
-
-    let mut prepared_statement = connexion.prepare(
-        "SELECT hachage_bytes FROM cles WHERE confirmation_ca = 0")?;
-
-    let mut batch_cles = Vec::new();
-    let mut cursor = prepared_statement.into_cursor();
-    while let Some(row) = cursor.next()? {
-        let hachage_bytes: String = row[0].as_string().expect("__curseur_lire_cles hachage_bytes").to_owned();
-        batch_cles.push(hachage_bytes);
-        if batch_cles.len() >= batch_size {
-            debug!("__curseur_lire_cles Emettre batch cles");
-            tx_batch.blocking_send(batch_cles)?;
-            batch_cles = Vec::new();
+        // Marquer les cles restantes comme non confirmees
+        {
+            let mut prepared_statement = connexion.prepare(
+                "UPDATE cles SET confirmation_ca = 2 WHERE hachage_bytes = ? AND confirmation_ca = 0")?;
+            connexion.execute("BEGIN")?;
+            for cle in batch_cles {
+                prepared_statement.bind(1, cle.as_str())?;
+                prepared_statement.next()?;
+                prepared_statement.reset()?;
+            }
+            connexion.execute("COMMIT")?;
         }
     }
 
-    if batch_cles.len() > 0 {
-        debug!("__curseur_lire_cles Emetre derniere batch de {} cles", batch_cles.len());
-        tx_batch.blocking_send(batch_cles)?;
-    }
+    // Reset les cles non confirmees (2) a l'etat non traite (0)
+    connexion.execute("UPDATE cles SET confirmation_ca = 0 WHERE confirmation_ca = 2")?;
+
+    debug!("confirmer_cles_ca Traitement cles CA termine");
 
     Ok(())
 }
+
+// /// S'assurer que le CA a toutes les cles de la partition. Permet aussi de resetter le flag non-dechiffrable.
+// async fn confirmer_cles_ca<M>(middleware: Arc<M>, gestionnaire: &'static GestionnaireMaitreDesClesSQLite, reset_flag: Option<bool>)
+//     -> Result<(), Box<dyn Error>>
+//     where M: Middleware + 'static
+// {
+//     let batch_size = 1;
+//
+//     debug!("confirmer_cles_ca Debut confirmation cles locales avec confirmation_ca=0");
+//
+//     let (tx_batch, rx_batch) = mpsc::channel(1);
+//     let middleware_1 = middleware.clone();
+//     let task_lecture = tokio::task::spawn_blocking(move || curseur_lire_cles(middleware_1, gestionnaire, tx_batch, batch_size));
+//     let task_emission = tokio::task::spawn(emettre_batch_cles_versca(middleware, gestionnaire, rx_batch));
+//
+//     let mut futures = FuturesUnordered::new();
+//     futures.push(task_lecture);
+//     futures.push(task_emission);
+//
+//     let resultat = futures.next().await;
+//     debug!("confirmer_cles_ca Fin confirmation cles locales, resultat : {:?}", resultat);
+//
+//     Ok(())
+// }
+//
+// async fn emettre_batch_cles_versca<M>(middleware: Arc<M>, gestionnaire: &GestionnaireMaitreDesClesSQLite, mut rx_batch: mpsc::Receiver<Vec<String>>)
+//     where M: Middleware + 'static
+// {
+//     while let Some(hachage_bytes) = rx_batch.recv().await {
+//         match emettre_cles_vers_ca(middleware.as_ref(), gestionnaire, &hachage_bytes).await {
+//             Ok(()) => (),
+//             Err(e) => error!("emettre_batch_cles_versca Erreur traitement batch cles : {:?}", e)
+//         }
+//     }
+// }
+//
+// fn curseur_lire_cles<M>(middleware: Arc<M>, gestionnaire: &GestionnaireMaitreDesClesSQLite, tx_batch: mpsc::Sender<Vec<String>>, batch_size: usize)
+//     where M: Middleware + 'static
+// {
+//     if let Err(e) = __curseur_lire_cles(middleware, gestionnaire, tx_batch, batch_size) {
+//         error!("curseur_lire_cles Erreur traitement cles : {:?}", e)
+//     }
+// }
+//
+// fn __curseur_lire_cles<M>(middleware: Arc<M>, gestionnaire: &GestionnaireMaitreDesClesSQLite, tx_batch: mpsc::Sender<Vec<String>>, batch_size: usize)
+//     -> Result<(), Box<dyn Error>>
+//     where M: Middleware + 'static
+// {
+//     // Ouvrir une nouvelle connexion read-only - va etre conservee pour la duree de lecture du statement
+//     let connexion = gestionnaire.ouvrir_connection(middleware.as_ref(), false);
+//
+//     // Isolation level READ UNCOMMITTED. Permet d'operer sur une longue periode de temps sans
+//     // bloquer les autres processus.
+//     // connexion.execute("PRAGMA read_uncommitted = boolean;")?;
+//
+//     // let mut prepared_statement = connexion.prepare("SELECT hachage_bytes FROM cles WHERE confirmation_ca = 0")?;
+//     let mut prepared_statement = connexion.prepare("UPDATE cles SET confirmation_ca = 1 WHERE confirmation_ca = 0 RETURNING hachage_bytes")?;
+//
+//     let mut batch_cles = Vec::new();
+//     let mut cursor = prepared_statement.into_cursor();
+//     while let Some(row) = cursor.next()? {
+//         let hachage_bytes: String = row[0].as_string().expect("__curseur_lire_cles hachage_bytes").to_owned();
+//         batch_cles.push(hachage_bytes);
+//         if batch_cles.len() >= batch_size {
+//             debug!("__curseur_lire_cles Emettre batch cles");
+//             tx_batch.blocking_send(batch_cles)?;
+//             batch_cles = Vec::new();
+//         }
+//     }
+//
+//     // while State::Done != prepared_statement.next()? {
+//     //     let hachage_bytes: String = prepared_statement.read(0)?;
+//     //     batch_cles.push(hachage_bytes);
+//     //     if batch_cles.len() >= batch_size {
+//     //         debug!("__curseur_lire_cles Emettre batch cles");
+//     //         tx_batch.blocking_send(batch_cles)?;
+//     //         batch_cles = Vec::new();
+//     //     }
+//     // }
+//
+//     if batch_cles.len() > 0 {
+//         debug!("__curseur_lire_cles Emetre derniere batch de {} cles", batch_cles.len());
+//         tx_batch.blocking_send(batch_cles)?;
+//     }
+//
+//     Ok(())
+// }
 
 /// Emet un message vers CA pour verifier quels cles sont manquantes (sur le CA)
 /// Marque les cles presentes sur la partition et CA comme confirmation_ca=true
@@ -1292,14 +1391,15 @@ async fn traiter_cles_manquantes_ca<M>(
     -> Result<(), Box<dyn Error>>
     where M: IsConfigNoeud + GenerateurMessages + Chiffreur<CipherMgs3, Mgs3CipherKeys>
 {
-    // Marquer cles emises comme confirmees par CA si pas dans la liste de manquantes
-    let connexion = gestionnaire.ouvrir_connection(middleware, false);
-
     {
+        // Marquer cles emises comme confirmees par CA si pas dans la liste de manquantes
+        let connexion = gestionnaire.ouvrir_connection(middleware, false);
+
         let cles_confirmees: Vec<&String> = cles_emises.iter()
             .filter(|c| !cles_manquantes.contains(c))
             .collect();
         debug!("traiter_cles_manquantes_ca Cles confirmees par le CA: {:?}", cles_confirmees);
+        connexion.execute("BEGIN;")?;
         let mut statement = connexion.prepare("UPDATE cles SET confirmation_ca = 1 WHERE hachage_bytes = ?")?;
         for hachage_bytes in cles_confirmees {
             // redis_dao.retirer_cleca_manquante(fingerprint, hachage_bytes).await?;
@@ -1307,6 +1407,7 @@ async fn traiter_cles_manquantes_ca<M>(
             statement.next()?;
             statement.reset()?;
         }
+        connexion.execute("COMMIT;")?;
     }
 
     // Rechiffrer et emettre les cles manquantes.
@@ -1316,23 +1417,28 @@ async fn traiter_cles_manquantes_ca<M>(
             .build();
 
         for hachage_bytes in cles_manquantes {
+            let commande = {
+                let mut connection_guard = gestionnaire.ouvrir_connection_readonly(middleware)
+                    .lock().expect("requete_dechiffrage connection lock");
+                let connexion = connection_guard.as_ref().expect("requete_dechiffrage connection Some");
 
-            let commande = match charger_cle(&connexion, hachage_bytes) {
-                Ok(c) => match c {
-                    Some(cle) => {
-                        match rechiffrer_pour_maitredescles(middleware, &cle) {
-                            Ok(c) => c,
-                            Err(e) => {
-                                error!("traiter_cles_manquantes_ca Erreur traitement rechiffrage cle : {:?}", e);
-                                continue;
+                match charger_cle(connexion, hachage_bytes) {
+                    Ok(c) => match c {
+                        Some(cle) => {
+                            match rechiffrer_pour_maitredescles(middleware, &cle) {
+                                Ok(c) => c,
+                                Err(e) => {
+                                    error!("traiter_cles_manquantes_ca Erreur traitement rechiffrage cle : {:?}", e);
+                                    continue;
+                                }
                             }
-                        }
+                        },
+                        None => continue
                     },
-                    None => continue
-                },
-                Err(e) => {
-                    error!("traiter_cles_manquantes_ca Erreur conversion sqlite en cle : {:?}", e);
-                    continue;
+                    Err(e) => {
+                        error!("traiter_cles_manquantes_ca Erreur conversion sqlite en cle : {:?}", e);
+                        continue;
+                    }
                 }
             };
 
@@ -1417,6 +1523,16 @@ fn sauvegarder_cle<S,T>(connection: &Connection, fingerprint_: S, cle_: T, comma
 {
     let cle = cle_.as_ref();
     let fingerprint = fingerprint_.as_ref();
+
+    {
+        let mut prepared_statement_verifier = connection
+            .prepare("SELECT hachage_bytes FROM cles WHERE hachage_bytes = ?")?;
+        prepared_statement_verifier.bind(1, cle)?;
+        if State::Row == prepared_statement_verifier.next()? {
+            // Skip, la cle existe deja
+            return Ok(())
+        }
+    }
 
     // Sauvegarde cle dans sqlite
     let mut prepared_statement_cle = connection

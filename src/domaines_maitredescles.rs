@@ -414,7 +414,7 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
                             Ok(()) => {
                                 prochain_sync = maintenant + intervalle_sync;
                             },
-                            Err(e) => warn!("entretien Erreur syncrhonization cles avec CA : {:?}", e)
+                            Err(e) => warn!("entretien Erreur synchronization cles avec CA : {:?}", e)
                         }
                     }
 
