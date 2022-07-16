@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::error::Error;
+use std::fmt::{Debug, Formatter};
 use std::fs::read_dir;
 use std::sync::{Arc, Mutex};
 
@@ -56,9 +57,24 @@ const INDEX_CONFIRMATION_CA: &str = "confirmation_ca";
 const CHAMP_FINGERPRINT_PK: &str = "fingerprint_pk";
 const CHAMP_CONFIRMATION_CA: &str = "confirmation_ca";
 
-#[derive(Clone, Debug)]
 pub struct GestionnaireMaitreDesClesSQLite {
     pub fingerprint: String,
+    connexion_read_only: Mutex<Option<Connection>>,
+}
+
+impl Clone for GestionnaireMaitreDesClesSQLite {
+    fn clone(&self) -> Self {
+        GestionnaireMaitreDesClesSQLite {
+            fingerprint: self.fingerprint.clone(),
+            connexion_read_only: Mutex::new(None),
+        }
+    }
+}
+
+impl Debug for GestionnaireMaitreDesClesSQLite {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(format!("GestionnaireMaitreDesClesSQLite fingerprint {}", self.fingerprint).as_str())
+    }
 }
 
 fn nom_collection_transactions<S>(_fingerprint: S) -> String
@@ -70,7 +86,8 @@ fn nom_collection_transactions<S>(_fingerprint: S) -> String
 impl GestionnaireMaitreDesClesSQLite {
     pub fn new(fingerprint: &str) -> Self {
         Self {
-            fingerprint: String::from(fingerprint)
+            fingerprint: String::from(fingerprint),
+            connexion_read_only: Mutex::new(None),
         }
     }
 
@@ -84,6 +101,17 @@ impl GestionnaireMaitreDesClesSQLite {
         } else {
             sqlite::open(db_path).expect("preparer_database open sqlite")
         }
+    }
+
+    fn ouvrir_connection_readonly<M>(&self, middleware: &M) -> &Mutex<Option<Connection>> where M: IsConfigNoeud {
+        let mut guard = self.connexion_read_only.lock().expect("ouvrir_connection_readonly lock");
+
+        if guard.is_none() {
+            let connexion = self.ouvrir_connection(middleware, true);
+            *guard = Some(connexion);
+        }
+
+        &self.connexion_read_only
     }
 
     /// Retourne une version tronquee du nom de partition
@@ -700,10 +728,16 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
     }
 
     // Trouver les cles demandees et rechiffrer
-    let mut connection = gestionnaire.ouvrir_connection(middleware, true);
-    let cles = get_cles_sqlite_rechiffrees(
-        middleware, &mut connection, &requete, enveloppe_privee, certificat.as_ref(),
-        permission.as_ref(), domaines_permis.as_ref()).await?;
+    // let mut connection = gestionnaire.ouvrir_connection(middleware, true);
+    let cles = {
+        let mut connection_guard = gestionnaire.ouvrir_connection_readonly(middleware)
+            .lock().expect("requete_dechiffrage connection lock");
+        let connection = connection_guard.as_mut().expect("requete_dechiffrage connection Some");
+
+        get_cles_sqlite_rechiffrees(
+            middleware, connection, &requete, enveloppe_privee, certificat.as_ref(),
+            permission.as_ref(), domaines_permis.as_ref())?
+    };
 
     // Preparer la reponse
     // Verifier si on a au moins une cle dans la reponse
@@ -809,7 +843,7 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
     Ok(Some(reponse))
 }
 
-async fn get_cles_sqlite_rechiffrees<M>(
+fn get_cles_sqlite_rechiffrees<M>(
     middleware: &M,
     connexion: &mut Connection,
     requete: &RequeteDechiffrage,
@@ -1205,7 +1239,9 @@ fn __curseur_lire_cles<M>(middleware: Arc<M>, gestionnaire: &GestionnaireMaitreD
     -> Result<(), Box<dyn Error>>
     where M: Middleware + 'static
 {
+    // Ouvrir une nouvelle connexion read-only - va etre conservee pour la duree de lecture du statement
     let connexion = gestionnaire.ouvrir_connection(middleware.as_ref(), true);
+
     let enveloppe_privee = middleware.get_enveloppe_privee();
     let fingerprint = enveloppe_privee.fingerprint().as_str();
     let mut prepared_statement = connexion.prepare(
@@ -1213,8 +1249,9 @@ fn __curseur_lire_cles<M>(middleware: Arc<M>, gestionnaire: &GestionnaireMaitreD
     prepared_statement.bind(1, fingerprint)?;
 
     let mut batch_cles = Vec::new();
-    while State::Done != prepared_statement.next()? {
-        let hachage_bytes: String = prepared_statement.read(0)?;
+    let mut cursor = prepared_statement.into_cursor();
+    while let Some(row) = cursor.next()? {
+        let hachage_bytes: String = row[0].as_string().expect("__curseur_lire_cles hachage_bytes").to_owned();
         batch_cles.push(hachage_bytes);
         if batch_cles.len() >= batch_size {
             debug!("__curseur_lire_cles Emettre batch cles");
