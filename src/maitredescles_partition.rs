@@ -11,12 +11,12 @@ use millegrilles_common_rust::bson::{doc, Document};
 use millegrilles_common_rust::certificats::{EnveloppeCertificat, EnveloppePrivee, ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chiffrage::{Chiffreur, CommandeSauvegarderCle, dechiffrer_asymetrique_multibase, rechiffrer_asymetrique_multibase};
 use millegrilles_common_rust::chiffrage_chacha20poly1305::{CipherMgs3, Mgs3CipherKeys};
-use millegrilles_common_rust::chrono::Utc;
+use millegrilles_common_rust::chrono::{Duration, Utc};
 use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::constantes::Securite::L3Protege;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
-use millegrilles_common_rust::formatteur_messages::{MessageMilleGrille, MessageSerialise};
+use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille, MessageSerialise};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
 use millegrilles_common_rust::hachages::hacher_bytes;
 use millegrilles_common_rust::messages_generiques::MessageCedule;
@@ -736,14 +736,31 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
     let requete: RequeteVerifierPreuve = m.message.get_msg().map_contenu(None)?;
     debug!("requete_verifier_preuve cle parsed : {:?}", requete);
 
-    let domaines = match m.message.certificat.as_ref() {
-        Some(c) => {
-            match c.get_domaines()? {
-                Some(d) => Ok(d.to_owned()),
-                None => Err(format!("maitredescles_partition.requete_verifier_preuve Aucuns domaines dans certificat demandeur"))
-            }
+    // La preuve doit etre recente (moins de 5 minutes)
+    {
+        let estampille = &m.message.get_entete().estampille;
+        let datetime_estampille = estampille.get_datetime();
+        let date_expiration = Utc::now() - Duration::minutes(5);
+        if datetime_estampille < &date_expiration {
+            Err(format!("maitredescles_partition.requete_verifier_preuve Demande preuve est expiree ({:?})", datetime_estampille))?;
+        }
+    }
+
+    let user_id = m.get_user_id();
+    let domaines = match user_id {
+        Some(_) => match requete.domaine {
+            Some(d) => Ok(vec![d]),
+            None => Err(format!("maitredescles_partition.requete_verifier_preuve Aucuns domaine fourni pour une demande usager"))
         },
-        None => Err(format!("maitredescles_partition.requete_verifier_preuve Erreur chargement certificat"))
+        None => match m.message.certificat.as_ref() {
+            Some(c) => {
+                match c.get_domaines()? {
+                    Some(d) => Ok(d.to_owned()),
+                    None => Err(format!("maitredescles_partition.requete_verifier_preuve Aucuns domaines dans certificat demandeur"))
+                }
+            },
+            None => Err(format!("maitredescles_partition.requete_verifier_preuve Erreur chargement certificat"))
+        }
     }?;
 
     let enveloppe_privee = middleware.get_enveloppe_privee();
@@ -934,6 +951,7 @@ async fn verifier_autorisation_dechiffrage_global<M>(middleware: &M, m: &Message
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct RequeteVerifierPreuve {
     cles: HashMap<String, String>,
+    domaine: Option<String>,
 }
 
 /// Rechiffre une cle secrete
