@@ -847,7 +847,7 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
                 None => continue
             },
             Err(e) => {
-                error!("Erreur chargement cle {} : {:?}", hachage_bytes, e);
+                error!("requete_verifier_preuve Erreur chargement cle {} : {:?}", hachage_bytes, e);
                 continue
             }
         };
@@ -855,10 +855,17 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
         let cle_mongo_dechiffree = dechiffrer_asymetrique_multibase(cle_privee, transaction_cle.cle.as_str())?;
         let hachage_bytes = transaction_cle.hachage_bytes.as_str();
         if let Some(cle_preuve) = requete.cles.get(hachage_bytes) {
-            let cle_preuve_dechiffree = dechiffrer_asymetrique_multibase(cle_privee, cle_preuve.as_str())?;
-            if cle_mongo_dechiffree == cle_preuve_dechiffree {
-                // La cle preuve correspond a la cle dans la base de donnees, verification OK
-                liste_verification.insert(hachage_bytes.into(), true);
+            match dechiffrer_asymetrique_multibase(cle_privee, cle_preuve.as_str()){
+                Ok(cle_preuve_dechiffree) => {
+                    if cle_mongo_dechiffree == cle_preuve_dechiffree {
+                        // La cle preuve correspond a la cle dans la base de donnees, verification OK
+                        liste_verification.insert(hachage_bytes.into(), true);
+                    }
+                },
+                Err(e) => {
+                    error!("requete_verifier_preuve Erreur dechiffrage cle {} : {:?}", hachage_bytes, e);
+                    liste_verification.insert(hachage_bytes.into(), false);
+                }
             }
         }
     }

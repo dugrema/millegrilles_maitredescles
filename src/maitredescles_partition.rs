@@ -777,7 +777,7 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
         TRANSACTION_CHAMP_DOMAINE: {"$in": &domaines}
     };
     let nom_collection = gestionnaire.get_collection_cles();
-    debug!("requete_dechiffrage Filtre cles sur collection {} : {:?}", nom_collection, filtre);
+    debug!("requete_verifier_preuve Filtre cles sur collection {} : {:?}", nom_collection, filtre);
 
     let collection = middleware.get_collection(nom_collection.as_str())?;
     let mut curseur = collection.find(filtre, None).await?;
@@ -795,10 +795,17 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
         let cle_mongo_dechiffree = dechiffrer_asymetrique_multibase(cle_privee, cle_mongo_chiffree.cle.as_str())?;
         let hachage_bytes = cle_mongo_chiffree.hachage_bytes.as_str();
         if let Some(cle_preuve) = requete.cles.get(hachage_bytes) {
-            let cle_preuve_dechiffree = dechiffrer_asymetrique_multibase(cle_privee, cle_preuve.as_str())?;
-            if cle_mongo_dechiffree == cle_preuve_dechiffree {
-                // La cle preuve correspond a la cle dans la base de donnees, verification OK
-                liste_verification.insert(hachage_bytes.into(), true);
+            match dechiffrer_asymetrique_multibase(cle_privee, cle_preuve.as_str()){
+                Ok(cle_preuve_dechiffree) => {
+                    if cle_mongo_dechiffree == cle_preuve_dechiffree {
+                        // La cle preuve correspond a la cle dans la base de donnees, verification OK
+                        liste_verification.insert(hachage_bytes.into(), true);
+                    }
+                },
+                Err(e) => {
+                    error!("requete_verifier_preuve Erreur dechiffrage cle {} : {:?}", hachage_bytes, e);
+                    liste_verification.insert(hachage_bytes.into(), false);
+                }
             }
         }
     }
