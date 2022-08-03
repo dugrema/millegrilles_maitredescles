@@ -13,6 +13,7 @@ use millegrilles_common_rust::chiffrage::{Chiffreur, ChiffreurMgs3, CommandeSauv
 use millegrilles_common_rust::chiffrage_chacha20poly1305::{CipherMgs3, Mgs3CipherKeys};
 use millegrilles_common_rust::chiffrage_ed25519::dechiffrer_asymmetrique_ed25519;
 use millegrilles_common_rust::chrono::Utc;
+use millegrilles_common_rust::common_messages::TransactionCle;
 use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
