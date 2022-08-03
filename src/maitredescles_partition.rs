@@ -820,7 +820,8 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
                 .build();
             // Conserver la cle
             // let commande_cle = info_cle.into_commande(partition);
-            middleware.transmettre_commande(routage, &commande_cle, true).await?;
+            // Transmettre commande de sauvegarde - on n'attend pas la reponse (deadlock)
+            middleware.transmettre_commande(routage, &commande_cle, false).await?;
 
             // Indiquer que la cle est autorisee (c'est l'usager qui vient de la pousser)
             liste_verification.insert(hachage_bytes, Some(true));
