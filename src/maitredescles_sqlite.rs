@@ -812,27 +812,18 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
         }
     }
 
-    let user_id = m.get_user_id();
-    let domaines = match user_id {
-        Some(_) => match requete.domaine {
-            Some(d) => Ok(vec![d]),
-            None => Err(format!("maitredescles_partition.requete_verifier_preuve Aucuns domaine fourni pour une demande usager"))
-        },
-        None => match m.message.certificat.as_ref() {
-            Some(c) => {
-                match c.get_domaines()? {
-                    Some(d) => Ok(d.to_owned()),
-                    None => Err(format!("maitredescles_partition.requete_verifier_preuve Aucuns domaines dans certificat demandeur"))
-                }
-            },
-            None => Err(format!("maitredescles_partition.requete_verifier_preuve Erreur chargement certificat"))
-        }
-    }?;
+    // Preparer une liste de verification pour chaque cle par hachage_bytes
+    let mut map_hachage_bytes = HashMap::new();
+    for cle in requete.cles.into_iter() {
+        map_hachage_bytes.insert(cle.hachage_bytes.clone(), cle);
+    }
 
-    let liste_hachage_bytes: Vec<&str> = requete.cles.keys().map(|k| k.as_str()).collect();
-    let mut liste_verification: HashMap<String, bool> = HashMap::new();
-    for hachage in &liste_hachage_bytes {
-        liste_verification.insert(hachage.to_string(), false);
+    let mut liste_hachage_bytes = Vec::new();
+    let mut liste_verification = HashMap::new();
+    for (hachage_bytes, _) in map_hachage_bytes.iter() {
+        let hachage_bytes = hachage_bytes.as_str();
+        liste_hachage_bytes.push(hachage_bytes);
+        liste_verification.insert(hachage_bytes.to_owned(), None);
     }
 
     // Trouver les cles en reference
@@ -840,7 +831,7 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
     let enveloppe_privee = middleware.get_enveloppe_privee();
     let cle_privee = enveloppe_privee.cle_privee();
 
-    for hachage_bytes in requete.cles.keys() {
+    for hachage_bytes in liste_hachage_bytes {
         let transaction_cle = match charger_cle(&connexion, hachage_bytes) {
             Ok(c) => match c{
                 Some(c) => c,
@@ -852,21 +843,45 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
             }
         };
 
-        let cle_mongo_dechiffree = dechiffrer_asymetrique_multibase(cle_privee, transaction_cle.cle.as_str())?;
-        let hachage_bytes = transaction_cle.hachage_bytes.as_str();
-        if let Some(cle_preuve) = requete.cles.get(hachage_bytes) {
-            match dechiffrer_asymetrique_multibase(cle_privee, cle_preuve.as_str()){
+        let cle_db_dechiffree = dechiffrer_asymetrique_multibase(cle_privee, transaction_cle.cle.as_str())?;
+        let hachage_bytes_db = transaction_cle.hachage_bytes.as_str();
+        if let Some(cle_preuve) = map_hachage_bytes.get(hachage_bytes_db) {
+            match dechiffrer_asymetrique_multibase(cle_privee, cle_preuve.cle.as_str()){
                 Ok(cle_preuve_dechiffree) => {
-                    if cle_mongo_dechiffree == cle_preuve_dechiffree {
+                    if cle_db_dechiffree == cle_preuve_dechiffree {
                         // La cle preuve correspond a la cle dans la base de donnees, verification OK
-                        liste_verification.insert(hachage_bytes.into(), true);
+                        liste_verification.insert(hachage_bytes_db.into(), Some(true));
+                    } else {
+                        liste_verification.insert(hachage_bytes_db.into(), Some(false));
                     }
                 },
                 Err(e) => {
-                    error!("requete_verifier_preuve Erreur dechiffrage cle {} : {:?}", hachage_bytes, e);
-                    liste_verification.insert(hachage_bytes.into(), false);
+                    error!("requete_verifier_preuve Erreur dechiffrage cle {} : {:?}", hachage_bytes_db, e);
+                    liste_verification.insert(hachage_bytes_db.into(), Some(false));
                 }
             }
+        }
+    }
+
+    // Verifier toutes les cles qui n'ont pas ete identifiees dans la base de donnees (inconnues)
+    let liste_inconnues: Vec<String> = liste_verification.iter().filter(|(k, v)| match v {
+        Some(_) => false,
+        None => true
+    }).map(|(k,_)| k.to_owned()).collect();
+    for hachage_bytes in liste_inconnues.into_iter() {
+        if let Some(info_cle) = map_hachage_bytes.remove(&hachage_bytes) {
+            debug!("requete_verifier_preuve Conserver nouvelle cle {}", hachage_bytes);
+            // Conserver la cle via commande
+            let partition = gestionnaire.fingerprint.as_str();
+            let routage = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
+                .partition(partition)
+                .build();
+            // Conserver la cle
+            let commande_cle = info_cle.into_commande(partition);
+            middleware.transmettre_commande(routage, &commande_cle, true).await?;
+
+            // Indiquer que la cle est autorisee (c'est l'usager qui vient de la pousser)
+            liste_verification.insert(hachage_bytes, Some(true));
         }
     }
 
@@ -994,12 +1009,6 @@ async fn verifier_autorisation_dechiffrage_global<M>(middleware: &M, m: &Message
         None => Ok((false, None))
     }
 
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct RequeteVerifierPreuve {
-    cles: HashMap<String, String>,
-    domaine: Option<String>,
 }
 
 /// Rechiffre une cle secrete

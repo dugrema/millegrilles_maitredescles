@@ -246,3 +246,10 @@ pub struct RequeteDechiffrage {
     pub permission: Option<MessageMilleGrille>,
     pub certificat_rechiffrage: Option<Vec<String>>,
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RequeteVerifierPreuve {
+    // cles: HashMap<String, String>,
+    pub cles: Vec<TransactionCle>,
+    // domaine: Option<String>,
+}
