@@ -731,7 +731,7 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
 /// Confirme que le demandeur a bien en sa possession (via methode tierce) les cles secretes.
 async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesPartition)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage + ValidateurX509
+    where M: GenerateurMessages + MongoDao + VerificateurMessage + ValidateurX509 + Chiffreur<CipherMgs3, Mgs3CipherKeys>
 {
     debug!("requete_verifier_preuve Consommer requete : {:?}", & m.message);
     let requete: RequeteVerifierPreuve = m.message.get_msg().map_contenu(None)?;
@@ -811,13 +811,15 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
     for hachage_bytes in liste_inconnues.into_iter() {
         if let Some(info_cle) = map_hachage_bytes.remove(&hachage_bytes) {
             debug!("requete_verifier_preuve Conserver nouvelle cle {}", hachage_bytes);
+            let commande_cle = rechiffrer_pour_maitredescles(middleware, &info_cle)?;
+
             // Conserver la cle via commande
             let partition = gestionnaire.fingerprint.as_str();
             let routage = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
                 .partition(partition)
                 .build();
             // Conserver la cle
-            let commande_cle = info_cle.into_commande(partition);
+            // let commande_cle = info_cle.into_commande(partition);
             middleware.transmettre_commande(routage, &commande_cle, true).await?;
 
             // Indiquer que la cle est autorisee (c'est l'usager qui vient de la pousser)
