@@ -972,6 +972,7 @@ fn rechiffrer_pour_maitredescles<M>(middleware: &M, cle: &TransactionCle)
         identificateurs_document: cle.identificateurs_document.to_owned(),
         iv: cle.iv.to_owned(),
         tag: cle.tag.to_owned(),
+        header: cle.header.to_owned(),
         fingerprint_partitions: Some(fingerprint_partitions)
     })
 }

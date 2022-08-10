@@ -323,6 +323,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesSQLite {
                     cle TEXT NOT NULL,
                     iv TEXT NOT NULL,
                     tag TEXT,
+                    header TEXT,
                     format TEXT NOT NULL,
                     domaine TEXT NOT NULL,
                     confirmation_ca INT NOT NULL
@@ -1083,6 +1084,7 @@ fn rechiffrer_pour_maitredescles<M>(middleware: &M, cle: &TransactionCle)
         identificateurs_document: cle.identificateurs_document.to_owned(),
         iv: cle.iv.to_owned(),
         tag: cle.tag.to_owned(),
+        header: cle.header.to_owned(),
         fingerprint_partitions: Some(fingerprint_partitions)
     })
 }
@@ -1580,7 +1582,7 @@ fn sauvegarder_cle<S,T>(connection: &Connection, fingerprint_: S, cle_: T, comma
     let mut prepared_statement_cle = connection
         .prepare("
             INSERT INTO cles
-            VALUES(?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?)
         ")?;
     let mut prepared_statement_identificateurs = connection
         .prepare("
@@ -1590,13 +1592,27 @@ fn sauvegarder_cle<S,T>(connection: &Connection, fingerprint_: S, cle_: T, comma
 
     let format_str: String = serde_json::to_string(&commande.format)?.replace("\"", "");
 
+    let iv_str = match &commande.iv {
+        Some(iv) => Some(iv.as_str()),
+        None => None,
+    };
+    let tag_str = match &commande.tag {
+        Some(tag) => Some(tag.as_str()),
+        None => None,
+    };
+    let header_str = match &commande.header {
+        Some(header) => Some(header.as_str()),
+        None => None,
+    };
+
     prepared_statement_cle.bind(1, commande.hachage_bytes.as_str())?;
     prepared_statement_cle.bind(2, cle)?;
-    prepared_statement_cle.bind(3, commande.iv.as_str())?;
-    prepared_statement_cle.bind(4, commande.tag.as_str())?;
-    prepared_statement_cle.bind(5, format_str.as_str())?;
-    prepared_statement_cle.bind(6, commande.domaine.as_str())?;
-    prepared_statement_cle.bind(7, 0)?;
+    prepared_statement_cle.bind(3, iv_str)?;
+    prepared_statement_cle.bind(4, tag_str)?;
+    prepared_statement_cle.bind(5, header_str)?;
+    prepared_statement_cle.bind(6, format_str.as_str())?;
+    prepared_statement_cle.bind(7, commande.domaine.as_str())?;
+    prepared_statement_cle.bind(8, 0)?;
 
     debug!("Conserver cle dans sqlite : {}", commande.hachage_bytes);
     let resultat = prepared_statement_cle.next()?;
@@ -1624,7 +1640,7 @@ fn charger_cle<S>(connexion: &Connection, hachage_bytes_: S)
     let hachage_bytes = hachage_bytes_.as_ref();
 
     let mut statement = connexion.prepare(
-        "SELECT hachage_bytes, cle, iv, tag, format, domaine \
+        "SELECT hachage_bytes, cle, iv, tag, header, format, domaine \
         FROM cles WHERE hachage_bytes = ?"
     )?;
     statement.bind(1, hachage_bytes)?;
@@ -1646,22 +1662,24 @@ fn charger_cle<S>(connexion: &Connection, hachage_bytes_: S)
     let mut cles: HashMap<String, String> = HashMap::new();
     cles.insert(hachage_bytes.to_owned(), statement.read(1)?);
 
-    let format_str: String = statement.read(4)?;
+    let format_str: String = statement.read(5)?;
     let format_chiffrage = match format_str.as_str() {
         "mgs2" => FormatChiffrage::mgs2,
         "mgs3" => FormatChiffrage::mgs3,
+        "mgs4" => FormatChiffrage::mgs4,
         _ => Err(format!("Format chiffrage inconnu : {}", format_str))?
     };
 
     let commande = TransactionCle {
         cle: statement.read(1)?,
-        domaine: statement.read(5)?,
+        domaine: statement.read(6)?,
         partition: None,
         format: format_chiffrage,
         hachage_bytes: hachage_bytes.to_owned(),
         identificateurs_document,
         iv: statement.read(2)?,
         tag: statement.read(3)?,
+        header: statement.read(4)?,
     };
 
     Ok(Some(commande))
