@@ -93,7 +93,7 @@ impl GestionnaireMaitreDesClesRedis {
 
     /// Verifie si le CA a des cles qui ne sont pas connues localement
     pub async fn synchroniser_cles<M>(&self, middleware: &M) -> Result<(), Box<dyn Error>>
-        where M: GenerateurMessages + VerificateurMessage + Chiffreur<CipherMgs3, Mgs3CipherKeys> + RedisTrait
+        where M: GenerateurMessages + VerificateurMessage + RedisTrait
     {
         synchroniser_cles(middleware, self).await?;
         Ok(())
