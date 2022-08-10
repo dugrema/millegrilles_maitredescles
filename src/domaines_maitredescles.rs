@@ -24,7 +24,7 @@ use millegrilles_common_rust::transactions::resoumettre_transactions;
 
 use crate::maitredescles_ca::GestionnaireMaitreDesClesCa;
 use crate::maitredescles_partition::{emettre_certificat_maitredescles, GestionnaireMaitreDesClesPartition};
-use crate::maitredescles_redis::{GestionnaireMaitreDesClesRedis};
+// use crate::maitredescles_redis::{GestionnaireMaitreDesClesRedis};
 use crate::maitredescles_sqlite::{GestionnaireMaitreDesClesSQLite};
 
 const DUREE_ATTENTE: u64 = 20000;
@@ -37,7 +37,7 @@ static mut GESTIONNAIRES: [TypeGestionnaire; 2] = [TypeGestionnaire::None, TypeG
 enum TypeGestionnaire {
     CA(Arc<GestionnaireMaitreDesClesCa>),
     Partition(Arc<GestionnaireMaitreDesClesPartition>),
-    Redis(Arc<GestionnaireMaitreDesClesRedis>),
+    // Redis(Arc<GestionnaireMaitreDesClesRedis>),
     SQLite(Arc<GestionnaireMaitreDesClesSQLite>),
     None
 }
@@ -104,10 +104,10 @@ fn charger_gestionnaires() -> Vec<&'static TypeGestionnaire> {
             info!("Activation gestionnaire partition {}", partition);
             GESTIONNAIRES[1] = TypeGestionnaire::Partition(Arc::new(GestionnaireMaitreDesClesPartition::new(partition.into())));
             vec_gestionnaires.push(&GESTIONNAIRES[1]);
-        } else if flag_redis {
-            info!("Activation gestionnaire redis {}", partition);
-            GESTIONNAIRES[1] = TypeGestionnaire::Redis(Arc::new(GestionnaireMaitreDesClesRedis::new(partition.into())));
-            vec_gestionnaires.push(&GESTIONNAIRES[1]);
+        // } else if flag_redis {
+        //     info!("Activation gestionnaire redis {}", partition);
+        //     GESTIONNAIRES[1] = TypeGestionnaire::Redis(Arc::new(GestionnaireMaitreDesClesRedis::new(partition.into())));
+        //     vec_gestionnaires.push(&GESTIONNAIRES[1]);
         } else if flag_sqlite {
             info!("Activation gestionnaire sqlite {}", partition);
             GESTIONNAIRES[1] = TypeGestionnaire::SQLite(Arc::new(GestionnaireMaitreDesClesSQLite::new(partition.into())));
@@ -131,9 +131,9 @@ async fn build(gestionnaires: Vec<&'static TypeGestionnaire>) -> (FuturesUnorder
                 TypeGestionnaire::Partition(g) => {
                     queues.extend(g.preparer_queues());
                 },
-                TypeGestionnaire::Redis(g) => {
-                    queues.extend(g.preparer_queues());
-                },
+                // TypeGestionnaire::Redis(g) => {
+                //     queues.extend(g.preparer_queues());
+                // },
                 TypeGestionnaire::SQLite(g) => {
                     queues.extend(g.preparer_queues());
                 },
@@ -182,9 +182,9 @@ async fn build(gestionnaires: Vec<&'static TypeGestionnaire>) -> (FuturesUnorder
                     TypeGestionnaire::Partition(g) => {
                         g.preparer_threads(middleware.clone()).await.expect("gestionnaire partition")
                     },
-                    TypeGestionnaire::Redis(g) => {
-                        g.preparer_threads(middleware.clone()).await.expect("gestionnaire redis")
-                    },
+                    // TypeGestionnaire::Redis(g) => {
+                    //     g.preparer_threads(middleware.clone()).await.expect("gestionnaire redis")
+                    // },
                     TypeGestionnaire::SQLite(g) => {
                         g.preparer_threads(middleware.clone()).await.expect("gestionnaire sqlite")
                     },
@@ -243,9 +243,9 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
                 TypeGestionnaire::Partition(g) => {
                     coll_docs_strings.push(String::from(g.get_collection_transactions()));
                 },
-                TypeGestionnaire::Redis(g) => {
-                    coll_docs_strings.push(String::from(g.get_collection_transactions()));
-                },
+                // TypeGestionnaire::Redis(g) => {
+                //     coll_docs_strings.push(String::from(g.get_collection_transactions()));
+                // },
                 TypeGestionnaire::SQLite(g) => {
                     coll_docs_strings.push(String::from(g.get_collection_transactions()));
                 },
@@ -378,35 +378,35 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
                     }
 
                 },
-                TypeGestionnaire::Redis(g) => {
-                    if prochain_sync < maintenant {
-                        debug!("entretien Effectuer sync des cles du CA non disponibles localement");
-                        match g.synchroniser_cles(middleware.as_ref()).await {
-                            Ok(()) => {
-                                prochain_sync = maintenant + intervalle_sync;
-                            },
-                            Err(e) => warn!("entretien Erreur syncrhonization cles avec CA : {:?}", e)
-                        }
-                    }
-
-                    if prochaine_confirmation_ca < maintenant {
-                        // Emettre certificat local (pas vraiment a la bonne place)
-                        match g.emettre_certificat_maitredescles(middleware.as_ref(), None).await {
-                            Ok(_) => (),
-                            Err(e) => error!("Erreur emission certificat de maitre des cles : {:?}", e)
-                        }
-
-                        debug!("entretien Pousser les cles locales vers le CA");
-                        match g.confirmer_cles_ca(middleware.as_ref(), Some(reset_flag_confirmation_ca)).await {
-                            Ok(()) => {
-                                reset_flag_confirmation_ca = false;
-                                prochaine_confirmation_ca = maintenant + intervalle_confirmation_ca;
-                            },
-                            Err(e) => warn!("entretien Erreur syncrhonization cles avec CA : {:?}", e)
-                        }
-                    }
-
-                },
+                // TypeGestionnaire::Redis(g) => {
+                //     if prochain_sync < maintenant {
+                //         debug!("entretien Effectuer sync des cles du CA non disponibles localement");
+                //         match g.synchroniser_cles(middleware.as_ref()).await {
+                //             Ok(()) => {
+                //                 prochain_sync = maintenant + intervalle_sync;
+                //             },
+                //             Err(e) => warn!("entretien Erreur syncrhonization cles avec CA : {:?}", e)
+                //         }
+                //     }
+                //
+                //     if prochaine_confirmation_ca < maintenant {
+                //         // Emettre certificat local (pas vraiment a la bonne place)
+                //         match g.emettre_certificat_maitredescles(middleware.as_ref(), None).await {
+                //             Ok(_) => (),
+                //             Err(e) => error!("Erreur emission certificat de maitre des cles : {:?}", e)
+                //         }
+                //
+                //         debug!("entretien Pousser les cles locales vers le CA");
+                //         match g.confirmer_cles_ca(middleware.as_ref(), Some(reset_flag_confirmation_ca)).await {
+                //             Ok(()) => {
+                //                 reset_flag_confirmation_ca = false;
+                //                 prochaine_confirmation_ca = maintenant + intervalle_confirmation_ca;
+                //             },
+                //             Err(e) => warn!("entretien Erreur syncrhonization cles avec CA : {:?}", e)
+                //         }
+                //     }
+                //
+                // },
                 TypeGestionnaire::SQLite(g) => {
                     if prochain_sync < maintenant {
                         debug!("entretien Effectuer sync des cles du CA non disponibles localement");

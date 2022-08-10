@@ -2,7 +2,7 @@ mod domaines_maitredescles;
 mod maitredescles_partition;
 mod maitredescles_ca;
 mod maitredescles_commun;
-mod maitredescles_redis;
+//mod maitredescles_redis;  // Obsolete
 mod maitredescles_sqlite;
 
 use log::{info};

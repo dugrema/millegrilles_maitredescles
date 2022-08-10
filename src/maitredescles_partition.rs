@@ -9,8 +9,8 @@ use millegrilles_common_rust::multibase::Base;
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{doc, Document};
 use millegrilles_common_rust::certificats::{EnveloppeCertificat, EnveloppePrivee, ValidateurX509, VerificateurPermissions};
-use millegrilles_common_rust::chiffrage::{Chiffreur, CommandeSauvegarderCle, dechiffrer_asymetrique_multibase, rechiffrer_asymetrique_multibase};
-use millegrilles_common_rust::chiffrage_chacha20poly1305::{CipherMgs3, Mgs3CipherKeys};
+use millegrilles_common_rust::chiffrage::{Chiffreur, CommandeSauvegarderCle, CleChiffrageHandler, dechiffrer_asymetrique_multibase, rechiffrer_asymetrique_multibase};
+// use millegrilles_common_rust::chiffrage_chacha20poly1305::{CipherMgs3, Mgs3CipherKeys};
 use millegrilles_common_rust::chrono::{Duration, Utc};
 use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::constantes::*;
@@ -94,7 +94,7 @@ impl GestionnaireMaitreDesClesPartition {
 
     /// Verifie si le CA a des cles qui ne sont pas connues localement
     pub async fn synchroniser_cles<M>(&self, middleware: &M) -> Result<(), Box<dyn Error>>
-        where M: GenerateurMessages + MongoDao + VerificateurMessage + Chiffreur<CipherMgs3, Mgs3CipherKeys>
+        where M: GenerateurMessages + MongoDao + VerificateurMessage + CleChiffrageHandler
     {
         synchroniser_cles(middleware, self).await?;
         Ok(())
@@ -102,7 +102,7 @@ impl GestionnaireMaitreDesClesPartition {
 
     /// S'assure que le CA a toutes les cles presentes dans la partition
     pub async fn confirmer_cles_ca<M>(&self, middleware: &M, reset_flag: Option<bool>) -> Result<(), Box<dyn Error>>
-        where M: GenerateurMessages + MongoDao + VerificateurMessage + Chiffreur<CipherMgs3, Mgs3CipherKeys>
+        where M: GenerateurMessages + MongoDao + VerificateurMessage + CleChiffrageHandler
     {
         confirmer_cles_ca(middleware, self, reset_flag).await?;
         Ok(())
@@ -320,7 +320,7 @@ pub async fn preparer_index_mongodb_partition<M>(middleware: &M, gestionnaire: &
 }
 
 async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesPartition) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage + Chiffreur<CipherMgs3, Mgs3CipherKeys>
+    where M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage + CleChiffrageHandler
 {
     debug!("Consommer requete : {:?}", &message.message);
 
@@ -434,7 +434,7 @@ where
 }
 
 async fn consommer_evenement<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition, m: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: ValidateurX509 + GenerateurMessages + MongoDao + Chiffreur<CipherMgs3, Mgs3CipherKeys>
+    where M: ValidateurX509 + GenerateurMessages + MongoDao + CleChiffrageHandler
 {
     debug!("consommer_evenement Consommer evenement : {:?}", &m.message);
 
@@ -452,7 +452,7 @@ async fn consommer_evenement<M>(middleware: &M, gestionnaire: &GestionnaireMaitr
 
 async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesPartition)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + Chiffreur<CipherMgs3, Mgs3CipherKeys>
+    where M: GenerateurMessages + MongoDao + CleChiffrageHandler
 {
     debug!("consommer_commande : {:?}", &m.message);
 
@@ -492,7 +492,7 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionna
 
 async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesPartition)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + Chiffreur<CipherMgs3, Mgs3CipherKeys>
+    where M: GenerateurMessages + MongoDao + CleChiffrageHandler
 {
     debug!("commande_sauvegarder_cle Consommer commande : {:?}", & m.message);
     let commande: CommandeSauvegarderCle = m.message.get_msg().map_contenu(None)?;
@@ -560,7 +560,7 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
 
 async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesPartition)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + Chiffreur<CipherMgs3, Mgs3CipherKeys>
+    where M: GenerateurMessages + MongoDao + CleChiffrageHandler
 {
     debug!("commande_rechiffrer_batch Consommer commande : {:?}", & m.message);
     let commande: CommandeRechiffrerBatch = m.message.get_msg().map_contenu(None)?;
@@ -731,7 +731,7 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
 /// Confirme que le demandeur a bien en sa possession (via methode tierce) les cles secretes.
 async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesPartition)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage + ValidateurX509 + Chiffreur<CipherMgs3, Mgs3CipherKeys>
+    where M: GenerateurMessages + MongoDao + VerificateurMessage + ValidateurX509 + CleChiffrageHandler
 {
     debug!("requete_verifier_preuve Consommer requete : {:?}", & m.message);
     let requete: RequeteVerifierPreuve = m.message.get_msg().map_contenu(None)?;
@@ -994,7 +994,7 @@ fn rechiffrer_cle(cle: &mut TransactionCle, privee: &EnveloppePrivee, certificat
 /// incluant le certificat de millegrille
 fn rechiffrer_pour_maitredescles<M>(middleware: &M, cle: &TransactionCle)
     -> Result<CommandeSauvegarderCle, Box<dyn Error>>
-    where M: GenerateurMessages + Chiffreur<CipherMgs3, Mgs3CipherKeys>
+    where M: GenerateurMessages + CleChiffrageHandler
 {
     let enveloppe_privee = middleware.get_enveloppe_privee();
     let fingerprint_local = enveloppe_privee.fingerprint().as_str();
@@ -1120,7 +1120,7 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
 
 /// S'assurer que le CA a toutes les cles de la partition. Permet aussi de resetter le flag non-dechiffrable.
 async fn confirmer_cles_ca<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition, reset_flag: Option<bool>) -> Result<(), Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage + Chiffreur<CipherMgs3, Mgs3CipherKeys>
+    where M: GenerateurMessages + MongoDao + VerificateurMessage + CleChiffrageHandler
 {
     let batch_size = 50;
 
@@ -1175,7 +1175,7 @@ async fn confirmer_cles_ca<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
 async fn emettre_cles_vers_ca<M>(
     middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition, cles: &mut HashMap<String, TransactionCle>)
     -> Result<(), Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage + Chiffreur<CipherMgs3, Mgs3CipherKeys>
+    where M: GenerateurMessages + MongoDao + VerificateurMessage + CleChiffrageHandler
 {
     let hachage_bytes: Vec<String> = cles.keys().into_iter().map(|h| h.to_owned()).collect();
     debug!("emettre_cles_vers_ca Batch {:?} cles", hachage_bytes.len());
@@ -1210,7 +1210,7 @@ async fn traiter_cles_manquantes_ca<M>(
     middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition, cles_emises: &Vec<String>, cles_manquantes: &Vec<String>
 )
     -> Result<(), Box<dyn Error>>
-    where M: MongoDao + GenerateurMessages + Chiffreur<CipherMgs3, Mgs3CipherKeys>
+    where M: MongoDao + GenerateurMessages + CleChiffrageHandler
 {
     let collection = middleware.get_collection(gestionnaire.get_collection_cles().as_str())?;
 
@@ -1269,7 +1269,7 @@ async fn traiter_cles_manquantes_ca<M>(
 
 async fn evenement_cle_manquante<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesPartition)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: ValidateurX509 + GenerateurMessages + MongoDao + Chiffreur<CipherMgs3, Mgs3CipherKeys>
+    where M: ValidateurX509 + GenerateurMessages + MongoDao + CleChiffrageHandler
 {
     debug!("evenement_cle_manquante Verifier si on peut transmettre la cle manquante {:?}", &m.message);
     let event_non_dechiffrables: ReponseSynchroniserCles = m.message.get_msg().map_contenu(None)?;
