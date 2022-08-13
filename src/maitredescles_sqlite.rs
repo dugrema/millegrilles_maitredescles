@@ -321,7 +321,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesSQLite {
                 CREATE TABLE IF NOT EXISTS cles (
                     hachage_bytes TEXT PRIMARY KEY NOT NULL,
                     cle TEXT NOT NULL,
-                    iv TEXT NOT NULL,
+                    iv TEXT,
                     tag TEXT,
                     header TEXT,
                     format TEXT NOT NULL,
