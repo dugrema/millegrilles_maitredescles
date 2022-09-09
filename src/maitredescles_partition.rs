@@ -524,6 +524,8 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
     let mut doc_bson: Document = commande.clone().into();
     // Retirer cles, on re-insere la cle necessaire uniquement
     doc_bson.remove("cles");
+    doc_bson.remove("user_id");
+    doc_bson.remove("signature_identite");
 
     doc_bson.insert("dirty", true);
     doc_bson.insert("confirmation_ca", false);
@@ -531,7 +533,13 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
     doc_bson.insert(CHAMP_CREATION, Utc::now());
     doc_bson.insert(CHAMP_MODIFICATION, Utc::now());
 
-    let ops = doc! { "$setOnInsert": doc_bson };
+    let mut ops = doc! {
+        "$setOnInsert": doc_bson,
+    };
+
+    if let Some(u) = commande.user_id.as_ref() {
+        ops.insert("$addToSet", doc!{"user_ids": u});
+    }
 
     debug!("commande_sauvegarder_cle: Ops bson : {:?}", ops);
 
