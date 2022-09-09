@@ -187,7 +187,7 @@ pub struct CommandeRechiffrerBatch {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RequeteDechiffrage {
     pub liste_hachage_bytes: Vec<String>,
-    pub permission: Option<MessageMilleGrille>,
+    // pub permission: Option<MessageMilleGrille>,
     pub certificat_rechiffrage: Option<Vec<String>>,
 }
 
@@ -279,4 +279,23 @@ impl TransactionCle {
         Ok(identite.verifier(cle_secrete)?)
     }
 
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DocumentClePartition {
+    // Identite
+    pub hachage_bytes: String,
+    pub domaine: String,
+    pub identificateurs_document: HashMap<String, String>,
+    #[serde(skip_serializing)]
+    pub user_ids: Option<Vec<String>>,
+
+    // Cle chiffree
+    pub cle: String,
+
+    // Dechiffrage contenu
+    pub format: FormatChiffrage,
+    pub iv: Option<String>,
+    pub tag: Option<String>,
+    pub header: Option<String>,
 }

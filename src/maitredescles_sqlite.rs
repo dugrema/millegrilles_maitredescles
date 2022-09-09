@@ -973,51 +973,52 @@ async fn verifier_autorisation_dechiffrage_global<M>(middleware: &M, m: &Message
     // On verifie la presence et validite d'une permission
 
     let mut permission: Option<EnveloppePermission> = None;
-    if let Some(p) = &requete.permission {
-        debug!("verifier_autorisation_dechiffrage_global On a une permission, valider le message {:?}", p);
-        let mut ms = match MessageSerialise::from_parsed(p.to_owned()) {
-            Ok(mut ms) => Ok(ms),
-            Err(e) => Err(format!("verifier_autorisation_dechiffrage_global Erreur verification permission (2), refuse: {:?}", e))
-        }?;
+    // if let Some(p) = &requete.permission {
+    //     debug!("verifier_autorisation_dechiffrage_global On a une permission, valider le message {:?}", p);
+    //     let mut ms = match MessageSerialise::from_parsed(p.to_owned()) {
+    //         Ok(mut ms) => Ok(ms),
+    //         Err(e) => Err(format!("verifier_autorisation_dechiffrage_global Erreur verification permission (2), refuse: {:?}", e))
+    //     }?;
+    //
+    //     // Charger le certificat dans ms
+    //     let resultat = ms.valider(middleware, None).await?;
+    //     if ! resultat.valide() {
+    //         Err(format!("verifier_autorisation_dechiffrage_global Erreur verification certificat permission (1), refuse: certificat invalide"))?
+    //     }
+    //
+    //     match ms.parsed.map_contenu::<PermissionDechiffrage>(None) {
+    //         Ok(contenu_permission) => {
+    //             // Verifier la date d'expiration de la permission
+    //             let estampille = &ms.get_entete().estampille.get_datetime().timestamp();
+    //             let duree_validite = contenu_permission.permission_duree as i64;
+    //             let ts_courant = Utc::now().timestamp();
+    //             if estampille + duree_validite > ts_courant {
+    //                 debug!("Permission encore valide (duree {}), on va l'utiliser", duree_validite);
+    //                 // Note : conserver permission "localement" pour return false global
+    //                 permission = Some(EnveloppePermission {
+    //                     enveloppe: ms.certificat.clone().expect("cert"),
+    //                     permission: contenu_permission
+    //                 });
+    //             }
+    //         },
+    //         Err(e) => info!("verifier_autorisation_dechiffrage_global Erreur verification permission (1), refuse: {:?}", e)
+    //     }
+    // }
 
-        // Charger le certificat dans ms
-        let resultat = ms.valider(middleware, None).await?;
-        if ! resultat.valide() {
-            Err(format!("verifier_autorisation_dechiffrage_global Erreur verification certificat permission (1), refuse: certificat invalide"))?
-        }
+    // match permission {
+    //     Some(p) => {
+    //         // Verifier si le certificat de permission est une delegation globale
+    //         if p.enveloppe.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+    //             debug!("verifier_autorisation_dechiffrage Certificat delegation globale proprietaire - toujours autorise");
+    //             return Ok((true, Some(p)))
+    //         }
+    //         // Utiliser regles de la permission
+    //         Ok((false, Some(p)))
+    //     },
+    //     None => Ok((false, None))
+    // }
 
-        match ms.parsed.map_contenu::<PermissionDechiffrage>(None) {
-            Ok(contenu_permission) => {
-                // Verifier la date d'expiration de la permission
-                let estampille = &ms.get_entete().estampille.get_datetime().timestamp();
-                let duree_validite = contenu_permission.permission_duree as i64;
-                let ts_courant = Utc::now().timestamp();
-                if estampille + duree_validite > ts_courant {
-                    debug!("Permission encore valide (duree {}), on va l'utiliser", duree_validite);
-                    // Note : conserver permission "localement" pour return false global
-                    permission = Some(EnveloppePermission {
-                        enveloppe: ms.certificat.clone().expect("cert"),
-                        permission: contenu_permission
-                    });
-                }
-            },
-            Err(e) => info!("verifier_autorisation_dechiffrage_global Erreur verification permission (1), refuse: {:?}", e)
-        }
-    }
-
-    match permission {
-        Some(p) => {
-            // Verifier si le certificat de permission est une delegation globale
-            if p.enveloppe.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
-                debug!("verifier_autorisation_dechiffrage Certificat delegation globale proprietaire - toujours autorise");
-                return Ok((true, Some(p)))
-            }
-            // Utiliser regles de la permission
-            Ok((false, Some(p)))
-        },
-        None => Ok((false, None))
-    }
-
+    Ok((false, None))
 }
 
 /// Rechiffre une cle secrete
