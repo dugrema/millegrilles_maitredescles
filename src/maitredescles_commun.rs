@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use log::debug;
 use millegrilles_common_rust::certificats::EnveloppeCertificat;
-use millegrilles_common_rust::chiffrage::FormatChiffrage;
-use millegrilles_common_rust::chiffrage_cle::CommandeSauvegarderCle;
+use millegrilles_common_rust::chiffrage::{CleSecrete, FormatChiffrage};
+use millegrilles_common_rust::chiffrage_cle::{CommandeSauvegarderCle, IdentiteCle};
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::formatteur_messages::MessageMilleGrille;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
@@ -214,6 +214,18 @@ pub struct TransactionCle {
     pub partition: Option<String>,
 }
 
+impl Into<IdentiteCle> for TransactionCle {
+    fn into(self) -> IdentiteCle {
+        IdentiteCle {
+            hachage_bytes: self.hachage_bytes,
+            domaine: self.domaine,
+            identificateurs_document: self.identificateurs_document,
+            user_id: self.user_id,
+            signature_identite: self.signature_identite
+        }
+    }
+}
+
 impl TransactionCle {
     pub fn new_from_commande(commande: &CommandeSauvegarderCle, fingerprint: &str)
         -> Result<Self, Box<dyn Error>>
@@ -260,6 +272,11 @@ impl TransactionCle {
             partition: self.partition,
             fingerprint_partitions: None
         }
+    }
+
+    pub fn verifier_identite(&self, cle_secrete: &CleSecrete) -> Result<bool, String> {
+        let identite: IdentiteCle = self.clone().into();
+        Ok(identite.verifier(cle_secrete)?)
     }
 
 }

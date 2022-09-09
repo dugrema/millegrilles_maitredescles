@@ -6,6 +6,7 @@ use log::{debug, error, warn};
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{DateTime, doc, Document};
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
+use millegrilles_common_rust::chiffrage::extraire_cle_secrete;
 use millegrilles_common_rust::chiffrage_cle::CommandeSauvegarderCle;
 use millegrilles_common_rust::chrono::Utc;
 use millegrilles_common_rust::constantes::*;
@@ -329,6 +330,14 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
     let commande: CommandeSauvegarderCle = m.message.get_msg().map_contenu(None)?;
     debug!("Commande sauvegarder cle parsed : {:?}", commande);
 
+    // // Valider identite
+    // {
+    //     let cle_secrete = extraire_cle_secrete(middleware.get_enveloppe_privee().cle_privee(), cle)?;
+    //     if commande.verifier_identite(&cle_secrete)? != true {
+    //         Err(format!("maitredescles_partition.commande_sauvegarder_cle Erreur verifier identite commande, signature invalide"))?
+    //     }
+    // }
+
     let fingerprint = gestionnaire_ca.fingerprint.as_str();
     let mut doc_bson: Document = commande.clone().into();
 
@@ -422,6 +431,15 @@ async fn transaction_cle<M, T>(middleware: &M, transaction: T) -> Result<Option<
         Ok(t) => t,
         Err(e) => Err(format!("maitredescles_ca.transaction_cle Erreur conversion transaction : {:?}", e))?
     };
+
+    // // Valider identite
+    // {
+    //     let cle_secrete = extraire_cle_secrete(middleware.get_enveloppe_privee().cle_privee(), cle)?;
+    //     if transaction_cle.verifier_identite(&cle_secrete)? != true {
+    //         Err(format!("maitredescles_partition.commande_sauvegarder_cle Erreur verifier identite commande, signature invalide"))?
+    //     }
+    // }
+
     let hachage_bytes = transaction_cle.hachage_bytes.as_str();
     let mut doc_bson_transaction = transaction.contenu();
 
