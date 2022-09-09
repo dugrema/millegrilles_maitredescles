@@ -11,7 +11,7 @@ use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{doc, Document};
 use millegrilles_common_rust::certificats::{EnveloppeCertificat, EnveloppePrivee, ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::common_messages::RequeteVerifierPreuve;
-use millegrilles_common_rust::chiffrage::{Chiffreur, CleChiffrageHandler, dechiffrer_asymetrique_multibase, FormatChiffrage, rechiffrer_asymetrique_multibase};
+use millegrilles_common_rust::chiffrage::{Chiffreur, CleChiffrageHandler, extraire_cle_secrete, FormatChiffrage, rechiffrer_asymetrique_multibase};
 use millegrilles_common_rust::chiffrage_cle::CommandeSauvegarderCle;
 // use millegrilles_common_rust::chiffrage_chacha20poly1305::{CipherMgs3, Mgs3CipherKeys};
 use millegrilles_common_rust::chiffrage_ed25519::dechiffrer_asymmetrique_ed25519;
@@ -846,7 +846,7 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
             }
         };
 
-        let cle_db_dechiffree = dechiffrer_asymetrique_multibase(cle_privee, transaction_cle.cle.as_str())?;
+        let cle_db_dechiffree = extraire_cle_secrete(cle_privee, transaction_cle.cle.as_str())?;
         let hachage_bytes_db = transaction_cle.hachage_bytes.as_str();
         if let Some(cle_preuve) = map_hachage_bytes.get(hachage_bytes_db) {
             todo!("Fix me");

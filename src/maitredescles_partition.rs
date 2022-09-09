@@ -9,7 +9,7 @@ use millegrilles_common_rust::multibase::Base;
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{doc, Document};
 use millegrilles_common_rust::certificats::{EnveloppeCertificat, EnveloppePrivee, ValidateurX509, VerificateurPermissions};
-use millegrilles_common_rust::chiffrage::{Chiffreur, CleChiffrageHandler, dechiffrer_asymetrique_multibase, rechiffrer_asymetrique_multibase};
+use millegrilles_common_rust::chiffrage::{Chiffreur, CleChiffrageHandler, extraire_cle_secrete, rechiffrer_asymetrique_multibase};
 use millegrilles_common_rust::chiffrage_cle::CommandeSauvegarderCle;
 // use millegrilles_common_rust::chiffrage_chacha20poly1305::{CipherMgs3, Mgs3CipherKeys};
 use millegrilles_common_rust::chrono::{Duration, Utc};
@@ -426,10 +426,10 @@ where
     }?;
 
     match m.action.as_str() {
-        TRANSACTION_CLE  => {
-            sauvegarder_transaction_recue(middleware, m, gestionnaire.get_collection_transactions().as_str()).await?;
-            Ok(None)
-        },
+        // TRANSACTION_CLE  => {
+        //     sauvegarder_transaction_recue(middleware, m, gestionnaire.get_collection_transactions().as_str()).await?;
+        //     Ok(None)
+        // },
         _ => Err(format!("maitredescles_ca.consommer_transaction: Mauvais type d'action pour une transaction : {}", m.action))?,
     }
 }
@@ -510,6 +510,14 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
             return Ok(Some(middleware.formatter_reponse(&reponse_err, None)?));
         }
     };
+
+    // Valider identite
+    {
+        let cle_secrete = extraire_cle_secrete(middleware.get_enveloppe_privee().cle_privee(), cle)?;
+        if commande.verifier_identite(&cle_secrete)? != true {
+            Err(format!("maitredescles_partition.commande_sauvegarder_cle Erreur verifier identite commande, signature invalide"))?
+        }
+    }
 
     // Sauvegarde cle dans mongodb
 
@@ -784,7 +792,7 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
                 continue
             }
         };
-        let cle_mongo_dechiffree = dechiffrer_asymetrique_multibase(cle_privee, cle_mongo_chiffree.cle.as_str())?;
+        let cle_mongo_dechiffree = extraire_cle_secrete(cle_privee, cle_mongo_chiffree.cle.as_str())?;
         let hachage_bytes_mongo = cle_mongo_chiffree.hachage_bytes.as_str();
         if let Some(cle_preuve) = map_hachage_bytes.get(hachage_bytes_mongo) {
             todo!("Fix me");
@@ -985,8 +993,7 @@ fn rechiffrer_cle(cle: &mut TransactionCle, privee: &EnveloppePrivee, certificat
     let cle_privee = privee.cle_privee();
     let cle_publique = certificat_destination.certificat().public_key()?;
 
-    let cle_rechiffree = rechiffrer_asymetrique_multibase(
-        cle_privee, &cle_publique, cle_originale)?;
+    let cle_rechiffree = rechiffrer_asymetrique_multibase(cle_privee, &cle_publique, cle_originale)?;
 
     // Remplacer cle dans message reponse
     cle.cle = cle_rechiffree;
@@ -1012,6 +1019,8 @@ fn rechiffrer_pour_maitredescles<M>(middleware: &M, cle: &TransactionCle)
     // Inserer la cle locale
     map_cles.insert(fingerprint_local.to_owned(), cle_locale.to_owned());
 
+    let mut identite_verifiee = false;
+
     for pk_item in pk_chiffrage {
         let fp = pk_item.fingerprint;
         let pk = pk_item.public_key;
@@ -1028,6 +1037,10 @@ fn rechiffrer_pour_maitredescles<M>(middleware: &M, cle: &TransactionCle)
                 Ok(cle_rechiffree) => {
                     // let cle_mb = multibase::encode(Base::Base64, cle_rechiffree);
                     map_cles.insert(fp, cle_rechiffree);
+
+                    if !identite_verifiee {
+
+                    }
                 },
                 Err(e) => error!("Erreur rechiffrage cle : {:?}", e)
             }
