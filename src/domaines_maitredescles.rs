@@ -313,7 +313,9 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
         middleware.entretien_validateur().await;
 
         if prochain_chargement_certificats_autres < maintenant {
-            match middleware.charger_certificats_chiffrage(middleware.get_enveloppe_privee().enveloppe.as_ref()).await {
+            let enveloppe_privee = middleware.get_enveloppe_privee().clone();
+            let enveloppe_certificat = enveloppe_privee.enveloppe.clone();
+            match middleware.charger_certificats_chiffrage(middleware.as_ref(), enveloppe_certificat.as_ref(), enveloppe_privee).await {
                 Ok(()) => {
                     prochain_chargement_certificats_autres = maintenant + intervalle_chargement_certificats_autres;
                 },

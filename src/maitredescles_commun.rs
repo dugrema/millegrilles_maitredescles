@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use log::debug;
 use millegrilles_common_rust::certificats::EnveloppeCertificat;
-use millegrilles_common_rust::chiffrage::{CommandeSauvegarderCle, FormatChiffrage};
-use millegrilles_common_rust::common_messages::TransactionCle;
+use millegrilles_common_rust::chiffrage::FormatChiffrage;
+use millegrilles_common_rust::chiffrage_cle::CommandeSauvegarderCle;
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::formatteur_messages::MessageMilleGrille;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
@@ -189,4 +189,77 @@ pub struct RequeteDechiffrage {
     pub liste_hachage_bytes: Vec<String>,
     pub permission: Option<MessageMilleGrille>,
     pub certificat_rechiffrage: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TransactionCle {
+    // Identite
+    pub hachage_bytes: String,
+    pub domaine: String,
+    pub identificateurs_document: HashMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+    pub signature_identite: String,
+
+    // Cle chiffree
+    pub cle: String,
+
+    // Dechiffrage contenu
+    pub format: FormatChiffrage,
+    pub iv: Option<String>,
+    pub tag: Option<String>,
+    pub header: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub partition: Option<String>,
+}
+
+impl TransactionCle {
+    pub fn new_from_commande(commande: &CommandeSauvegarderCle, fingerprint: &str)
+        -> Result<Self, Box<dyn Error>>
+    {
+        let cle = match commande.cles.get(fingerprint) {
+            Some(c) => c,
+            None => {
+                Err(format!("TransactionCle.new_from_commande Cle non trouvee pour fingerprint {}", fingerprint))?
+            }
+        };
+
+        Ok(TransactionCle {
+            hachage_bytes: commande.hachage_bytes.to_owned(),
+            domaine: commande.domaine.clone(),
+            identificateurs_document: commande.identificateurs_document.clone(),
+            user_id: commande.user_id.clone(),
+            signature_identite: commande.signature_identite.clone(),
+            cle: cle.to_owned(),
+            format: commande.format.clone(),
+            iv: commande.iv.clone(),
+            tag: commande.tag.clone(),
+            header: commande.header.clone(),
+            partition: commande.partition.clone(),
+        })
+    }
+
+    pub fn into_commande<S>(self, fingerprint: S) -> CommandeSauvegarderCle
+        where S: Into<String>
+    {
+        let fingerprint_ = fingerprint.into();
+        let mut cles: HashMap<String, String> = HashMap::new();
+        cles.insert(fingerprint_, self.cle);
+        CommandeSauvegarderCle {
+            hachage_bytes: self.hachage_bytes,
+            domaine: self.domaine,
+            identificateurs_document: self.identificateurs_document,
+            user_id: self.user_id,
+            signature_identite: self.signature_identite,
+            cles,
+            format: self.format,
+            iv: self.iv,
+            tag: self.tag,
+            header: self.header,
+            partition: self.partition,
+            fingerprint_partitions: None
+        }
+    }
+
 }

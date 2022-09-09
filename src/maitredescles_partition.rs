@@ -9,13 +9,14 @@ use millegrilles_common_rust::multibase::Base;
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{doc, Document};
 use millegrilles_common_rust::certificats::{EnveloppeCertificat, EnveloppePrivee, ValidateurX509, VerificateurPermissions};
-use millegrilles_common_rust::chiffrage::{Chiffreur, CommandeSauvegarderCle, CleChiffrageHandler, dechiffrer_asymetrique_multibase, rechiffrer_asymetrique_multibase};
+use millegrilles_common_rust::chiffrage::{Chiffreur, CleChiffrageHandler, dechiffrer_asymetrique_multibase, rechiffrer_asymetrique_multibase};
+use millegrilles_common_rust::chiffrage_cle::CommandeSauvegarderCle;
 // use millegrilles_common_rust::chiffrage_chacha20poly1305::{CipherMgs3, Mgs3CipherKeys};
 use millegrilles_common_rust::chrono::{Duration, Utc};
 use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::constantes::Securite::L3Protege;
-use millegrilles_common_rust::common_messages::{RequeteVerifierPreuve, TransactionCle};
+use millegrilles_common_rust::common_messages::RequeteVerifierPreuve;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille, MessageSerialise};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
@@ -320,7 +321,7 @@ pub async fn preparer_index_mongodb_partition<M>(middleware: &M, gestionnaire: &
 }
 
 async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesPartition) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage + CleChiffrageHandler
+    where M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage + CleChiffrageHandler + ConfigMessages
 {
     debug!("Consommer requete : {:?}", &message.message);
 
@@ -756,7 +757,7 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
     }
 
     let mut liste_hachage_bytes = Vec::new();
-    let mut liste_verification = HashMap::new();
+    let mut liste_verification: HashMap<String, Option<String>> = HashMap::new();
     for (hachage_bytes, _) in map_hachage_bytes.iter() {
         let hachage_bytes = hachage_bytes.as_str();
         liste_hachage_bytes.push(hachage_bytes);
@@ -786,20 +787,21 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
         let cle_mongo_dechiffree = dechiffrer_asymetrique_multibase(cle_privee, cle_mongo_chiffree.cle.as_str())?;
         let hachage_bytes_mongo = cle_mongo_chiffree.hachage_bytes.as_str();
         if let Some(cle_preuve) = map_hachage_bytes.get(hachage_bytes_mongo) {
-            match dechiffrer_asymetrique_multibase(cle_privee, cle_preuve.cle.as_str()){
-                Ok(cle_preuve_dechiffree) => {
-                    if cle_mongo_dechiffree == cle_preuve_dechiffree {
-                        // La cle preuve correspond a la cle dans la base de donnees, verification OK
-                        liste_verification.insert(hachage_bytes_mongo.into(), Some(true));
-                    } else {
-                        liste_verification.insert(hachage_bytes_mongo.into(), Some(false));
-                    }
-                },
-                Err(e) => {
-                    error!("requete_verifier_preuve Erreur dechiffrage cle {} : {:?}", hachage_bytes_mongo, e);
-                    liste_verification.insert(hachage_bytes_mongo.into(), Some(false));
-                }
-            }
+            todo!("Fix me");
+            // match dechiffrer_asymetrique_multibase(cle_privee, cle_preuve.cle.as_str()){
+            //     Ok(cle_preuve_dechiffree) => {
+            //         if cle_mongo_dechiffree == cle_preuve_dechiffree {
+            //             // La cle preuve correspond a la cle dans la base de donnees, verification OK
+            //             liste_verification.insert(hachage_bytes_mongo.into(), Some(true));
+            //         } else {
+            //             liste_verification.insert(hachage_bytes_mongo.into(), Some(false));
+            //         }
+            //     },
+            //     Err(e) => {
+            //         error!("requete_verifier_preuve Erreur dechiffrage cle {} : {:?}", hachage_bytes_mongo, e);
+            //         liste_verification.insert(hachage_bytes_mongo.into(), Some(false));
+            //     }
+            // }
         }
     }
 
@@ -811,20 +813,22 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
     for hachage_bytes in liste_inconnues.into_iter() {
         if let Some(info_cle) = map_hachage_bytes.remove(&hachage_bytes) {
             debug!("requete_verifier_preuve Conserver nouvelle cle {}", hachage_bytes);
-            let commande_cle = rechiffrer_pour_maitredescles(middleware, &info_cle)?;
 
-            // Conserver la cle via commande
-            let partition = gestionnaire.fingerprint.as_str();
-            let routage = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
-                .partition(partition)
-                .build();
-            // Conserver la cle
-            // let commande_cle = info_cle.into_commande(partition);
-            // Transmettre commande de sauvegarde - on n'attend pas la reponse (deadlock)
-            middleware.transmettre_commande(routage, &commande_cle, false).await?;
-
-            // Indiquer que la cle est autorisee (c'est l'usager qui vient de la pousser)
-            liste_verification.insert(hachage_bytes, Some(true));
+            todo!("Fix me");
+            // let commande_cle = rechiffrer_pour_maitredescles(middleware, &info_cle)?;
+            //
+            // // Conserver la cle via commande
+            // let partition = gestionnaire.fingerprint.as_str();
+            // let routage = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
+            //     .partition(partition)
+            //     .build();
+            // // Conserver la cle
+            // // let commande_cle = info_cle.into_commande(partition);
+            // // Transmettre commande de sauvegarde - on n'attend pas la reponse (deadlock)
+            // middleware.transmettre_commande(routage, &commande_cle, false).await?;
+            //
+            // // Indiquer que la cle est autorisee (c'est l'usager qui vient de la pousser)
+            // liste_verification.insert(hachage_bytes, Some(true));
         }
     }
 
@@ -1031,15 +1035,17 @@ fn rechiffrer_pour_maitredescles<M>(middleware: &M, cle: &TransactionCle)
     }
 
     Ok(CommandeSauvegarderCle {
-        cles: map_cles,
-        domaine: cle.domaine.to_owned(),
-        partition: cle.partition.to_owned(),
-        format: cle.format.clone(),
         hachage_bytes: cle.hachage_bytes.to_owned(),
+        domaine: cle.domaine.to_owned(),
         identificateurs_document: cle.identificateurs_document.to_owned(),
+        user_id: cle.user_id.to_owned(),
+        signature_identite: cle.signature_identite.to_owned(),
+        cles: map_cles,
+        format: cle.format.clone(),
         iv: cle.iv.to_owned(),
         tag: cle.tag.to_owned(),
         header: cle.header.to_owned(),
+        partition: cle.partition.to_owned(),
         fingerprint_partitions: Some(fingerprint_partitions)
     })
 }
@@ -1269,7 +1275,7 @@ async fn traiter_cles_manquantes_ca<M>(
 
 async fn evenement_cle_manquante<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesPartition)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: ValidateurX509 + GenerateurMessages + MongoDao + CleChiffrageHandler
+    where M: ValidateurX509 + GenerateurMessages + MongoDao + CleChiffrageHandler + ConfigMessages
 {
     debug!("evenement_cle_manquante Verifier si on peut transmettre la cle manquante {:?}", &m.message);
     let event_non_dechiffrables: ReponseSynchroniserCles = m.message.get_msg().map_contenu(None)?;
@@ -1287,7 +1293,7 @@ async fn evenement_cle_manquante<M>(middleware: &M, m: MessageValideAction, gest
     };
 
     // S'assurer que le certificat de maitre des cles recus est dans la liste de rechiffrage
-    middleware.recevoir_certificat_chiffrage(&m.message).await?;
+    middleware.recevoir_certificat_chiffrage(middleware, &m.message).await?;
 
     let partition = enveloppe.fingerprint.as_str();
     let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
