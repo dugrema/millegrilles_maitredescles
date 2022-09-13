@@ -358,7 +358,7 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
                             Ok(()) => {
                                 prochain_sync = maintenant + intervalle_sync;
                             },
-                            Err(e) => warn!("entretien Erreur syncrhonization cles avec CA : {:?}", e)
+                            Err(e) => warn!("entretien Partition Erreur syncrhonization cles avec CA : {:?}", e)
                         }
                     }
 
@@ -366,7 +366,7 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
                         // Emettre certificat local (pas vraiment a la bonne place)
                         match g.emettre_certificat_maitredescles(middleware.as_ref(), None).await {
                             Ok(_) => (),
-                            Err(e) => error!("Erreur emission certificat de maitre des cles : {:?}", e)
+                            Err(e) => error!("entretien Partition Erreur emission certificat de maitre des cles : {:?}", e)
                         }
 
                         debug!("entretien Pousser les cles locales vers le CA");
@@ -375,7 +375,7 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
                                 reset_flag_confirmation_ca = false;
                                 prochaine_confirmation_ca = maintenant + intervalle_confirmation_ca;
                             },
-                            Err(e) => warn!("entretien Erreur syncrhonization cles avec CA : {:?}", e)
+                            Err(e) => warn!("entretien Partition Pousser les cles locales vers le CA : {:?}", e)
                         }
                     }
 
@@ -416,7 +416,7 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
                             Ok(()) => {
                                 prochain_sync = maintenant + intervalle_sync;
                             },
-                            Err(e) => warn!("entretien Erreur synchronization cles avec CA : {:?}", e)
+                            Err(e) => warn!("entretien SQLite Erreur synchronization cles avec CA : {:?}", e)
                         }
                     }
 
@@ -424,7 +424,7 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
                         // Emettre certificat local (pas vraiment a la bonne place)
                         match g.emettre_certificat_maitredescles(middleware.as_ref(), None).await {
                             Ok(_) => (),
-                            Err(e) => error!("Erreur emission certificat de maitre des cles : {:?}", e)
+                            Err(e) => error!("entretien SQLite Erreur emission certificat de maitre des cles : {:?}", e)
                         }
 
                         debug!("entretien Pousser les cles locales vers le CA");
@@ -433,7 +433,7 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
                                 reset_flag_confirmation_ca = false;
                                 prochaine_confirmation_ca = maintenant + intervalle_confirmation_ca;
                             },
-                            Err(e) => warn!("entretien Erreur syncrhonization cles avec CA : {:?}", e)
+                            Err(e) => warn!("entretien SQLITE Pousser les cles locales vers le CA : {:?}", e)
                         }
                     }
                 },
@@ -466,7 +466,7 @@ async fn consommer(
                 let domaine = m.domaine.as_str();
                 let nom_q = m.q.as_str();
                 info!("domaines_maitredescles.consommer Traiter message valide (action: {}, rk: {}, q: {})", action, rk, nom_q);
-                debug!("domaines_maitredescles.consommer contenu : {:?}", contenu);
+                // debug!("domaines_maitredescles.consommer contenu : {:?}", contenu);
 
                 // Tenter de mapper avec le nom de la Q (ne fonctionnera pas pour la Q de reponse)
                 let sender = match map_senders.get(nom_q) {

@@ -11,7 +11,6 @@ use millegrilles_common_rust::bson::{doc, Document};
 use millegrilles_common_rust::certificats::{EnveloppeCertificat, EnveloppePrivee, ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chiffrage::{Chiffreur, CleChiffrageHandler, extraire_cle_secrete, rechiffrer_asymetrique_multibase};
 use millegrilles_common_rust::chiffrage_cle::CommandeSauvegarderCle;
-// use millegrilles_common_rust::chiffrage_chacha20poly1305::{CipherMgs3, Mgs3CipherKeys};
 use millegrilles_common_rust::chrono::{Duration, Utc};
 use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::constantes::*;
@@ -187,6 +186,8 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
         // Commande sauvegarder cle 4.secure pour redistribution des cles
         rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE), exchange: Securite::L4Secure });
         rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, COMMANDE_SAUVEGARDER_CLE), exchange: Securite::L4Secure });
+        rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_TRANSFERT_CLE), exchange: Securite::L4Secure });
+        rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, COMMANDE_TRANSFERT_CLE), exchange: Securite::L4Secure });
 
         // Requetes de dechiffrage/preuve re-emise sur le bus 4.secure lorsque la cle est inconnue
         rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE), exchange: Securite::L4Secure });
@@ -235,7 +236,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
             }
         ));
 
-        let mut rk_transactions = Vec::new();
+        let rk_transactions = Vec::new();
         // rk_transactions.push(ConfigRoutingExchange {
         //     routing_key: format!("transaction.{}.{}.{}", DOMAINE_NOM, nom_partition, TRANSACTION_CLE).into(),
         //     exchange: Securite::L4Secure
@@ -524,8 +525,6 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
     let mut doc_bson: Document = commande.clone().into();
     // Retirer cles, on re-insere la cle necessaire uniquement
     doc_bson.remove("cles");
-    doc_bson.remove("user_id");
-    doc_bson.remove("signature_identite");
 
     doc_bson.insert("dirty", true);
     doc_bson.insert("confirmation_ca", false);
@@ -536,10 +535,6 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
     let mut ops = doc! {
         "$setOnInsert": doc_bson,
     };
-
-    if let Some(u) = commande.user_id.as_ref() {
-        ops.insert("$addToSet", doc!{"user_ids": u});
-    }
 
     debug!("commande_sauvegarder_cle: Ops bson : {:?}", ops);
 
@@ -557,11 +552,18 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
         // cles dans la commande que le nombre de cles de rechiffrage connues (incluant cert maitre des cles)
         if let Some(exchange) = m.exchange.as_ref() {
             if exchange != SECURITE_4_SECURE {
-                let transaction = TransactionCle::new_from_commande(&commande, fingerprint)?;
+                let cle_len = commande.cles.len();
+                let cle_str = match commande.cles.get(fingerprint) {
+                    Some(c) => c.to_owned(),
+                    None => Err(format!("maitredescles_partition.commande_sauvegarder_cle Erreur cle partition {} introuvable", fingerprint))?
+                };
+                let mut cle_transfert = DocumentClePartition::from(commande);
+                cle_transfert.cle = cle_str;  // Injecter la cle de cette partition
+
                 let pk_chiffrage = middleware.get_publickeys_chiffrage();
-                if pk_chiffrage.len() > commande.cles.len() {
+                if pk_chiffrage.len() > cle_len {
                     debug!("commande_sauvegarder_cle Nouvelle cle sur exchange != 4.secure, re-emettre a l'interne");
-                    let commande_cle_rechiffree = rechiffrer_pour_maitredescles(middleware, &transaction)?;
+                    let commande_cle_rechiffree = rechiffrer_pour_maitredescles(middleware, cle_transfert)?;
                     let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
                         .exchanges(vec![Securite::L4Secure])
                         .build();
@@ -599,7 +601,7 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
         cles_chiffrage
     };
 
-    let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
+    let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_TRANSFERT_CLE)
         .exchanges(vec![Securite::L4Secure])
         .build();
 
@@ -620,7 +622,7 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
 
         // Rechiffrer pour tous les autres maitre des cles
         if cles_chiffrage.len() > 0 {
-            let commande_rechiffree = rechiffrer_pour_maitredescles(middleware, &cle)?;
+            let commande_rechiffree = rechiffrer_pour_maitredescles(middleware, cle)?;
             middleware.transmettre_commande(routage_commande.clone(), &commande_rechiffree, false).await?;
         }
     }
@@ -630,7 +632,7 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
     let routage_event = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_CLE_RECUE_PARTITION).build();
     let event_contenu = json!({
         "correlation": &m.correlation_id,
-        "liste_hachage_bytes": liste_hachage_bytes,
+        CHAMP_LISTE_HACHAGE_BYTES: liste_hachage_bytes,
     });
     middleware.emettre_evenement(routage_event, &event_contenu).await?;
 
@@ -1007,17 +1009,13 @@ fn rechiffrer_cle(cle: &mut DocumentClePartition, privee: &EnveloppePrivee, cert
     -> Result<(), Box<dyn Error>>
 {
     if certificat_destination.verifier_exchanges(vec![Securite::L4Secure]) {
-        // Ok, acces permis
-    } else if let Some(user_ids) = cle.user_ids.as_ref() {
-        // Utiliser la liste de user_ids de la cle pour donner acces
-        let user_id_certificat = certificat_destination.get_user_id()?;
-        if let Some(user_id) = user_id_certificat {
-            if user_ids.contains(user_id) == false {
-                Err(format!("maitredescles_partition.rechiffrer_cle User_id du certificat de rechiffrage n'est pas autorise, acces refuse"))?
-            }
-        } else {
-            Err(format!("maitredescles_partition.rechiffrer_cle Certificat sans user_id ni L4Secure, acces refuse"))?
-        }
+        // Ok, acces global
+    } else if certificat_destination.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+        // Ok, acces global,
+    } else if certificat_destination.verifier_roles(vec![RolesCertificats::ComptePrive]) {
+        // Compte prive, certificats sont verifies par le domaine (relai de permission)
+    } else {
+        Err(format!("maitredescles_partition.rechiffrer_cle Certificat sans user_id ni L4Secure, acces refuse"))?
     }
 
     let cle_originale = cle.cle.as_str();
@@ -1034,24 +1032,27 @@ fn rechiffrer_cle(cle: &mut DocumentClePartition, privee: &EnveloppePrivee, cert
 
 /// Genere une commande de sauvegarde de cles pour tous les certificats maitre des cles connus
 /// incluant le certificat de millegrille
-fn rechiffrer_pour_maitredescles<M>(middleware: &M, cle: &TransactionCle)
-    -> Result<CommandeSauvegarderCle, Box<dyn Error>>
+fn rechiffrer_pour_maitredescles<M>(middleware: &M, cle: DocumentClePartition)
+    -> Result<CommandeCleTransfert, Box<dyn Error>>
     where M: GenerateurMessages + CleChiffrageHandler
 {
     let enveloppe_privee = middleware.get_enveloppe_privee();
     let fingerprint_local = enveloppe_privee.fingerprint().as_str();
     let pk_chiffrage = middleware.get_publickeys_chiffrage();
-    let cle_locale = cle.cle.as_str();
+    let cle_locale = cle.cle.to_owned();
     let cle_privee = enveloppe_privee.cle_privee();
 
     let mut fingerprint_partitions = Vec::new();
-    let mut map_cles = HashMap::new();
+    // let mut map_cles = HashMap::new();
 
-    // Inserer la cle locale
-    map_cles.insert(fingerprint_local.to_owned(), cle_locale.to_owned());
+    // Convertir la commande
+    let mut commande_transfert = CommandeCleTransfert::from(cle);
 
-    let mut identite_verifiee = false;
+    // Preparer les cles a transferer
+    let map_cles = &mut commande_transfert.cles;
+    map_cles.insert(fingerprint_local.to_owned(), cle_locale.clone());  // Cle locale
 
+    // Cles rechiffrees
     for pk_item in pk_chiffrage {
         let fp = pk_item.fingerprint;
         let pk = pk_item.public_key;
@@ -1064,34 +1065,17 @@ fn rechiffrer_pour_maitredescles<M>(middleware: &M, cle: &TransactionCle)
         // Rechiffrer cle
         if fp.as_str() != fingerprint_local {
             // match chiffrer_asymetrique(&pk, &cle_secrete) {
-            match rechiffrer_asymetrique_multibase(cle_privee, &pk, cle_locale) {
+            match rechiffrer_asymetrique_multibase(cle_privee, &pk, cle_locale.as_str()) {
                 Ok(cle_rechiffree) => {
                     // let cle_mb = multibase::encode(Base::Base64, cle_rechiffree);
                     map_cles.insert(fp, cle_rechiffree);
-
-                    if !identite_verifiee {
-
-                    }
                 },
                 Err(e) => error!("Erreur rechiffrage cle : {:?}", e)
             }
         }
     }
 
-    Ok(CommandeSauvegarderCle {
-        hachage_bytes: cle.hachage_bytes.to_owned(),
-        domaine: cle.domaine.to_owned(),
-        identificateurs_document: cle.identificateurs_document.to_owned(),
-        user_id: cle.user_id.to_owned(),
-        signature_identite: cle.signature_identite.to_owned(),
-        cles: map_cles,
-        format: cle.format.clone(),
-        iv: cle.iv.to_owned(),
-        tag: cle.tag.to_owned(),
-        header: cle.header.to_owned(),
-        partition: cle.partition.to_owned(),
-        fingerprint_partitions: Some(fingerprint_partitions)
-    })
+    Ok(commande_transfert)
 }
 
 async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition) -> Result<(), Box<dyn Error>>
@@ -1132,7 +1116,7 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
         let mut cles_hashset = HashSet::new();
         cles_hashset.extend(&liste_hachage_bytes);
 
-        debug!("Recu liste_hachage_bytes a verifier : {:?}", liste_hachage_bytes);
+        debug!("Recu liste_hachage_bytes a verifier : {} cles", liste_hachage_bytes.len());
         let filtre_cles = doc! { CHAMP_HACHAGE_BYTES: {"$in": &liste_hachage_bytes} };
         let projection = doc! { CHAMP_HACHAGE_BYTES: 1 };
         let find_options = FindOptions::builder().projection(projection).build();
@@ -1155,7 +1139,7 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
         }
 
         if cles_hashset.len() > 0 {
-            debug!("Cles absentes localement : {:?}", cles_hashset);
+            debug!("Cles absentes localement : {} cles", cles_hashset.len());
             // Emettre evenement pour indiquer que ces cles sont manquantes dans la partition
             let liste_cles: Vec<String> = cles_hashset.iter().map(|m| String::from(m.as_str())).collect();
             let evenement_cles_manquantes = ReponseSynchroniserCles { liste_hachage_bytes: liste_cles };
@@ -1269,7 +1253,7 @@ async fn traiter_cles_manquantes_ca<M>(
         let cles_confirmees: Vec<&String> = cles_emises.iter()
             .filter(|c| !cles_manquantes.contains(c))
             .collect();
-        debug!("traiter_cles_manquantes_ca Cles confirmees par le CA: {:?}", cles_confirmees);
+        debug!("traiter_cles_manquantes_ca Cles confirmees par le CA: {} cles", cles_confirmees.len());
         let filtre_confirmees = doc! {CHAMP_HACHAGE_BYTES: {"$in": cles_confirmees}};
         let ops = doc! {
             "$set": {CHAMP_CONFIRMATION_CA: true},
@@ -1290,9 +1274,9 @@ async fn traiter_cles_manquantes_ca<M>(
         while let Some(d) = curseur.next().await {
             let commande = match d {
                 Ok(cle) => {
-                    match convertir_bson_deserializable::<TransactionCle>(cle) {
+                    match convertir_bson_deserializable::<DocumentClePartition>(cle) {
                         Ok(c) => {
-                            match rechiffrer_pour_maitredescles(middleware, &c) {
+                            match rechiffrer_pour_maitredescles(middleware, c) {
                                 Ok(c) => c,
                                 Err(e) => {
                                     error!("traiter_cles_manquantes_ca Erreur traitement rechiffrage cle : {:?}", e);
@@ -1340,7 +1324,7 @@ async fn evenement_cle_manquante<M>(middleware: &M, m: MessageValideAction, gest
     middleware.recevoir_certificat_chiffrage(middleware, &m.message).await?;
 
     let partition = enveloppe.fingerprint.as_str();
-    let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
+    let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_TRANSFERT_CLE)
         .exchanges(vec![Securite::L4Secure])
         .partition(partition)
         .build();
@@ -1355,9 +1339,9 @@ async fn evenement_cle_manquante<M>(middleware: &M, m: MessageValideAction, gest
     while let Some(d) = curseur.next().await {
         let commande = match d {
             Ok(cle) => {
-                match convertir_bson_deserializable::<TransactionCle>(cle) {
+                match convertir_bson_deserializable::<DocumentClePartition>(cle) {
                     Ok(c) => {
-                        match rechiffrer_pour_maitredescles(middleware, &c) {
+                        match rechiffrer_pour_maitredescles(middleware, c) {
                             Ok(c) => c,
                             Err(e) => {
                                 error!("traiter_cles_manquantes_ca Erreur traitement rechiffrage cle : {:?}", e);
@@ -1389,11 +1373,12 @@ async fn evenement_cle_manquante<M>(middleware: &M, m: MessageValideAction, gest
             "cles": cles,
         });
 
-        debug!("evenement_cle_manquante Emettre reponse : {:?}", reponse);
+        debug!("evenement_cle_manquante Emettre reponse avec {} cles", cles.len());
 
         Ok(Some(middleware.formatter_reponse(reponse, None)?))
     } else {
         // Si on n'a aucune cle, ne pas repondre. Un autre maitre des cles pourrait le faire
+        debug!("evenement_cle_manquante On n'a aucune des cles demandees");
         Ok(None)
     }
 }

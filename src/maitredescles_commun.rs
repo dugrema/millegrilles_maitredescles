@@ -15,6 +15,7 @@ use millegrilles_common_rust::mongo_dao::{ChampIndex, IndexOptions, MongoDao};
 use millegrilles_common_rust::recepteur_messages::MessageValideAction;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::tokio::time::{Duration, sleep};
+use millegrilles_common_rust::certificats::ordered_map;
 
 pub const DOMAINE_NOM: &str = "MaitreDesCles";
 
@@ -147,7 +148,6 @@ pub async fn emettre_cles_inconnues<M>(middleware: &M, requete: RequeteDechiffra
 pub struct PermissionDechiffrage {
     pub permission_hachage_bytes: Vec<String>,
     pub domaines_permis: Option<Vec<String>>,
-    pub user_id: Option<String>,
     pub permission_duree: u32,
 }
 
@@ -181,7 +181,7 @@ pub struct ReponseConfirmerClesSurCa {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CommandeRechiffrerBatch {
-    pub cles: Vec<TransactionCle>
+    pub cles: Vec<DocumentClePartition>
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -197,8 +197,6 @@ pub struct TransactionCle {
     pub hachage_bytes: String,
     pub domaine: String,
     pub identificateurs_document: HashMap<String, String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub user_id: Option<String>,
     pub signature_identite: String,
 
     // Cle chiffree
@@ -220,7 +218,6 @@ impl Into<IdentiteCle> for TransactionCle {
             hachage_bytes: self.hachage_bytes,
             domaine: self.domaine,
             identificateurs_document: self.identificateurs_document,
-            user_id: self.user_id,
             signature_identite: self.signature_identite
         }
     }
@@ -241,7 +238,6 @@ impl TransactionCle {
             hachage_bytes: commande.hachage_bytes.to_owned(),
             domaine: commande.domaine.clone(),
             identificateurs_document: commande.identificateurs_document.clone(),
-            user_id: commande.user_id.clone(),
             signature_identite: commande.signature_identite.clone(),
             cle: cle.to_owned(),
             format: commande.format.clone(),
@@ -262,7 +258,6 @@ impl TransactionCle {
             hachage_bytes: self.hachage_bytes,
             domaine: self.domaine,
             identificateurs_document: self.identificateurs_document,
-            user_id: self.user_id,
             signature_identite: self.signature_identite,
             cles,
             format: self.format,
@@ -287,8 +282,7 @@ pub struct DocumentClePartition {
     pub hachage_bytes: String,
     pub domaine: String,
     pub identificateurs_document: HashMap<String, String>,
-    #[serde(skip_serializing)]
-    pub user_ids: Option<Vec<String>>,
+    pub signature_identite: String,
 
     // Cle chiffree
     pub cle: String,
@@ -298,4 +292,82 @@ pub struct DocumentClePartition {
     pub iv: Option<String>,
     pub tag: Option<String>,
     pub header: Option<String>,
+}
+
+impl From<CommandeSauvegarderCle> for DocumentClePartition {
+    fn from(value: CommandeSauvegarderCle) -> Self {
+
+        Self {
+            hachage_bytes: value.hachage_bytes,
+            domaine: value.domaine,
+            identificateurs_document: value.identificateurs_document,
+            signature_identite: value.signature_identite,
+            cle: "".to_string(),
+            format: value.format,
+            iv: value.iv,
+            tag: value.tag,
+            header: value.header
+        }
+    }
+}
+
+impl DocumentClePartition {
+
+    pub fn into_commande<S>(self, fingerprint: S) -> CommandeSauvegarderCle
+        where S: Into<String>
+    {
+        let fingerprint_ = fingerprint.into();
+        let mut cles: HashMap<String, String> = HashMap::new();
+        cles.insert(fingerprint_.clone(), self.cle);
+        CommandeSauvegarderCle {
+            hachage_bytes: self.hachage_bytes,
+            domaine: self.domaine,
+            identificateurs_document: self.identificateurs_document,
+            signature_identite: self.signature_identite,
+            cles,
+            format: self.format,
+            iv: self.iv,
+            tag: self.tag,
+            header: self.header,
+            partition: Some(fingerprint_),
+            fingerprint_partitions: None
+        }
+    }
+
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CommandeCleTransfert {
+    // Identite de la cle
+    pub hachage_bytes: String,
+    pub domaine: String,
+    #[serde(serialize_with = "ordered_map")]
+    pub identificateurs_document: HashMap<String, String>,
+    pub signature_identite: String,
+
+    // Cles chiffrees
+    #[serde(serialize_with = "ordered_map")]
+    pub cles: HashMap<String, String>,
+
+    // Information de dechiffrage
+    pub format: FormatChiffrage,
+    pub iv: Option<String>,
+    pub tag: Option<String>,
+    pub header: Option<String>,
+}
+
+impl From<DocumentClePartition> for CommandeCleTransfert {
+    fn from(value: DocumentClePartition) -> Self {
+        Self {
+            hachage_bytes: value.hachage_bytes,
+            domaine: value.domaine,
+            identificateurs_document: value.identificateurs_document,
+            signature_identite: value.signature_identite,
+            cles: HashMap::new(),
+            format: value.format,
+            iv: value.iv,
+            tag: value.tag,
+            header: value.header
+        }
+    }
 }

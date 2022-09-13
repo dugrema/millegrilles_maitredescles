@@ -346,10 +346,6 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
 
     // Retirer cles, on re-insere la cle necessaire uniquement
     doc_bson.remove("cles");
-    doc_bson.remove("user_id");
-    if commande.user_id.is_some() {
-        doc_bson.remove("signature_identite");
-    }
 
     let cle = match commande.cles.get(fingerprint) {
         Some(cle) => cle.as_str(),
@@ -372,10 +368,6 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
     doc_bson.insert("non_dechiffrable", non_dechiffrable);
 
     let mut ops = doc! { "$setOnInsert": doc_bson };
-
-    if let Some(u) = commande.user_id.as_ref() {
-        ops.insert("$set", doc!{format!("user_ids.{}", u): {"signature_identite": &commande.signature_identite}});
-    }
 
     debug!("commande_sauvegarder_cle: Ops bson : {:?}", ops);
 
