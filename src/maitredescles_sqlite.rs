@@ -1734,7 +1734,7 @@ fn charger_cle<S>(connexion: &Connection, hachage_bytes_: S)
         domaine: statement.read(6)?,
         identificateurs_document,
         signature_identite: statement.read(7)?,
-        cle: "".to_string(),
+        cle: statement.read(1)?,
         format: format_chiffrage,
         iv: statement.read(2)?,
         tag: statement.read(3)?,
