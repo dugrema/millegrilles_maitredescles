@@ -127,7 +127,11 @@ impl GestionnaireMaitreDesClesPartition {
     pub async fn emettre_certificat_maitredescles<M>(&self, middleware: &M, m: Option<MessageValideAction>) -> Result<(), Box<dyn Error>>
         where M: GenerateurMessages + MongoDao
     {
-        emettre_certificat_maitredescles(middleware, m).await
+        if self.handler_rechiffrage.certificat_maitredescles.is_some() {
+            emettre_certificat_maitredescles(middleware, m).await
+        } else {
+            Ok(())
+        }
     }
 
 }

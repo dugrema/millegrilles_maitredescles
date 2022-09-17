@@ -91,7 +91,7 @@ fn charger_gestionnaire_ca() -> Option<GestionnaireMaitreDesClesCa> {
 
     match std::env::var("MG_MAITREDESCLES_MODE") {
         Ok(s) => match s.as_str() {
-            "CA" | "Partition" => (),
+            "CA" | "CA_partition" => (),
             _ => { return None; }  // Pas de gestionnaire CA
         },
         Err(e) => panic!("charger_gestionnaire_ca Erreur lecture mode maitre des cles (CA) : {:?}", e)
@@ -136,17 +136,15 @@ fn charger_gestionnaire() -> Option<TypeGestionnaire> {
     match std::env::var("MG_MAITREDESCLES_MODE") {
         Ok(val) => {
             match val.as_str() {
-                "CA" => {
-                    // CA seulement (deja charge)
-                    None
+                "partition" | "CA_partition" => {
+                    Some(TypeGestionnaire::Partition(Arc::new(GestionnaireMaitreDesClesPartition::new(handler_rechiffrage))))
                 },
                 "sqlite" => {
                     // SQLite uniquement
                     Some(TypeGestionnaire::SQLite(Arc::new(GestionnaireMaitreDesClesSQLite::new(handler_rechiffrage))))
                 },
                 _ => {
-                    // Default partition + CA
-                    Some(TypeGestionnaire::Partition(Arc::new(GestionnaireMaitreDesClesPartition::new(handler_rechiffrage))))
+                    None
                 }
             }
         },
