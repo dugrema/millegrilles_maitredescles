@@ -18,6 +18,7 @@ use millegrilles_common_rust::constantes::Securite::L3Protege;
 use millegrilles_common_rust::common_messages::RequeteVerifierPreuve;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille, MessageSerialise};
+use millegrilles_common_rust::futures_util::stream::FuturesUnordered;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
 use millegrilles_common_rust::hachages::hacher_bytes;
 use millegrilles_common_rust::messages_generiques::MessageCedule;
@@ -33,7 +34,7 @@ use millegrilles_common_rust::recepteur_messages::{MessageValideAction, TypeMess
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::json;
 use millegrilles_common_rust::tokio::fs::File as File_tokio;
-use millegrilles_common_rust::tokio::io::AsyncReadExt;
+use millegrilles_common_rust::tokio::{io::AsyncReadExt, spawn};
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::transactions::{EtatTransaction, marquer_transaction, TraiterTransaction, Transaction, TransactionImpl};
 use millegrilles_common_rust::verificateur::VerificateurMessage;
@@ -57,7 +58,7 @@ const CHAMP_CONFIRMATION_CA: &str = "confirmation_ca";
 
 #[derive(Clone, Debug)]
 pub struct GestionnaireMaitreDesClesPartition {
-    pub handler_rechiffrage: HandlerCleRechiffrage
+    pub handler_rechiffrage: Arc<HandlerCleRechiffrage>
 }
 
 // fn nom_collection_transactions<S>(fingerprint: S) -> String
@@ -72,28 +73,25 @@ pub struct GestionnaireMaitreDesClesPartition {
 impl GestionnaireMaitreDesClesPartition {
 
     pub fn new(handler_rechiffrage: HandlerCleRechiffrage) -> Self {
-        Self { handler_rechiffrage }
+        Self { handler_rechiffrage: Arc::new(handler_rechiffrage) }
     }
 
     /// Retourne une version tronquee du nom de partition
     /// Utilise pour nommer certaines ressources (e.g. collections Mongo)
     pub fn get_partition_tronquee(&self) -> Option<String> {
-        match self.handler_rechiffrage.certificat_maitredescles.as_ref() {
-            Some(c) => {
-                let fingerprint = c.fingerprint.as_str();
-
+        match self.handler_rechiffrage.fingerprint() {
+            Some(f) => {
                 // On utilise les 12 derniers chars du fingerprint (35..48)
-                Some(String::from(&fingerprint[35..]))
+                Some(String::from(&f[35..]))
             },
             None => None
         }
     }
 
     fn get_q_sauvegarder_cle(&self) -> Option<String> {
-        match self.handler_rechiffrage.certificat_maitredescles.as_ref() {
-            Some(c) => {
-                let fingerprint = c.fingerprint.as_str();
-                Some(format!("MaitreDesCles/{}/sauvegarder", fingerprint))
+        match self.handler_rechiffrage.fingerprint() {
+            Some(f) => {
+                Some(format!("MaitreDesCles/{}/sauvegarder", f))
             },
             None => None
         }
@@ -127,7 +125,7 @@ impl GestionnaireMaitreDesClesPartition {
     pub async fn emettre_certificat_maitredescles<M>(&self, middleware: &M, m: Option<MessageValideAction>) -> Result<(), Box<dyn Error>>
         where M: GenerateurMessages + MongoDao
     {
-        if self.handler_rechiffrage.certificat_maitredescles.is_some() {
+        if self.handler_rechiffrage.is_ready() {
             emettre_certificat_maitredescles(middleware, m).await
         } else {
             Ok(())
@@ -150,8 +148,8 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
     fn get_nom_domaine(&self) -> String { String::from(DOMAINE_NOM) }
 
     fn get_partition(&self) -> Option<String> {
-        match self.handler_rechiffrage.certificat_maitredescles.as_ref() {
-            Some(c) => Some(c.fingerprint.clone()),
+        match self.handler_rechiffrage.fingerprint() {
+            Some(f) => Some(f),
             None => None
         }
     }
@@ -171,30 +169,27 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
     }
 
     fn get_q_transactions(&self) -> Option<String> {
-        match self.handler_rechiffrage.certificat_maitredescles.as_ref() {
-            Some(c) => {
-                let fingerprint = c.fingerprint.as_str();
-                Some(format!("MaitreDesCles/{}/transactions", fingerprint))
+        match self.handler_rechiffrage.fingerprint() {
+            Some(f) => {
+                Some(format!("MaitreDesCles/{}/transactions", f))
             },
             None => None
         }
     }
 
     fn get_q_volatils(&self) -> Option<String> {
-        match self.handler_rechiffrage.certificat_maitredescles.as_ref() {
-            Some(c) => {
-                let fingerprint = c.fingerprint.as_str();
-                Some(format!("MaitreDesCles/{}/volatils", fingerprint))
+        match self.handler_rechiffrage.fingerprint() {
+            Some(f) => {
+                Some(format!("MaitreDesCles/{}/volatils", f))
             },
             None => None
         }
     }
 
     fn get_q_triggers(&self) -> Option<String> {
-        match self.handler_rechiffrage.certificat_maitredescles.as_ref() {
-            Some(c) => {
-                let fingerprint = c.fingerprint.as_str();
-                Some(format!("MaitreDesCles/{}/triggers", fingerprint))
+        match self.handler_rechiffrage.fingerprint() {
+            Some(f) => {
+                Some(format!("MaitreDesCles/{}/triggers", f))
             },
             None => None
         }
@@ -205,15 +200,15 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
         let mut rk_commande_cle = Vec::new();
         let mut rk_volatils = Vec::new();
 
-        let fingerprint_option = match self.handler_rechiffrage.certificat_maitredescles.as_ref() {
-            Some(c) => Some(c.fingerprint.as_str()),
+        let fingerprint_option = match self.handler_rechiffrage.fingerprint() {
+            Some(f) => Some(f),
             None => None
         };
 
         let mut queues = Vec::new();
 
         if let Some(fingerprint) = fingerprint_option {
-            let nom_partition = fingerprint;
+            let nom_partition = fingerprint.as_str();
 
             let commandes: Vec<&str> = vec![
                 COMMANDE_SAUVEGARDER_CLE,
@@ -253,10 +248,8 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
             let commandes_protegees = vec![
                 COMMANDE_RECHIFFRER_BATCH,
             ];
-            if let Some(nom_partition) = fingerprint_option {
-                for commande in commandes_protegees {
-                    rk_volatils.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, commande), exchange: L3Protege });
-                }
+            for commande in commandes_protegees {
+                rk_volatils.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, commande), exchange: L3Protege });
             }
 
             // Queue de messages dechiffrage - taches partagees entre toutes les partitions
@@ -329,7 +322,14 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
     }
 
     async fn entretien<M>(&self, middleware: Arc<M>) where M: Middleware + 'static {
-        entretien_rechiffreur(middleware).await
+        let handler_rechiffrage = self.handler_rechiffrage.clone();
+
+        let mut futures = FuturesUnordered::new();
+        futures.push(spawn(entretien(middleware.clone())));
+        futures.push(spawn(entretien_rechiffreur(middleware.clone(), handler_rechiffrage)));
+
+        let arret = futures.next().await;
+        info!("entretien Arret resultat : {:?}", arret);
     }
 
     async fn traiter_cedule<M>(self: &'static Self, middleware: &M, trigger: &MessageCedule) -> Result<(), Box<dyn Error>> where M: Middleware + 'static {
@@ -544,8 +544,8 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
     let commande: CommandeSauvegarderCle = m.message.get_msg().map_contenu(None)?;
     debug!("Commande sauvegarder cle parsed : {:?}", commande);
 
-    let fingerprint = match gestionnaire.handler_rechiffrage.certificat_maitredescles.as_ref() {
-        Some(c) => c.fingerprint.as_str(),
+    let fingerprint = match gestionnaire.handler_rechiffrage.fingerprint() {
+        Some(f) => f,
         None => Err(format!("maitredescles_partition.commande_sauvegarder_cle Gestionnaire sans partition/certificat"))?
     };
     let nom_collection_cles = match gestionnaire.get_collection_cles() {
@@ -553,7 +553,7 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
         None => Err(format!("maitredescles_partition.commande_sauvegarder_cle Gestionnaire sans partition/certificat"))?
     };
 
-    let cle = match commande.cles.get(fingerprint) {
+    let cle = match commande.cles.get(fingerprint.as_str()) {
         Some(cle) => cle.as_str(),
         None => {
             let message = format!("maitredescles_ca.commande_sauvegarder_cle: Erreur validation - commande sauvegarder cles ne contient pas la cle CA : {:?}", commande);
@@ -604,7 +604,7 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
         if let Some(exchange) = m.exchange.as_ref() {
             if exchange != SECURITE_4_SECURE {
                 let cle_len = commande.cles.len();
-                let cle_str = match commande.cles.get(fingerprint) {
+                let cle_str = match commande.cles.get(fingerprint.as_str()) {
                     Some(c) => c.to_owned(),
                     None => Err(format!("maitredescles_partition.commande_sauvegarder_cle Erreur cle partition {} introuvable", fingerprint))?
                 };
@@ -641,8 +641,8 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
     let commande: CommandeRechiffrerBatch = m.message.get_msg().map_contenu(None)?;
     debug!("commande_rechiffrer_batch Commande parsed : {:?}", commande);
 
-    let fingerprint = match gestionnaire.handler_rechiffrage.certificat_maitredescles.as_ref() {
-        Some(c) => c.fingerprint.as_str(),
+    let fingerprint = match gestionnaire.handler_rechiffrage.fingerprint() {
+        Some(f) => f,
         None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Gestionnaire sans partition/certificat"))?
     };
     let enveloppe_privee = middleware.get_enveloppe_privee();

@@ -76,9 +76,7 @@ fn preprarer_handler_rechiffrage() -> HandlerCleRechiffrage {
 
     if certificat.verifier_roles(vec![RolesCertificats::MaitreDesCles]) {
         // On a un certificat MaitreDesCles, utiliser directement
-        let cle_rechiffrage = enveloppe_privee.cle_privee().to_owned();
-        HandlerCleRechiffrage::with_certificat(cle_rechiffrage, certificat.clone())
-            .expect("HandlerCleRechiffrageCle::with_certificat")
+        HandlerCleRechiffrage::with_certificat(enveloppe_privee.as_ref())
     } else if certificat.verifier_roles(vec![RolesCertificats::MaitreDesClesConnexion]) {
         HandlerCleRechiffrage::new_volatil_memoire().expect("HandlerCleRechiffrageCle")
     } else {

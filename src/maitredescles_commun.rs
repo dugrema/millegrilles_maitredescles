@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 
-use log::debug;
-use millegrilles_common_rust::certificats::EnveloppeCertificat;
+use log::{debug, error, info};
+use millegrilles_common_rust::certificats::{EnveloppeCertificat, EnveloppePrivee, ValidateurX509};
 use millegrilles_common_rust::chiffrage::{CleSecrete, FormatChiffrage};
 use millegrilles_common_rust::chiffrage_cle::{CommandeSauvegarderCle, IdentiteCle};
 use millegrilles_common_rust::constantes::*;
@@ -16,6 +16,9 @@ use millegrilles_common_rust::recepteur_messages::{MessageValideAction, TypeMess
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::tokio::{sync::mpsc::Sender, time::{Duration, sleep}};
 use millegrilles_common_rust::certificats::ordered_map;
+use millegrilles_common_rust::common_messages::ReponseSignatureCertificat;
+use crate::domaines_maitredescles::TypeGestionnaire;
+use crate::maitredescles_volatil::HandlerCleRechiffrage;
 
 pub const DOMAINE_NOM: &str = "MaitreDesCles";
 
@@ -111,13 +114,68 @@ pub async fn entretien<M>(_middleware: Arc<M>)
     }
 }
 
-pub async fn entretien_rechiffreur<M>(_middleware: Arc<M>)
+pub async fn entretien_rechiffreur<M>(middleware: Arc<M>, handler_rechiffrage: Arc<HandlerCleRechiffrage>)
     where M: Middleware + 'static
 {
     loop {
-        sleep(Duration::new(30, 0)).await;
         debug!("Cycle entretien rechiffreur {}", DOMAINE_NOM);
+
+        match handler_rechiffrage.fingerprint() {
+            Some(f) => {
+                // Rechiffreur pret et actif
+                debug!("entretien_rechiffreur Handler rechiffrage fingerprint {:?}", f);
+            },
+            None => {
+                info!("entretien_rechiffreur Aucun certificat configure, on demande de generer un certificat volatil");
+                match generer_certificat_volatil(middleware.as_ref(), handler_rechiffrage.as_ref()).await {
+                    Ok(()) => (),
+                    Err(e) => error!("entretien_rechiffreur Erreur generation certificat volatil : {:?}", e)
+                }
+            }
+        };
+
+        sleep(Duration::new(30, 0)).await;
     }
+}
+
+async fn generer_certificat_volatil<M>(middleware: &M, handler_rechiffrage: &HandlerCleRechiffrage)
+    -> Result<(), Box<dyn Error>>
+    where M: GenerateurMessages + ValidateurX509
+{
+    let idmg = middleware.get_enveloppe_privee().idmg()?;
+    let csr_volatil = handler_rechiffrage.generer_csr(idmg)?;
+    debug!("generer_certificat_volatil Demande de generer un certificat volatil, CSR : {:?}", csr_volatil);
+
+    let routage = RoutageMessageAction::builder(DOMAINE_PKI, "signerCsr")
+        .exchanges(vec![Securite::L3Protege])
+        // .timeout_blocking(20000)
+        .build();
+
+    let reponse: ReponseSignatureCertificat = match middleware.transmettre_commande(routage, &csr_volatil, true).await? {
+        Some(m) => match m {
+            TypeMessage::Valide(m) => m.message.parsed.map_contenu(None)?,
+            _ => Err(format!("maitredescles_commun.generer_certificat_volatil Mauvais type de reponse"))?
+        },
+        None => Err(format!("maitredescles_commun.generer_certificat_volatil Aucune reponse recue"))?
+    };
+
+    debug!("generer_certificat_volatil Reponse {:?}", reponse);
+    if Some(true) == reponse.ok {
+        match reponse.certificat {
+            Some(vec_certificat_pem) => {
+                let enveloppe = middleware.charger_enveloppe(&vec_certificat_pem, None, None).await?;
+                handler_rechiffrage.set_certificat(enveloppe)?;
+
+                // Configurer les Q de rechiffrage et emettre nouveau certificat
+                todo!("configurer Qs, emettre nouveau certificat")
+            },
+            None => Err(format!("maitredescles_commun.generer_certificat_volatil Erreur creation certificat volatil cote serveur, aucun certificat recu"))?
+        }
+    } else {
+        Err(format!("maitredescles_commun.generer_certificat_volatil Erreur creation certificat volatil cote serveur (certissuer ok == false)"))?
+    }
+
+    Ok(())
 }
 
 pub async fn traiter_cedule<M>(_middleware: &M, _trigger: &MessageCedule) -> Result<(), Box<dyn Error>>
