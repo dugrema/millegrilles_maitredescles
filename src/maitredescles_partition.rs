@@ -39,6 +39,7 @@ use millegrilles_common_rust::transactions::{EtatTransaction, marquer_transactio
 use millegrilles_common_rust::verificateur::VerificateurMessage;
 
 use crate::maitredescles_commun::*;
+use crate::maitredescles_volatil::HandlerCleRechiffrage;
 
 // const NOM_COLLECTION_RECHIFFRAGE: &str = "MaitreDesCles/rechiffrage";
 
@@ -56,40 +57,55 @@ const CHAMP_CONFIRMATION_CA: &str = "confirmation_ca";
 
 #[derive(Clone, Debug)]
 pub struct GestionnaireMaitreDesClesPartition {
-    pub fingerprint: String,
+    pub handler_rechiffrage: HandlerCleRechiffrage
 }
 
-fn nom_collection_transactions<S>(fingerprint: S) -> String
-    where S: AsRef<str>
-{
-    // On utilise les 12 derniers chars du fingerprint (35..48)
-    // let fp = fingerprint.as_ref();
-    // format!("MaitreDesCles/{}", &fp[35..])
-    String::from("MaitreDesCles/DUMMY")
-}
+// fn nom_collection_transactions<S>(fingerprint: S) -> String
+//     where S: AsRef<str>
+// {
+//     // On utilise les 12 derniers chars du fingerprint (35..48)
+//     // let fp = fingerprint.as_ref();
+//     // format!("MaitreDesCles/{}", &fp[35..])
+//     String::from("MaitreDesCles/DUMMY")
+// }
 
 impl GestionnaireMaitreDesClesPartition {
-    pub fn new(fingerprint: &str) -> Self {
-        Self {
-            fingerprint: String::from(fingerprint)
-        }
+
+    pub fn new(handler_rechiffrage: HandlerCleRechiffrage) -> Self {
+        Self { handler_rechiffrage }
     }
 
     /// Retourne une version tronquee du nom de partition
     /// Utilise pour nommer certaines ressources (e.g. collections Mongo)
-    pub fn get_partition_tronquee(&self) -> String {
-        let partition = self.fingerprint.as_str();
+    pub fn get_partition_tronquee(&self) -> Option<String> {
+        match self.handler_rechiffrage.certificat_maitredescles.as_ref() {
+            Some(c) => {
+                let fingerprint = c.fingerprint.as_str();
 
-        // On utilise les 12 derniers chars du fingerprint (35..48)
-        String::from(&partition[35..])
+                // On utilise les 12 derniers chars du fingerprint (35..48)
+                Some(String::from(&fingerprint[35..]))
+            },
+            None => None
+        }
     }
 
-    fn get_q_sauvegarder_cle(&self) -> String {
-        format!("MaitreDesCles/{}/sauvegarder", self.fingerprint)
+    fn get_q_sauvegarder_cle(&self) -> Option<String> {
+        match self.handler_rechiffrage.certificat_maitredescles.as_ref() {
+            Some(c) => {
+                let fingerprint = c.fingerprint.as_str();
+                Some(format!("MaitreDesCles/{}/sauvegarder", fingerprint))
+            },
+            None => None
+        }
     }
 
-    fn get_collection_cles(&self) -> String {
-        format!("MaitreDesCles/{}/cles", self.get_partition_tronquee())
+    fn get_collection_cles(&self) -> Option<String> {
+        match self.get_partition_tronquee() {
+            Some(p) => {
+                Some(format!("MaitreDesCles/{}/cles", p))
+            },
+            None => None
+        }
     }
 
     /// Verifie si le CA a des cles qui ne sont pas connues localement
@@ -130,32 +146,54 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
     fn get_nom_domaine(&self) -> String { String::from(DOMAINE_NOM) }
 
     fn get_partition(&self) -> Option<String> {
-        Some(self.fingerprint.clone())
+        match self.handler_rechiffrage.certificat_maitredescles.as_ref() {
+            Some(c) => Some(c.fingerprint.clone()),
+            None => None
+        }
     }
 
-    fn get_collection_transactions(&self) -> String {
-        // Utiliser le nom de la partition tronquee - evite que les noms de collections deviennent
-        // trop long (cause un probleme lors de la creation d'index, max 127 chars sur path)
-        //format!("MaitreDesCles/{}", self.get_partition_tronquee())
-        String::from("MaitreDesCles/DUMMY")
+    fn get_collection_transactions(&self) -> Option<String> {
+        // Aucunes transactions pour un maitre des cles autre que CA
+        None
     }
 
     fn get_collections_documents(&self) -> Vec<String> {
         // Utiliser le nom de la partition tronquee - evite que les noms de collections deviennent
         // trop long (cause un probleme lors de la creation d'index, max 127 chars sur path)
-        vec![format!("MaitreDesCles/{}/cles", self.get_partition_tronquee())]
+        match self.get_partition_tronquee() {
+            Some(p) => vec![format!("MaitreDesCles/{}/cles", p)],
+            None => vec![]
+        }
     }
 
-    fn get_q_transactions(&self) -> String {
-        format!("MaitreDesCles/{}/transactions", self.fingerprint)
+    fn get_q_transactions(&self) -> Option<String> {
+        match self.handler_rechiffrage.certificat_maitredescles.as_ref() {
+            Some(c) => {
+                let fingerprint = c.fingerprint.as_str();
+                Some(format!("MaitreDesCles/{}/transactions", fingerprint))
+            },
+            None => None
+        }
     }
 
-    fn get_q_volatils(&self) -> String {
-        format!("MaitreDesCles/{}/volatils", self.fingerprint)
+    fn get_q_volatils(&self) -> Option<String> {
+        match self.handler_rechiffrage.certificat_maitredescles.as_ref() {
+            Some(c) => {
+                let fingerprint = c.fingerprint.as_str();
+                Some(format!("MaitreDesCles/{}/volatils", fingerprint))
+            },
+            None => None
+        }
     }
 
-    fn get_q_triggers(&self) -> String {
-        format!("MaitreDesCles/{}/triggers", self.fingerprint)
+    fn get_q_triggers(&self) -> Option<String> {
+        match self.handler_rechiffrage.certificat_maitredescles.as_ref() {
+            Some(c) => {
+                let fingerprint = c.fingerprint.as_str();
+                Some(format!("MaitreDesCles/{}/triggers", fingerprint))
+            },
+            None => None
+        }
     }
 
     fn preparer_queues(&self) -> Vec<QueueType> {
@@ -166,28 +204,37 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
         let commandes: Vec<&str> = vec![
             COMMANDE_SAUVEGARDER_CLE,
         ];
-        let nom_partition = self.fingerprint.as_str();
+
+        let fingerprint_option = match self.handler_rechiffrage.certificat_maitredescles.as_ref() {
+            Some(c) => Some(c.fingerprint.as_str()),
+            None => None
+        };
 
         for sec in [Securite::L1Public, Securite::L2Prive, Securite::L3Protege] {
             rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE), exchange: sec.clone() });
             rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_VERIFIER_PREUVE), exchange: sec.clone() });
             rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_CERTIFICAT_MAITREDESCLES), exchange: sec.clone() });
-            rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}.{}", DOMAINE_NOM, nom_partition, REQUETE_VERIFIER_PREUVE), exchange: sec.clone() });
 
             // Commande volatile
             rk_volatils.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_CERT_MAITREDESCLES), exchange: sec.clone() });
 
-            // Commande sauvegarder cles
-            for commande in &commandes {
-                rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, commande), exchange: sec.clone() });
+            if let Some(nom_partition) = fingerprint_option {
+                rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}.{}", DOMAINE_NOM, nom_partition, REQUETE_VERIFIER_PREUVE), exchange: sec.clone() });
+                // Commande sauvegarder cles
+                for commande in &commandes {
+                    rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, commande), exchange: sec.clone() });
+                }
             }
         }
 
         // Commande sauvegarder cle 4.secure pour redistribution des cles
         rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE), exchange: Securite::L4Secure });
-        rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, COMMANDE_SAUVEGARDER_CLE), exchange: Securite::L4Secure });
         rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_TRANSFERT_CLE), exchange: Securite::L4Secure });
-        rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, COMMANDE_TRANSFERT_CLE), exchange: Securite::L4Secure });
+
+        if let Some(nom_partition) = fingerprint_option {
+            rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, COMMANDE_SAUVEGARDER_CLE), exchange: Securite::L4Secure });
+            rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, COMMANDE_TRANSFERT_CLE), exchange: Securite::L4Secure });
+        }
 
         // Requetes de dechiffrage/preuve re-emise sur le bus 4.secure lorsque la cle est inconnue
         rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE), exchange: Securite::L4Secure });
@@ -200,8 +247,10 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
         let commandes_protegees = vec![
             COMMANDE_RECHIFFRER_BATCH,
         ];
-        for commande in commandes_protegees {
-            rk_volatils.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, commande), exchange: L3Protege });
+        if let Some(nom_partition) = fingerprint_option {
+            for commande in commandes_protegees {
+                rk_volatils.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, commande), exchange: L3Protege });
+            }
         }
 
         let mut queues = Vec::new();
@@ -217,24 +266,28 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
         ));
 
         // Queue commande de sauvegarde de cle
-        queues.push(QueueType::ExchangeQueue(
-            ConfigQueue {
-                nom_queue: self.get_q_sauvegarder_cle(),
-                routing_keys: rk_commande_cle,
-                ttl: None,
-                durable: false,
-            }
-        ));
+        if let Some(nom_queue) = self.get_q_sauvegarder_cle() {
+            queues.push(QueueType::ExchangeQueue(
+                ConfigQueue {
+                    nom_queue,
+                    routing_keys: rk_commande_cle,
+                    ttl: None,
+                    durable: false,
+                }
+            ));
+        }
 
         // Queue volatils
-        queues.push(QueueType::ExchangeQueue(
-            ConfigQueue {
-                nom_queue: self.get_q_volatils().into(),
-                routing_keys: rk_volatils,
-                ttl: DEFAULT_Q_TTL.into(),
-                durable: false,
-            }
-        ));
+        if let Some(nom_queue) = self.get_q_volatils() {
+            queues.push(QueueType::ExchangeQueue(
+                ConfigQueue {
+                    nom_queue,
+                    routing_keys: rk_volatils,
+                    ttl: DEFAULT_Q_TTL.into(),
+                    durable: false,
+                }
+            ));
+        }
 
         let rk_transactions = Vec::new();
         // rk_transactions.push(ConfigRoutingExchange {
@@ -243,17 +296,21 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
         // });
 
         // Queue de transactions
-        queues.push(QueueType::ExchangeQueue(
-            ConfigQueue {
-                nom_queue: self.get_q_transactions(),
-                routing_keys: rk_transactions,
-                ttl: None,
-                durable: false,
-            }
-        ));
+        if let Some(nom_queue) = self.get_q_transactions() {
+            queues.push(QueueType::ExchangeQueue(
+                ConfigQueue {
+                    nom_queue,
+                    routing_keys: rk_transactions,
+                    ttl: None,
+                    durable: false,
+                }
+            ));
+        }
 
         // Queue de triggers
-        queues.push(QueueType::Triggers(format!("MaitreDesCles.{}", self.fingerprint), Securite::L3Protege));
+        if let Some(fingerprint) = fingerprint_option {
+            queues.push(QueueType::Triggers(format!("MaitreDesCles.{}", fingerprint), Securite::L3Protege));
+        }
 
         queues
     }
@@ -263,10 +320,10 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
     }
 
     async fn preparer_database<M>(&self, middleware: &M) -> Result<(), String> where M: Middleware + 'static {
-        let nom_collection_cles = self.get_collection_cles();
-        preparer_index_mongodb_custom(middleware, nom_collection_cles.as_str()).await?;
-        preparer_index_mongodb_partition(middleware, self).await?;
-
+        if let Some(nom_collection_cles) = self.get_collection_cles() {
+            preparer_index_mongodb_custom(middleware, nom_collection_cles.as_str()).await?;
+            preparer_index_mongodb_partition(middleware, self).await?;
+        }
         Ok(())
     }
 
@@ -302,21 +359,23 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
 pub async fn preparer_index_mongodb_partition<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition) -> Result<(), String>
     where M: MongoDao
 {
-    let collection_cles = gestionnaire.get_collection_cles();
+    if let Some(collection_cles) = gestionnaire.get_collection_cles() {
 
-    // Index confirmation ca (table cles)
-    let options_confirmation_ca = IndexOptions {
-        nom_index: Some(String::from(INDEX_CONFIRMATION_CA)),
-        unique: false
-    };
-    let champs_index_confirmation_ca = vec!(
-        ChampIndex {nom_champ: String::from(CHAMP_CONFIRMATION_CA), direction: 1},
-    );
-    middleware.create_index(
-        collection_cles.as_ref(),
-        champs_index_confirmation_ca,
-        Some(options_confirmation_ca)
-    ).await?;
+        // Index confirmation ca (table cles)
+        let options_confirmation_ca = IndexOptions {
+            nom_index: Some(String::from(INDEX_CONFIRMATION_CA)),
+            unique: false
+        };
+        let champs_index_confirmation_ca = vec!(
+            ChampIndex { nom_champ: String::from(CHAMP_CONFIRMATION_CA), direction: 1 },
+        );
+        middleware.create_index(
+            collection_cles.as_str(),
+            champs_index_confirmation_ca,
+            Some(options_confirmation_ca)
+        ).await?;
+
+    }
 
     Ok(())
 }
@@ -500,7 +559,14 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
     let commande: CommandeSauvegarderCle = m.message.get_msg().map_contenu(None)?;
     debug!("Commande sauvegarder cle parsed : {:?}", commande);
 
-    let fingerprint = gestionnaire.fingerprint.as_str();
+    let fingerprint = match gestionnaire.handler_rechiffrage.certificat_maitredescles.as_ref() {
+        Some(c) => c.fingerprint.as_str(),
+        None => Err(format!("maitredescles_partition.commande_sauvegarder_cle Gestionnaire sans partition/certificat"))?
+    };
+    let nom_collection_cles = match gestionnaire.get_collection_cles() {
+        Some(c) => c,
+        None => Err(format!("maitredescles_partition.commande_sauvegarder_cle Gestionnaire sans partition/certificat"))?
+    };
 
     let cle = match commande.cles.get(fingerprint) {
         Some(cle) => cle.as_str(),
@@ -541,7 +607,7 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
     let filtre = doc! { "hachage_bytes": commande.hachage_bytes.as_str() };
     let opts = UpdateOptions::builder().upsert(true).build();
 
-    let collection = middleware.get_collection(gestionnaire.get_collection_cles().as_str())?;
+    let collection = middleware.get_collection(nom_collection_cles.as_str())?;
     let resultat = collection.update_one(filtre, ops, opts).await?;
     debug!("commande_sauvegarder_cle Resultat update : {:?}", resultat);
 
@@ -582,10 +648,18 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
     where M: GenerateurMessages + MongoDao + CleChiffrageHandler
 {
     debug!("commande_rechiffrer_batch Consommer commande : {:?}", & m.message);
+    let nom_collection_cles = match gestionnaire.get_collection_cles() {
+        Some(c) => c,
+        None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Gestionnaire sans partition/certificat"))?
+    };
+
     let commande: CommandeRechiffrerBatch = m.message.get_msg().map_contenu(None)?;
     debug!("commande_rechiffrer_batch Commande parsed : {:?}", commande);
 
-    let fingerprint = gestionnaire.fingerprint.as_str();
+    let fingerprint = match gestionnaire.handler_rechiffrage.certificat_maitredescles.as_ref() {
+        Some(c) => c.fingerprint.as_str(),
+        None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Gestionnaire sans partition/certificat"))?
+    };
     let enveloppe_privee = middleware.get_enveloppe_privee();
     let fingerprint_ca = enveloppe_privee.enveloppe_ca.fingerprint.clone();
 
@@ -605,7 +679,7 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
         .exchanges(vec![Securite::L4Secure])
         .build();
 
-    let collection = middleware.get_collection(gestionnaire.get_collection_cles().as_str())?;
+    let collection = middleware.get_collection(nom_collection_cles.as_str())?;
 
     // Traiter chaque cle individuellement
     let liste_hachage_bytes: Vec<String> = commande.cles.iter().map(|c| c.hachage_bytes.to_owned()).collect();
@@ -758,6 +832,11 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + VerificateurMessage + ValidateurX509 + CleChiffrageHandler
 {
+    let nom_collection = match gestionnaire.get_collection_cles() {
+        Some(n) => n,
+        None => Err(format!("maitredescles_partition.requete_verifier_preuve Collection cles n'est pas definie"))?
+    };
+
     debug!("requete_verifier_preuve Consommer requete : {:?}", & m.message);
     let requete: RequeteVerifierPreuve = m.message.get_msg().map_contenu(None)?;
     debug!("requete_verifier_preuve cle parsed : {:?}", requete);
@@ -792,7 +871,6 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
     let filtre = doc! {
         CHAMP_HACHAGE_BYTES: {"$in": liste_hachage_bytes}
     };
-    let nom_collection = gestionnaire.get_collection_cles();
     debug!("requete_verifier_preuve Filtre cles sur collection {} : {:?}", nom_collection, filtre);
 
     let collection = middleware.get_collection(nom_collection.as_str())?;
@@ -923,6 +1001,11 @@ async fn preparer_curseur_cles<M>(
     -> Result<Cursor<Document>, Box<dyn Error>>
     where M: MongoDao
 {
+    let nom_collection = match gestionnaire.get_collection_cles() {
+        Some(n) => n,
+        None => Err(format!("maitredescles_partition.preparer_curseur_cles Collection cles n'est pas definie"))?
+    };
+
     // if permission.is_some() {
     //     Err(format!("Permission non supporte - FIX ME"))?;
     // }
@@ -931,7 +1014,6 @@ async fn preparer_curseur_cles<M>(
     if let Some(d) = domaines_permis {
         filtre.insert("domaine", doc!{"$in": d});
     }
-    let nom_collection = gestionnaire.get_collection_cles();
     debug!("requete_dechiffrage Filtre cles sur collection {} : {:?}", nom_collection, filtre);
 
     let collection = middleware.get_collection(nom_collection.as_str())?;
@@ -1082,6 +1164,11 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
     where M: GenerateurMessages + MongoDao + VerificateurMessage
 {
     debug!("synchroniser_cles Debut");
+    let nom_collection = match gestionnaire.get_collection_cles() {
+        Some(n) => n,
+        None => Err(format!("maitredescles_partition.synchroniser_cles Collection cles n'est pas definie"))?
+    };
+
     // Requete vers CA pour obtenir la liste des cles connues
     let mut requete_sync = RequeteSynchroniserCles {page: 0, limite: 1000};
     let routage_sync = RoutageMessageAction::builder(DOMAINE_NOM, REQUETE_SYNCHRONISER_CLES)
@@ -1092,8 +1179,7 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
         .exchanges(vec![Securite::L4Secure])
         .build();
 
-    let collection = middleware.get_collection(
-        gestionnaire.get_collection_cles().as_str())?;
+    let collection = middleware.get_collection(nom_collection.as_str())?;
 
     loop {
         let reponse = match middleware.transmettre_requete(routage_sync.clone(), &requete_sync).await? {
@@ -1157,13 +1243,17 @@ async fn confirmer_cles_ca<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
     where M: GenerateurMessages + MongoDao + VerificateurMessage + CleChiffrageHandler
 {
     let batch_size = 50;
+    let nom_collection = match gestionnaire.get_collection_cles() {
+        Some(n) => n,
+        None => Err(format!("maitredescles_partition.confirmer_cles_ca Collection cles n'est pas definie"))?
+    };
 
     debug!("confirmer_cles_ca Debut confirmation cles locales avec confirmation_ca=false (reset flag: {:?}", reset_flag);
     if let Some(true) = reset_flag {
         info!("Reset flag confirmation_ca a false");
         let filtre = doc! { CHAMP_CONFIRMATION_CA: true };
         let ops = doc! { "$set": {CHAMP_CONFIRMATION_CA: false } };
-        let collection = middleware.get_collection(gestionnaire.get_collection_cles().as_str())?;
+        let collection = middleware.get_collection(nom_collection.as_str())?;
         collection.update_many(filtre, ops, None).await?;
     }
 
@@ -1173,7 +1263,7 @@ async fn confirmer_cles_ca<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
         let opts = FindOptions::builder()
             // .limit(limit_cles)
             .build();
-        let collection = middleware.get_collection(gestionnaire.get_collection_cles().as_str())?;
+        let collection = middleware.get_collection(nom_collection.as_str())?;
         let curseur = collection.find(filtre, opts).await?;
         curseur
     };
@@ -1246,7 +1336,11 @@ async fn traiter_cles_manquantes_ca<M>(
     -> Result<(), Box<dyn Error>>
     where M: MongoDao + GenerateurMessages + CleChiffrageHandler
 {
-    let collection = middleware.get_collection(gestionnaire.get_collection_cles().as_str())?;
+    let nom_collection = match gestionnaire.get_collection_cles() {
+        Some(n) => n,
+        None => Err(format!("maitredescles_partition.traiter_cles_manquantes_ca Collection cles n'est pas definie"))?
+    };
+    let collection = middleware.get_collection(nom_collection.as_str())?;
 
     // Marquer cles emises comme confirmees par CA si pas dans la liste de manquantes
     {
@@ -1306,6 +1400,11 @@ async fn evenement_cle_manquante<M>(middleware: &M, m: MessageValideAction, gest
     where M: ValidateurX509 + GenerateurMessages + MongoDao + CleChiffrageHandler + ConfigMessages
 {
     debug!("evenement_cle_manquante Verifier si on peut transmettre la cle manquante {:?}", &m.message);
+    let nom_collection = match gestionnaire.get_collection_cles() {
+        Some(n) => n,
+        None => Err(format!("maitredescles_partition.evenement_cle_manquante Collection cles n'est pas definie"))?
+    };
+
     let event_non_dechiffrables: ReponseSynchroniserCles = m.message.get_msg().map_contenu(None)?;
 
     let enveloppe = match m.message.certificat.clone() {
@@ -1332,7 +1431,7 @@ async fn evenement_cle_manquante<M>(middleware: &M, m: MessageValideAction, gest
     let hachages_bytes = event_non_dechiffrables.liste_hachage_bytes;
     let filtre = doc! { CHAMP_HACHAGE_BYTES: {"$in": hachages_bytes} };
 
-    let collection = middleware.get_collection(gestionnaire.get_collection_cles().as_str())?;
+    let collection = middleware.get_collection(nom_collection.as_str())?;
     let mut curseur = collection.find(filtre, None).await?;
 
     let mut cles = Vec::new();

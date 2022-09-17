@@ -4,6 +4,7 @@ mod maitredescles_ca;
 mod maitredescles_commun;
 //mod maitredescles_redis;  // Obsolete
 mod maitredescles_sqlite;
+mod maitredescles_volatil;
 
 use log::{info};
 use millegrilles_common_rust::tokio as tokio;

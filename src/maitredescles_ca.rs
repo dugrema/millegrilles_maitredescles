@@ -59,15 +59,15 @@ impl TraiterTransaction for GestionnaireMaitreDesClesCa {
 impl GestionnaireDomaine for GestionnaireMaitreDesClesCa {
     fn get_nom_domaine(&self) -> String { String::from(DOMAINE_NOM) }
 
-    fn get_collection_transactions(&self) -> String { String::from(NOM_COLLECTION_TRANSACTIONS) }
+    fn get_collection_transactions(&self) -> Option<String> { Some(String::from(NOM_COLLECTION_TRANSACTIONS)) }
 
     fn get_collections_documents(&self) -> Vec<String> { vec![String::from(NOM_COLLECTION_CLES)] }
 
-    fn get_q_transactions(&self) -> String { String::from(NOM_Q_TRANSACTIONS) }
+    fn get_q_transactions(&self) -> Option<String> { Some(String::from(NOM_Q_TRANSACTIONS)) }
 
-    fn get_q_volatils(&self) -> String { String::from(NOM_Q_VOLATILS) }
+    fn get_q_volatils(&self) -> Option<String> { Some(String::from(NOM_Q_VOLATILS)) }
 
-    fn get_q_triggers(&self) -> String { String::from(NOM_Q_TRIGGERS) }
+    fn get_q_triggers(&self) -> Option<String> { Some(String::from(NOM_Q_TRIGGERS)) }
 
     fn preparer_queues(&self) -> Vec<QueueType> { preparer_queues() }
 
