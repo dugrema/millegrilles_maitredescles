@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use log::debug;
 use millegrilles_common_rust::certificats::EnveloppeCertificat;
@@ -12,9 +12,9 @@ use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageM
 use millegrilles_common_rust::messages_generiques::MessageCedule;
 use millegrilles_common_rust::middleware::Middleware;
 use millegrilles_common_rust::mongo_dao::{ChampIndex, IndexOptions, MongoDao};
-use millegrilles_common_rust::recepteur_messages::MessageValideAction;
+use millegrilles_common_rust::recepteur_messages::{MessageValideAction, TypeMessage};
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
-use millegrilles_common_rust::tokio::time::{Duration, sleep};
+use millegrilles_common_rust::tokio::{sync::mpsc::Sender, time::{Duration, sleep}};
 use millegrilles_common_rust::certificats::ordered_map;
 
 pub const DOMAINE_NOM: &str = "MaitreDesCles";
@@ -108,6 +108,15 @@ pub async fn entretien<M>(_middleware: Arc<M>)
     loop {
         sleep(Duration::new(30, 0)).await;
         debug!("Cycle entretien {}", DOMAINE_NOM);
+    }
+}
+
+pub async fn entretien_rechiffreur<M>(_middleware: Arc<M>)
+    where M: Middleware + 'static
+{
+    loop {
+        sleep(Duration::new(30, 0)).await;
+        debug!("Cycle entretien rechiffreur {}", DOMAINE_NOM);
     }
 }
 
@@ -370,4 +379,10 @@ impl From<DocumentClePartition> for CommandeCleTransfert {
             header: value.header
         }
     }
+}
+
+pub struct GestionnaireRessources {
+    pub tx_messages: Option<Sender<TypeMessage>>,
+    pub tx_triggers: Option<Sender<TypeMessage>>,
+    pub routing: Mutex<HashMap<String, Sender<TypeMessage>>>,
 }

@@ -407,7 +407,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesSQLite {
     }
 
     async fn entretien<M>(&self, middleware: Arc<M>) where M: Middleware + 'static {
-        entretien(middleware).await
+        entretien_rechiffreur(middleware).await
     }
 
     async fn traiter_cedule<M>(self: &'static Self, middleware: &M, trigger: &MessageCedule) -> Result<(), Box<dyn Error>> where M: Middleware + 'static {

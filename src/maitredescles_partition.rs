@@ -205,114 +205,95 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
         let mut rk_commande_cle = Vec::new();
         let mut rk_volatils = Vec::new();
 
-        let commandes: Vec<&str> = vec![
-            COMMANDE_SAUVEGARDER_CLE,
-        ];
-
         let fingerprint_option = match self.handler_rechiffrage.certificat_maitredescles.as_ref() {
             Some(c) => Some(c.fingerprint.as_str()),
             None => None
         };
 
-        for sec in [Securite::L1Public, Securite::L2Prive, Securite::L3Protege] {
-            rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE), exchange: sec.clone() });
-            rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_VERIFIER_PREUVE), exchange: sec.clone() });
-            rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_CERTIFICAT_MAITREDESCLES), exchange: sec.clone() });
+        let mut queues = Vec::new();
 
-            // Commande volatile
-            rk_volatils.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_CERT_MAITREDESCLES), exchange: sec.clone() });
+        if let Some(fingerprint) = fingerprint_option {
+            let nom_partition = fingerprint;
 
-            if let Some(nom_partition) = fingerprint_option {
+            let commandes: Vec<&str> = vec![
+                COMMANDE_SAUVEGARDER_CLE,
+            ];
+
+            for sec in [Securite::L1Public, Securite::L2Prive, Securite::L3Protege] {
+
+                rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE), exchange: sec.clone() });
+                rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_VERIFIER_PREUVE), exchange: sec.clone() });
+                rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_CERTIFICAT_MAITREDESCLES), exchange: sec.clone() });
+
+                // Commande volatile
+                rk_volatils.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_CERT_MAITREDESCLES), exchange: sec.clone() });
+
                 rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}.{}", DOMAINE_NOM, nom_partition, REQUETE_VERIFIER_PREUVE), exchange: sec.clone() });
                 // Commande sauvegarder cles
                 for commande in &commandes {
                     rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, commande), exchange: sec.clone() });
                 }
             }
-        }
 
-        // Commande sauvegarder cle 4.secure pour redistribution des cles
-        rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE), exchange: Securite::L4Secure });
-        rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_TRANSFERT_CLE), exchange: Securite::L4Secure });
+            // Commande sauvegarder cle 4.secure pour redistribution des cles
+            rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE), exchange: Securite::L4Secure });
+            rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_TRANSFERT_CLE), exchange: Securite::L4Secure });
 
-        if let Some(nom_partition) = fingerprint_option {
             rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, COMMANDE_SAUVEGARDER_CLE), exchange: Securite::L4Secure });
             rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, COMMANDE_TRANSFERT_CLE), exchange: Securite::L4Secure });
-        }
 
-        // Requetes de dechiffrage/preuve re-emise sur le bus 4.secure lorsque la cle est inconnue
-        rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE), exchange: Securite::L4Secure });
-        rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_VERIFIER_PREUVE), exchange: Securite::L4Secure });
+            // Requetes de dechiffrage/preuve re-emise sur le bus 4.secure lorsque la cle est inconnue
+            rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE), exchange: Securite::L4Secure });
+            rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_VERIFIER_PREUVE), exchange: Securite::L4Secure });
 
-        for sec in [Securite::L3Protege, Securite::L4Secure] {
-            rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION), exchange: sec.clone() });
-        }
-
-        let commandes_protegees = vec![
-            COMMANDE_RECHIFFRER_BATCH,
-        ];
-        if let Some(nom_partition) = fingerprint_option {
-            for commande in commandes_protegees {
-                rk_volatils.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, commande), exchange: L3Protege });
+            for sec in [Securite::L3Protege, Securite::L4Secure] {
+                rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION), exchange: sec.clone() });
             }
-        }
 
-        let mut queues = Vec::new();
-
-        // Queue de messages dechiffrage - taches partagees entre toutes les partitions
-        queues.push(QueueType::ExchangeQueue(
-            ConfigQueue {
-                nom_queue: NOM_Q_DECHIFFRAGE.into(),
-                routing_keys: rk_dechiffrage,
-                ttl: DEFAULT_Q_TTL.into(),
-                durable: false,
-            }
-        ));
-
-        // Queue commande de sauvegarde de cle
-        if let Some(nom_queue) = self.get_q_sauvegarder_cle() {
-            queues.push(QueueType::ExchangeQueue(
-                ConfigQueue {
-                    nom_queue,
-                    routing_keys: rk_commande_cle,
-                    ttl: None,
-                    durable: false,
+            let commandes_protegees = vec![
+                COMMANDE_RECHIFFRER_BATCH,
+            ];
+            if let Some(nom_partition) = fingerprint_option {
+                for commande in commandes_protegees {
+                    rk_volatils.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, commande), exchange: L3Protege });
                 }
-            ));
-        }
+            }
 
-        // Queue volatils
-        if let Some(nom_queue) = self.get_q_volatils() {
+            // Queue de messages dechiffrage - taches partagees entre toutes les partitions
             queues.push(QueueType::ExchangeQueue(
                 ConfigQueue {
-                    nom_queue,
-                    routing_keys: rk_volatils,
+                    nom_queue: NOM_Q_DECHIFFRAGE.into(),
+                    routing_keys: rk_dechiffrage,
                     ttl: DEFAULT_Q_TTL.into(),
                     durable: false,
                 }
             ));
-        }
 
-        let rk_transactions = Vec::new();
-        // rk_transactions.push(ConfigRoutingExchange {
-        //     routing_key: format!("transaction.{}.{}.{}", DOMAINE_NOM, nom_partition, TRANSACTION_CLE).into(),
-        //     exchange: Securite::L4Secure
-        // });
+            // Queue commande de sauvegarde de cle
+            if let Some(nom_queue) = self.get_q_sauvegarder_cle() {
+                queues.push(QueueType::ExchangeQueue(
+                    ConfigQueue {
+                        nom_queue,
+                        routing_keys: rk_commande_cle,
+                        ttl: None,
+                        durable: false,
+                    }
+                ));
+            }
 
-        // Queue de transactions
-        if let Some(nom_queue) = self.get_q_transactions() {
-            queues.push(QueueType::ExchangeQueue(
-                ConfigQueue {
-                    nom_queue,
-                    routing_keys: rk_transactions,
-                    ttl: None,
-                    durable: false,
-                }
-            ));
-        }
+            // Queue volatils
+            if let Some(nom_queue) = self.get_q_volatils() {
+                queues.push(QueueType::ExchangeQueue(
+                    ConfigQueue {
+                        nom_queue,
+                        routing_keys: rk_volatils,
+                        ttl: DEFAULT_Q_TTL.into(),
+                        durable: false,
+                    }
+                ));
+            }
 
-        // Queue de triggers
-        if let Some(fingerprint) = fingerprint_option {
+            // Queue de triggers
             queues.push(QueueType::Triggers(format!("MaitreDesCles.{}", fingerprint), Securite::L3Protege));
         }
 
@@ -348,7 +329,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
     }
 
     async fn entretien<M>(&self, middleware: Arc<M>) where M: Middleware + 'static {
-        entretien(middleware).await
+        entretien_rechiffreur(middleware).await
     }
 
     async fn traiter_cedule<M>(self: &'static Self, middleware: &M, trigger: &MessageCedule) -> Result<(), Box<dyn Error>> where M: Middleware + 'static {

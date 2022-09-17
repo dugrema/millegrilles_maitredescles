@@ -24,6 +24,7 @@ use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::transactions::resoumettre_transactions;
 
 use crate::maitredescles_ca::GestionnaireMaitreDesClesCa;
+use crate::maitredescles_commun::GestionnaireRessources;
 use crate::maitredescles_partition::{emettre_certificat_maitredescles, GestionnaireMaitreDesClesPartition};
 use crate::maitredescles_sqlite::{GestionnaireMaitreDesClesSQLite};
 use crate::maitredescles_volatil::HandlerCleRechiffrage;
@@ -203,41 +204,60 @@ async fn build() -> FuturesUnordered<JoinHandle<()>> {
         let mut map_senders: HashMap<String, Sender<TypeMessage>> = HashMap::new();
 
         // ** Domaines **
-        {
+        let (tx_messages, tx_triggers) = {
             if let Some(g) = gestionnaire_ca {
-                let (rout_g, fut_g) = g.preparer_threads(
+                let (rout_g, fut_g, _, _) = g.preparer_threads(
                     middleware.clone()).await.expect("gestionnaire CA preparer_threads");
                 futures.extend(fut_g);       // Deplacer vers futures globaux
                 map_senders.extend(rout_g);  // Deplacer vers mapping global
             }
 
-            let (rout_g, fut_g) = match gestionnaire {
+            let (
+                rout_g,
+                fut_g,
+                tx_messages,
+                tx_triggers
+            ) = match gestionnaire {
                 TypeGestionnaire::Partition(g) => {
-                    g.preparer_threads(middleware.clone()).await.expect("gestionnaire Partition preparer_threads")
+                    let (
+                        rout_g, fut_g,
+                        tx_messages, tx_triggers
+                    ) = g.preparer_threads(middleware.clone()).await.expect("gestionnaire Partition preparer_threads");
+                    (rout_g, fut_g, Some(tx_messages), Some(tx_triggers))
                 },
                 TypeGestionnaire::SQLite(g) => {
-                    g.preparer_threads(middleware.clone()).await.expect("gestionnaire SQLite preparer_threads")
+                    let (
+                        rout_g, fut_g,
+                        tx_messages, tx_triggers
+                    ) = g.preparer_threads(middleware.clone()).await.expect("gestionnaire SQLite preparer_threads");
+                    (rout_g, fut_g, Some(tx_messages), Some(tx_triggers))
                 },
-                TypeGestionnaire::None => (HashMap::new(), FuturesUnordered::new())
+                TypeGestionnaire::None => (HashMap::new(), FuturesUnordered::new(), None, None)
             };
             futures.extend(fut_g);       // Deplacer vers futures globaux
             map_senders.extend(rout_g);  // Deplacer vers mapping global
 
-        }
+            (tx_messages, tx_triggers)
+        };
 
         // ** Wiring global **
 
         debug!("domaines_maitresdescles.build Map senders : {:?}", map_senders);
+        let gestionnaire_ressources = Arc::new(GestionnaireRessources {
+            tx_messages,
+            tx_triggers,
+            routing: Mutex::new(map_senders)
+        });
 
         // Creer consommateurs MQ globaux pour rediriger messages recus vers Q internes appropriees
         futures.push(spawn(
-            consommer(middleware.clone(), middleware_hooks.rx_messages_verifies, map_senders.clone())
+            consommer(middleware.clone(), middleware_hooks.rx_messages_verifies, gestionnaire_ressources.clone())
         ));
         futures.push(spawn(
-            consommer(middleware.clone(), middleware_hooks.rx_messages_verif_reply, map_senders.clone())
+            consommer(middleware.clone(), middleware_hooks.rx_messages_verif_reply, gestionnaire_ressources.clone())
         ));
         futures.push(spawn(
-            consommer(middleware.clone(), middleware_hooks.rx_triggers, map_senders.clone())
+            consommer(middleware.clone(), middleware_hooks.rx_triggers, gestionnaire_ressources.clone())
         ));
 
         // ** Thread d'entretien **
@@ -482,9 +502,10 @@ async fn executer(mut futures: FuturesUnordered<JoinHandle<()>>) {
 async fn consommer(
     _middleware: Arc<impl ValidateurX509 + GenerateurMessages + MongoDao>,
     mut rx: Receiver<TypeMessage>,
-    map_senders: HashMap<String, Sender<TypeMessage>>
+    //map_senders: HashMap<String, Sender<TypeMessage>>
+    gestionnaire_ressources: Arc<GestionnaireRessources>
 ) {
-    info!("domaines_maitredescles.consommer : Debut thread, mapping : {:?}", map_senders.keys());
+    info!("domaines_maitredescles.consommer : Debut thread");
 
     while let Some(message) = rx.recv().await {
         match &message {
@@ -501,21 +522,24 @@ async fn consommer(
                 // debug!("domaines_maitredescles.consommer contenu : {:?}", contenu);
 
                 // Tenter de mapper avec le nom de la Q (ne fonctionnera pas pour la Q de reponse)
-                let sender = match map_senders.get(nom_q) {
-                    Some(sender) => {
-                        debug!("domaines_maitredescles.consommer Mapping message avec nom_q: {}", nom_q);
-                        sender
-                    },
-                    None => {
-                        match map_senders.get(domaine) {
-                            Some(sender) => {
-                                debug!("domaines_maitredescles.consommer Mapping message avec domaine: {}", domaine);
-                                sender
-                            },
-                            None => {
-                                error!("domaines_maitredescles.consommer Message de queue ({}) et domaine ({}) inconnu, on le drop", nom_q, domaine);
-                                continue  // On skip
-                            },
+                let sender = {
+                    let map_senders = gestionnaire_ressources.routing.lock().expect("gestionnaire_ressources.routing.lock()");
+                    match map_senders.get(nom_q) {
+                        Some(sender) => {
+                            debug!("domaines_maitredescles.consommer Mapping message avec nom_q: {}", nom_q);
+                            sender.clone()
+                        },
+                        None => {
+                            match map_senders.get(domaine) {
+                                Some(sender) => {
+                                    debug!("domaines_maitredescles.consommer Mapping message avec domaine: {}", domaine);
+                                    sender.clone()
+                                },
+                                None => {
+                                    error!("domaines_maitredescles.consommer Message de queue ({}) et domaine ({}) inconnu, on le drop", nom_q, domaine);
+                                    continue  // On skip
+                                },
+                            }
                         }
                     }
                 };
@@ -532,7 +556,7 @@ async fn consommer(
         }
     }
 
-    info!("domaines_maitredescles.consommer: Fin thread : {:?}", map_senders.keys());
+    info!("domaines_maitredescles.consommer: Fin thread");
 }
 
 // #[cfg(test)]
