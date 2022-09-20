@@ -95,7 +95,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesCa {
         consommer_evenement(middleware, message).await
     }
 
-    async fn entretien<M>(&self, middleware: Arc<M>) where M: Middleware + 'static {
+    async fn entretien<M>(self: &'static Self, middleware: Arc<M>) where M: Middleware + 'static {
         entretien(middleware).await
     }
 

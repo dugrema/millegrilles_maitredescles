@@ -352,6 +352,7 @@ async fn entretien<M>(middleware: Arc<M>)
             _ => ()
         }
 
+        sleep(duration).await;
     }
 
     // panic!("Forcer fermeture");

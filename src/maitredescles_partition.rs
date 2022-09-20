@@ -354,7 +354,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
         consommer_evenement(middleware, self, message).await
     }
 
-    async fn entretien<M>(&self, middleware: Arc<M>) where M: Middleware + 'static {
+    async fn entretien<M>(self: &'static Self, middleware: Arc<M>) where M: Middleware + 'static {
         let handler_rechiffrage = self.handler_rechiffrage.clone();
 
         loop {
@@ -365,15 +365,21 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
                         debug!("entretien.Certificat pret, activer Qs et synchroniser cles");
                         let queues = self.preparer_queues_rechiffrage();
                         for queue in queues {
+
                             let queue_name = match &queue {
                                 QueueType::ExchangeQueue(q) => q.nom_queue.clone(),
                                 QueueType::ReplyQueue(_) => { continue },
                                 QueueType::Triggers(d,s) => format!("{}.{:?}", d, s)
                             };
-                            let (tx, rx) = mpsc::channel::<TypeMessage>(1);
-                            let named_queue = NamedQueue::new(queue, tx, Some(1));
-                            middleware.ajouter_named_queue(queue_name, named_queue);
 
+                            // Creer thread de traitement
+                            let (tx, rx) = mpsc::channel::<TypeMessage>(1);
+                            let mut futures_consumer = FuturesUnordered::new();
+                            futures_consumer.push(spawn(self.consommer_messages(middleware.clone(), rx)));
+
+                            // Ajouter nouvelle queue
+                            let named_queue = NamedQueue::new(queue, tx, Some(1), Some(futures_consumer));
+                            middleware.ajouter_named_queue(queue_name, named_queue);
                         }
                     },
                     Err(e) => error!("entretien_rechiffreur Erreur generation certificat volatil : {:?}", e)
