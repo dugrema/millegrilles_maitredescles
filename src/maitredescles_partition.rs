@@ -1215,6 +1215,10 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
     where M: GenerateurMessages + MongoDao + VerificateurMessage
 {
     debug!("synchroniser_cles Debut");
+    if ! gestionnaire.handler_rechiffrage.is_ready() {
+       Err(format!("maitredescles_partition.synchroniser_cles Rechiffreur n'est pas initialise"))?
+    }
+
     let nom_collection = match gestionnaire.get_collection_cles() {
         Some(n) => n,
         None => Err(format!("maitredescles_partition.synchroniser_cles Collection cles n'est pas definie"))?
