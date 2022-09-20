@@ -164,52 +164,23 @@ async fn build() -> FuturesUnordered<JoinHandle<()>> {
     // Preparer les green threads de tous les domaines/processus
     let mut futures = FuturesUnordered::new();
 
-    // Recuperer configuration des Q de tous les domaines
-    let queues = {
-        let mut queues: Vec<QueueType> = Vec::new();
-        if let Some(g) = gestionnaire_ca {
-            queues.extend(g.preparer_queues());
-        }
-
-        let qs: Vec<QueueType> = match gestionnaire {
-            TypeGestionnaire::Partition(g) => g.preparer_queues(),
-            TypeGestionnaire::SQLite(g) => g.preparer_queues(),
-            TypeGestionnaire::None => vec![]
-        };
-        queues.extend(qs);
-
-        todo!("Changer approche queues")
-        // for queue in queues {
-        //     let named_queue = NamedQueue::new(queue, tx, 1);
-        //     middleware.ajouter_named_queue( named_queue);
-        // }
-    };
-
     // ** Domaines **
     if let Some(g) = gestionnaire_ca {
-        let (rout_g, fut_g, _, _) = g.preparer_threads(
+        let fut_queues = g.preparer_threads(
             middleware.clone()).await.expect("gestionnaire CA preparer_threads");
-        futures.extend(fut_g);       // Deplacer vers futures globaux
-        todo!("fix me")
-        // map_senders.extend(rout_g);  // Deplacer vers mapping global
+        futures.extend(fut_queues);
     }
 
     match unsafe {&GESTIONNAIRE} {
         TypeGestionnaire::Partition(g) => {
-            let (
-                rout_g, fut_g,
-                tx_messages, tx_triggers
-            ) = g.preparer_threads(middleware.clone()).await.expect("gestionnaire Partition preparer_threads");
-            todo!("fix me")
-            //(rout_g, fut_g, Some(tx_messages), Some(tx_triggers))
+            let fut_queues= g.preparer_threads(
+                middleware.clone()).await.expect("gestionnaire Partition preparer_threads");
+            futures.extend(fut_queues);
         },
         TypeGestionnaire::SQLite(g) => {
-            let (
-                rout_g, fut_g,
-                tx_messages, tx_triggers
-            ) = g.preparer_threads(middleware.clone()).await.expect("gestionnaire SQLite preparer_threads");
-            todo!("fix me")
-            //(rout_g, fut_g, Some(tx_messages), Some(tx_triggers))
+            let fut_queues= g.preparer_threads(
+                middleware.clone()).await.expect("gestionnaire SQLite preparer_threads");
+            futures.extend(fut_queues);
         },
         TypeGestionnaire::None => ()
     };
@@ -218,6 +189,7 @@ async fn build() -> FuturesUnordered<JoinHandle<()>> {
     futures.push(spawn(entretien(middleware.clone())));
 
     // Thread ecoute et validation des messages
+    info!("domaines_maitredescles.build Ajout {} futures dans middleware_hooks", futures.len());
     for f in middleware_hooks.futures {
         futures.push(f);
     }

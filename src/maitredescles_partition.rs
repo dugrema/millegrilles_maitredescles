@@ -31,13 +31,14 @@ use millegrilles_common_rust::mongodb::options::{FindOptions, UpdateOptions};
 use millegrilles_common_rust::multihash::Code;
 use millegrilles_common_rust::openssl::pkey::{PKey, Private};
 use millegrilles_common_rust::openssl::rsa::Rsa;
-use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange, QueueType, TypeMessageOut};
+use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange, NamedQueue, QueueType, TypeMessageOut};
 use millegrilles_common_rust::recepteur_messages::{MessageValideAction, TypeMessage};
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::json;
 use millegrilles_common_rust::tokio::fs::File as File_tokio;
 use millegrilles_common_rust::tokio::{io::AsyncReadExt, spawn};
 use millegrilles_common_rust::tokio::time::{Duration as Duration_tokio, sleep};
+use millegrilles_common_rust::tokio::sync::{mpsc, mpsc::{Receiver, Sender}};
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::transactions::{EtatTransaction, marquer_transaction, TraiterTransaction, Transaction, TransactionImpl};
 use millegrilles_common_rust::verificateur::VerificateurMessage;
@@ -363,8 +364,17 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
                     Ok(()) => {
                         debug!("entretien.Certificat pret, activer Qs et synchroniser cles");
                         let queues = self.preparer_queues_rechiffrage();
-                        todo!("fix queues")
+                        for queue in queues {
+                            let queue_name = match &queue {
+                                QueueType::ExchangeQueue(q) => q.nom_queue.clone(),
+                                QueueType::ReplyQueue(_) => { continue },
+                                QueueType::Triggers(d,s) => format!("{}.{:?}", d, s)
+                            };
+                            let (tx, rx) = mpsc::channel::<TypeMessage>(1);
+                            let named_queue = NamedQueue::new(queue, tx, Some(1));
+                            middleware.ajouter_named_queue(queue_name, named_queue);
 
+                        }
                     },
                     Err(e) => error!("entretien_rechiffreur Erreur generation certificat volatil : {:?}", e)
                 }
