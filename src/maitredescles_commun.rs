@@ -114,31 +114,31 @@ pub async fn entretien<M>(_middleware: Arc<M>)
     }
 }
 
-pub async fn entretien_rechiffreur<M>(middleware: Arc<M>, handler_rechiffrage: Arc<HandlerCleRechiffrage>)
-    where M: Middleware + 'static
-{
-    loop {
-        debug!("Cycle entretien rechiffreur {}", DOMAINE_NOM);
+// pub async fn entretien_rechiffreur<M>(middleware: Arc<M>, handler_rechiffrage: Arc<HandlerCleRechiffrage>)
+//     where M: Middleware + 'static
+// {
+//     loop {
+//         debug!("Cycle entretien rechiffreur {}", DOMAINE_NOM);
+//
+//         match handler_rechiffrage.fingerprint() {
+//             Some(f) => {
+//                 // Rechiffreur pret et actif
+//                 debug!("entretien_rechiffreur Handler rechiffrage fingerprint {:?}", f);
+//             },
+//             None => {
+//                 info!("entretien_rechiffreur Aucun certificat configure, on demande de generer un certificat volatil");
+//                 match generer_certificat_volatil(middleware.as_ref(), handler_rechiffrage.as_ref()).await {
+//                     Ok(()) => (),
+//                     Err(e) => error!("entretien_rechiffreur Erreur generation certificat volatil : {:?}", e)
+//                 }
+//             }
+//         };
+//
+//         sleep(Duration::new(30, 0)).await;
+//     }
+// }
 
-        match handler_rechiffrage.fingerprint() {
-            Some(f) => {
-                // Rechiffreur pret et actif
-                debug!("entretien_rechiffreur Handler rechiffrage fingerprint {:?}", f);
-            },
-            None => {
-                info!("entretien_rechiffreur Aucun certificat configure, on demande de generer un certificat volatil");
-                match generer_certificat_volatil(middleware.as_ref(), handler_rechiffrage.as_ref()).await {
-                    Ok(()) => (),
-                    Err(e) => error!("entretien_rechiffreur Erreur generation certificat volatil : {:?}", e)
-                }
-            }
-        };
-
-        sleep(Duration::new(30, 0)).await;
-    }
-}
-
-async fn generer_certificat_volatil<M>(middleware: &M, handler_rechiffrage: &HandlerCleRechiffrage)
+pub async fn generer_certificat_volatil<M>(middleware: &M, handler_rechiffrage: &HandlerCleRechiffrage)
     -> Result<(), Box<dyn Error>>
     where M: GenerateurMessages + ValidateurX509
 {
@@ -166,16 +166,14 @@ async fn generer_certificat_volatil<M>(middleware: &M, handler_rechiffrage: &Han
                 let enveloppe = middleware.charger_enveloppe(&vec_certificat_pem, None, None).await?;
                 handler_rechiffrage.set_certificat(enveloppe)?;
 
-                // Configurer les Q de rechiffrage et emettre nouveau certificat
-                todo!("configurer Qs, emettre nouveau certificat")
+                // Certificat pret
+                Ok(())
             },
             None => Err(format!("maitredescles_commun.generer_certificat_volatil Erreur creation certificat volatil cote serveur, aucun certificat recu"))?
         }
     } else {
         Err(format!("maitredescles_commun.generer_certificat_volatil Erreur creation certificat volatil cote serveur (certissuer ok == false)"))?
     }
-
-    Ok(())
 }
 
 pub async fn traiter_cedule<M>(_middleware: &M, _trigger: &MessageCedule) -> Result<(), Box<dyn Error>>
