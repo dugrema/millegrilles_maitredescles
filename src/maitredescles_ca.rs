@@ -163,6 +163,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
             routing_keys: rk_volatils,
             ttl: DEFAULT_Q_TTL.into(),
             durable: true,
+            autodelete: false,
         }
     ));
 
@@ -179,6 +180,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
             routing_keys: rk_sauvegarder_cle,
             ttl: None,
             durable: true,
+            autodelete: false,
         }
     ));
 
@@ -189,6 +191,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
             routing_keys: rk_transactions,
             ttl: None,
             durable: true,
+            autodelete: false,
         }
     ));
 

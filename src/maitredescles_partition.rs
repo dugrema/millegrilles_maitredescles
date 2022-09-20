@@ -218,6 +218,7 @@ impl GestionnaireMaitreDesClesPartition {
                 routing_keys: rk_dechiffrage,
                 ttl: DEFAULT_Q_TTL.into(),
                 durable: false,
+                autodelete: true,
             }
         ));
 
@@ -229,6 +230,7 @@ impl GestionnaireMaitreDesClesPartition {
                     routing_keys: rk_commande_cle,
                     ttl: None,
                     durable: false,
+                    autodelete: true,
                 }
             ));
         }
@@ -241,6 +243,7 @@ impl GestionnaireMaitreDesClesPartition {
                     routing_keys: rk_volatils,
                     ttl: DEFAULT_Q_TTL.into(),
                     durable: false,
+                    autodelete: true,
                 }
             ));
         }
