@@ -7,7 +7,7 @@ use millegrilles_common_rust::chiffrage_ed25519::{CleDerivee, deriver_asymetriqu
 use millegrilles_common_rust::{openssl, openssl::pkey::{Id, PKey, Private, Public}};
 use millegrilles_common_rust::certificats::{EnveloppeCertificat, EnveloppePrivee};
 use millegrilles_common_rust::common_messages::DemandeSignature;
-use millegrilles_common_rust::constantes::{ROLE_MAITRE_DES_CLES, ROLE_MAITRE_DES_CLES_VOLATIL};
+use millegrilles_common_rust::constantes::{ROLE_MAITRE_DES_CLES, ROLE_MAITRE_DES_CLES_VOLATIL, SECURITE_4_SECURE};
 use millegrilles_common_rust::openssl::hash::MessageDigest;
 use millegrilles_common_rust::openssl::nid::Nid;
 use millegrilles_common_rust::openssl::symm::Mode;
@@ -100,7 +100,7 @@ impl HandlerCleRechiffrage {
             csr,
             roles: Some(vec![ROLE_MAITRE_DES_CLES.to_string(), ROLE_MAITRE_DES_CLES_VOLATIL.to_string()]),
             domaines: None,
-            exchanges: None,
+            exchanges: Some(vec![SECURITE_4_SECURE.into()]),
             dns: None
         };
 
