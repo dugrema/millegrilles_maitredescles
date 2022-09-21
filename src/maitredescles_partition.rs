@@ -335,8 +335,11 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
 
     async fn preparer_database<M>(&self, middleware: &M) -> Result<(), String> where M: Middleware + 'static {
         if let Some(nom_collection_cles) = self.get_collection_cles() {
+            debug!("preparer_database Ajouter index pour collection {}", nom_collection_cles);
             preparer_index_mongodb_custom(middleware, nom_collection_cles.as_str()).await?;
             preparer_index_mongodb_partition(middleware, self).await?;
+        } else {
+            debug!("preparer_database Aucun fingerprint / partition");
         }
         Ok(())
     }
@@ -363,35 +366,45 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
         loop {
             if !self.handler_rechiffrage.is_ready() {
                 info!("entretien_rechiffreur Aucun certificat configure, on demande de generer un certificat volatil");
-                match generer_certificat_volatil(middleware.as_ref(), handler_rechiffrage.as_ref()).await {
+                let resultat = match generer_certificat_volatil(middleware.as_ref(), handler_rechiffrage.as_ref()).await {
                     Ok(()) => {
                         debug!("entretien.Certificat pret, activer Qs et synchroniser cles");
-                        let queues = self.preparer_queues_rechiffrage();
-                        for queue in queues {
-
-                            let queue_name = match &queue {
-                                QueueType::ExchangeQueue(q) => q.nom_queue.clone(),
-                                QueueType::ReplyQueue(_) => { continue },
-                                QueueType::Triggers(d,s) => format!("{}.{:?}", d, s)
-                            };
-
-                            // Creer thread de traitement
-                            let (tx, rx) = mpsc::channel::<TypeMessage>(1);
-                            let mut futures_consumer = FuturesUnordered::new();
-                            futures_consumer.push(spawn(self.consommer_messages(middleware.clone(), rx)));
-
-                            // Ajouter nouvelle queue
-                            let named_queue = NamedQueue::new(queue, tx, Some(1), Some(futures_consumer));
-                            middleware.ajouter_named_queue(queue_name, named_queue);
-
-                            // Switch le certificat de signature
-                            match handler_rechiffrage.get_enveloppe_privee() {
-                                Some(e) => middleware.set_enveloppe_signature(e),
-                                None => panic!("maitredescles_partition.entretien Erreur recuperation cle volatile")
-                            }
-                        }
+                        true
                     },
-                    Err(e) => error!("entretien_rechiffreur Erreur generation certificat volatil : {:?}", e)
+                    Err(e) => {
+                        error!("entretien_rechiffreur Erreur generation certificat volatil : {:?}", e);
+                        false
+                    }
+                };
+
+                if resultat {
+                    // Preparer la collection avec index
+                    self.preparer_database(middleware.as_ref()).await.expect("preparer_database");
+
+                    let queues = self.preparer_queues_rechiffrage();
+                    for queue in queues {
+
+                        let queue_name = match &queue {
+                            QueueType::ExchangeQueue(q) => q.nom_queue.clone(),
+                            QueueType::ReplyQueue(_) => { continue },
+                            QueueType::Triggers(d,s) => format!("{}.{:?}", d, s)
+                        };
+
+                        // Creer thread de traitement
+                        let (tx, rx) = mpsc::channel::<TypeMessage>(1);
+                        let mut futures_consumer = FuturesUnordered::new();
+                        futures_consumer.push(spawn(self.consommer_messages(middleware.clone(), rx)));
+
+                        // Ajouter nouvelle queue
+                        let named_queue = NamedQueue::new(queue, tx, Some(1), Some(futures_consumer));
+                        middleware.ajouter_named_queue(queue_name, named_queue);
+
+                        // Switch le certificat de signature
+                        match handler_rechiffrage.get_enveloppe_privee() {
+                            Some(e) => middleware.set_enveloppe_signature(e),
+                            None => panic!("maitredescles_partition.entretien Erreur recuperation cle volatile")
+                        }
+                    }
                 }
             }
 
