@@ -142,7 +142,7 @@ pub async fn generer_certificat_volatil<M>(middleware: &M, handler_rechiffrage: 
     -> Result<(), Box<dyn Error>>
     where M: GenerateurMessages + ValidateurX509
 {
-    let idmg = middleware.get_enveloppe_privee().idmg()?;
+    let idmg = middleware.get_enveloppe_signature().idmg()?;
     let csr_volatil = handler_rechiffrage.generer_csr(idmg)?;
     debug!("generer_certificat_volatil Demande de generer un certificat volatil, CSR : {:?}", csr_volatil);
 
@@ -163,8 +163,10 @@ pub async fn generer_certificat_volatil<M>(middleware: &M, handler_rechiffrage: 
     if Some(true) == reponse.ok {
         match reponse.certificat {
             Some(vec_certificat_pem) => {
-                let enveloppe = middleware.charger_enveloppe(&vec_certificat_pem, None, None).await?;
-                handler_rechiffrage.set_certificat(enveloppe)?;
+                let enveloppe_ca = middleware.get_enveloppe_signature().enveloppe_ca.clone();
+                let ca_pem = enveloppe_ca.get_pem_vec().get(0).expect("CA").pem.clone();
+                let enveloppe = middleware.charger_enveloppe(&vec_certificat_pem, None, Some(ca_pem.as_str())).await?;
+                handler_rechiffrage.set_certificat(enveloppe, enveloppe_ca)?;
 
                 // Certificat pret
                 Ok(())

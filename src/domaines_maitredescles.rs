@@ -76,7 +76,7 @@ fn preprarer_handler_rechiffrage() -> HandlerCleRechiffrage {
 
     if certificat.verifier_roles(vec![RolesCertificats::MaitreDesCles]) {
         // On a un certificat MaitreDesCles, utiliser directement
-        HandlerCleRechiffrage::with_certificat(enveloppe_privee.as_ref())
+        HandlerCleRechiffrage::with_certificat(enveloppe_privee)
     } else if certificat.verifier_roles(vec![RolesCertificats::MaitreDesClesConnexion]) {
         HandlerCleRechiffrage::new_volatil_memoire().expect("HandlerCleRechiffrageCle")
     } else {

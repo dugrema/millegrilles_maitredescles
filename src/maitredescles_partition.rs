@@ -218,7 +218,7 @@ impl GestionnaireMaitreDesClesPartition {
                 routing_keys: rk_dechiffrage,
                 ttl: DEFAULT_Q_TTL.into(),
                 durable: false,
-                autodelete: true,
+                autodelete: false,
             }
         ));
 
@@ -383,6 +383,12 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
                             // Ajouter nouvelle queue
                             let named_queue = NamedQueue::new(queue, tx, Some(1), Some(futures_consumer));
                             middleware.ajouter_named_queue(queue_name, named_queue);
+
+                            // Switch le certificat de signature
+                            match handler_rechiffrage.get_enveloppe_privee() {
+                                Some(e) => middleware.set_enveloppe_signature(e),
+                                None => panic!("maitredescles_partition.entretien Erreur recuperation cle volatile")
+                            }
                         }
                     },
                     Err(e) => error!("entretien_rechiffreur Erreur generation certificat volatil : {:?}", e)
@@ -479,7 +485,7 @@ async fn requete_certificat_maitredescles<M>(middleware: &M, m: MessageValideAct
     where M: GenerateurMessages + MongoDao
 {
     debug!("emettre_certificat_maitredescles: {:?}", &m.message);
-    let enveloppe_privee = middleware.get_enveloppe_privee();
+    let enveloppe_privee = middleware.get_enveloppe_signature();
     let chaine_pem = enveloppe_privee.chaine_pem();
 
     let reponse = json!({ "certificat": chaine_pem });
@@ -634,7 +640,7 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
 
     // Valider identite
     {
-        let cle_secrete = extraire_cle_secrete(middleware.get_enveloppe_privee().cle_privee(), cle)?;
+        let cle_secrete = extraire_cle_secrete(middleware.get_enveloppe_signature().cle_privee(), cle)?;
         if commande.verifier_identite(&cle_secrete)? != true {
             Err(format!("maitredescles_partition.commande_sauvegarder_cle Erreur verifier identite commande, signature invalide"))?
         }
@@ -714,7 +720,7 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
         Some(f) => f,
         None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Gestionnaire sans partition/certificat"))?
     };
-    let enveloppe_privee = middleware.get_enveloppe_privee();
+    let enveloppe_privee = middleware.get_enveloppe_signature();
     let fingerprint_ca = enveloppe_privee.enveloppe_ca.fingerprint.clone();
 
     // Determiner si on doit rechiffrer pour d'autres maitre des cles
@@ -786,7 +792,7 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
     let requete: RequeteDechiffrage = m.message.get_msg().map_contenu(None)?;
     debug!("requete_dechiffrage cle parsed : {:?}", requete);
 
-    let enveloppe_privee = middleware.get_enveloppe_privee();
+    let enveloppe_privee = middleware.get_enveloppe_signature();
 
     let certificat_requete = m.message.certificat.as_ref();
     let domaines_permis = if let Some(c) = certificat_requete {
@@ -905,7 +911,7 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
         }
     }
 
-    let enveloppe_privee = middleware.get_enveloppe_privee();
+    let enveloppe_privee = middleware.get_enveloppe_signature();
 
     // Preparer une liste de verification pour chaque cle par hachage_bytes
     let mut map_hachage_bytes = HashMap::new();
@@ -1172,7 +1178,7 @@ fn rechiffrer_pour_maitredescles<M>(middleware: &M, cle: DocumentClePartition)
     -> Result<CommandeCleTransfert, Box<dyn Error>>
     where M: GenerateurMessages + CleChiffrageHandler
 {
-    let enveloppe_privee = middleware.get_enveloppe_privee();
+    let enveloppe_privee = middleware.get_enveloppe_signature();
     let fingerprint_local = enveloppe_privee.fingerprint().as_str();
     let pk_chiffrage = middleware.get_publickeys_chiffrage();
     let cle_locale = cle.cle.to_owned();

@@ -481,7 +481,7 @@ async fn requete_certificat_maitredescles<M>(middleware: &M, m: MessageValideAct
     where M: GenerateurMessages
 {
     debug!("emettre_certificat_maitredescles: {:?}", &m.message);
-    let enveloppe_privee = middleware.get_enveloppe_privee();
+    let enveloppe_privee = middleware.get_enveloppe_signature();
     let chaine_pem = enveloppe_privee.chaine_pem();
 
     let reponse = json!({ "certificat": chaine_pem });
@@ -688,7 +688,7 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
 
     let connexion = gestionnaire.ouvrir_connection(middleware, false);
 
-    let enveloppe_privee = middleware.get_enveloppe_privee();
+    let enveloppe_privee = middleware.get_enveloppe_signature();
     let fingerprint_ca = enveloppe_privee.enveloppe_ca.fingerprint.clone();
 
     // Determiner si on doit rechiffrer pour d'autres maitre des cles
@@ -756,7 +756,7 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
     let requete: RequeteDechiffrage = m.message.get_msg().map_contenu(None)?;
     debug!("requete_dechiffrage cle parsed : {:?}", requete);
 
-    let enveloppe_privee = middleware.get_enveloppe_privee();
+    let enveloppe_privee = middleware.get_enveloppe_signature();
 
     let certificat_requete = m.message.certificat.as_ref();
     let domaines_permis = if let Some(c) = certificat_requete {
@@ -884,7 +884,7 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
 
     // Trouver les cles en reference
     let connexion = gestionnaire.ouvrir_connection(middleware, true);
-    let enveloppe_privee = middleware.get_enveloppe_privee();
+    let enveloppe_privee = middleware.get_enveloppe_signature();
     let cle_privee = enveloppe_privee.cle_privee();
 
     for hachage_bytes in liste_hachage_bytes {
@@ -1153,7 +1153,7 @@ fn rechiffrer_pour_maitredescles<M>(middleware: &M, cle: DocumentClePartition)
     -> Result<CommandeCleTransfert, Box<dyn Error>>
     where M: GenerateurMessages + CleChiffrageHandler
 {
-    let enveloppe_privee = middleware.get_enveloppe_privee();
+    let enveloppe_privee = middleware.get_enveloppe_signature();
     let fingerprint_local = enveloppe_privee.fingerprint().as_str();
     let pk_chiffrage = middleware.get_publickeys_chiffrage();
     let cle_locale = cle.cle.to_owned();
@@ -1276,7 +1276,7 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
         .timeout_blocking(20000)
         .build();
 
-    let enveloppe_privee = middleware.get_enveloppe_privee();
+    let enveloppe_privee = middleware.get_enveloppe_signature();
     let fingerprint = enveloppe_privee.fingerprint().as_str();
     let connexion = gestionnaire.ouvrir_connection(middleware, false);
 
@@ -1620,7 +1620,7 @@ async fn evenement_cle_manquante<M>(middleware: &M, gestionnaire: &GestionnaireM
     };
 
     let partition = enveloppe.fingerprint.as_str();
-    let enveloppe_privee = middleware.get_enveloppe_privee();
+    let enveloppe_privee = middleware.get_enveloppe_signature();
     let partition_locale = enveloppe_privee.fingerprint().as_str();
 
     if partition == partition_locale {
