@@ -23,7 +23,7 @@ use millegrilles_common_rust::futures::stream::FuturesUnordered;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
 use millegrilles_common_rust::hachages::hacher_bytes;
 use millegrilles_common_rust::messages_generiques::MessageCedule;
-use millegrilles_common_rust::middleware::{Middleware, sauvegarder_transaction, sauvegarder_transaction_recue};
+use millegrilles_common_rust::middleware::{Middleware, sauvegarder_transaction};
 use millegrilles_common_rust::middleware_db::MiddlewareDb;
 use millegrilles_common_rust::mongo_dao::MongoDao;
 use millegrilles_common_rust::multihash::Code;

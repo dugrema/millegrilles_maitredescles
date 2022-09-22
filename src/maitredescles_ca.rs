@@ -14,7 +14,7 @@ use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::messages_generiques::MessageCedule;
-use millegrilles_common_rust::middleware::{Middleware, sauvegarder_transaction_recue};
+use millegrilles_common_rust::middleware::{Middleware, sauvegarder_traiter_transaction};
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};
 use millegrilles_common_rust::mongodb::options::{CountOptions, FindOptions, Hint, UpdateOptions};
 use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange, QueueType};
@@ -88,7 +88,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesCa {
     }
 
     async fn consommer_transaction<M>(&self, middleware: &M, message: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>> where M: Middleware + 'static {
-        consommer_transaction(middleware, message).await
+        consommer_transaction(middleware, message, self).await
     }
 
     async fn consommer_evenement<M>(self: &'static Self, middleware: &M, message: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>> where M: Middleware + 'static {
@@ -251,7 +251,7 @@ where
 }
 
 
-async fn consommer_transaction<M>(middleware: &M, m: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+async fn consommer_transaction<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesCa) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
 where
     M: ValidateurX509 + GenerateurMessages + MongoDao,
 {
@@ -265,8 +265,7 @@ where
 
     match m.action.as_str() {
         TRANSACTION_CLE  => {
-            sauvegarder_transaction_recue(middleware, m, NOM_COLLECTION_TRANSACTIONS).await?;
-            Ok(None)
+            Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
         },
         _ => Err(format!("maitredescles_ca.consommer_transaction: Mauvais type d'action pour une transaction : {}", m.action))?,
     }

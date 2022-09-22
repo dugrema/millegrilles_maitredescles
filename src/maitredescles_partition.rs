@@ -24,7 +24,7 @@ use millegrilles_common_rust::futures_util::stream::FuturesUnordered;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
 use millegrilles_common_rust::hachages::hacher_bytes;
 use millegrilles_common_rust::messages_generiques::MessageCedule;
-use millegrilles_common_rust::middleware::{Middleware, sauvegarder_transaction, sauvegarder_transaction_recue};
+use millegrilles_common_rust::middleware::{Middleware, sauvegarder_transaction};
 use millegrilles_common_rust::mongo_dao::{ChampIndex, convertir_bson_deserializable, convertir_to_bson, IndexOptions, MongoDao};
 use millegrilles_common_rust::mongodb::Cursor;
 use millegrilles_common_rust::mongodb::options::{FindOptions, UpdateOptions};
