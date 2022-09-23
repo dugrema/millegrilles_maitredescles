@@ -1,0 +1,18 @@
+[Unit]
+Description=Service Maitre des cles SQLite pour MilleGrilles
+
+[Service]
+Type=simple
+Nice=4
+PIDFile=/var/run/maitredescles_sqlite1.pid
+ExecStart=/var/opt/millegrilles/bin/maitredescles_sqlite1.sh
+User=mginstance
+Group=millegrilles
+Restart=always
+RestartSec=10s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=maitredescles_sqlite1
+
+[Install]
+WantedBy=multi-user.target
