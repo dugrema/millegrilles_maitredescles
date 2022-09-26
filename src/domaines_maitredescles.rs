@@ -257,7 +257,7 @@ async fn entretien<M>(middleware: Arc<M>)
         if prochain_chargement_certificats_autres < maintenant {
             let enveloppe_privee = middleware.get_enveloppe_privee().clone();
             let enveloppe_certificat = enveloppe_privee.enveloppe.clone();
-            match middleware.charger_certificats_chiffrage(middleware.as_ref(), enveloppe_certificat.as_ref(), enveloppe_privee).await {
+            match middleware.charger_certificats_chiffrage(middleware.as_ref()).await {
                 Ok(()) => {
                     prochain_chargement_certificats_autres = maintenant + intervalle_entretien;
                 },
