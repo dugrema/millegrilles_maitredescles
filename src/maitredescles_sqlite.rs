@@ -274,13 +274,13 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesSQLite {
                 // Commande sauvegarder cles
                 rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}.{}", DOMAINE_NOM, nom_partition, REQUETE_VERIFIER_PREUVE), exchange: sec.clone() });
                 for commande in &commandes {
-                    rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, commande), exchange: sec.clone() });
+                    rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.*.{}", DOMAINE_NOM, commande), exchange: sec.clone() });
                 }
             }
 
             // Commande sauvegarder cle 4.secure pour redistribution des cles
             rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE), exchange: Securite::L4Secure });
-            rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, COMMANDE_SAUVEGARDER_CLE), exchange: Securite::L4Secure });
+            rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.*.{}", DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE), exchange: Securite::L4Secure });
 
             // Requetes de dechiffrage/preuve re-emise sur le bus 4.secure lorsque la cle est inconnue
             rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE), exchange: Securite::L4Secure });
@@ -620,13 +620,23 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
     let commande: CommandeSauvegarderCle = m.message.get_msg().map_contenu(None)?;
     debug!("Commande sauvegarder cle parsed : {:?}", commande);
 
+    let partition_message = m.get_partition();
+
     let cle = match commande.cles.get(fingerprint.as_str()) {
         Some(cle) => cle.as_str(),
         None => {
-            let message = format!("maitredescles_ca.commande_sauvegarder_cle: Erreur validation - commande sauvegarder cles ne contient pas la cle locale ({}) : {:?}", fingerprint, commande);
-            warn!("{}", message);
-            let reponse_err = json!({"ok": false, "err": message});
-            return Ok(Some(middleware.formatter_reponse(&reponse_err, None)?));
+            // La cle locale n'est pas presente. Verifier si le message de sauvegarde etait
+            // adresse a cette partition.
+            let reponse = if Some(fingerprint.as_str()) == partition_message {
+                let message = format!("maitredescles_sqlite1.commande_sauvegarder_cle: Erreur validation - commande sauvegarder cles ne contient pas la cle CA : {:?}", commande);
+                warn!("{}", message);
+                let reponse_err = json!({"ok": false, "err": message});
+                Ok(Some(middleware.formatter_reponse(&reponse_err, None)?))
+            } else {
+                // Rien a faire, message ne concerne pas cette partition
+                Ok(None)
+            };
+            return reponse;
         }
     };
 
@@ -669,7 +679,13 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
         }
     }
 
-    Ok(middleware.reponse_ok()?)
+    if Some(fingerprint.as_str()) == partition_message {
+        // Le message etait adresse a cette partition
+        Ok(middleware.reponse_ok()?)
+    } else {
+        // Cle sauvegardee mais aucune reponse requise
+        Ok(None)
+    }
 }
 
 
