@@ -358,7 +358,8 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesSQLite {
         connection.execute(
                 "
                 CREATE TABLE IF NOT EXISTS cles (
-                    hachage_bytes TEXT PRIMARY KEY NOT NULL,
+                    cle_ref TEXT PRIMARY KEY NOT NULL,
+                    hachage_bytes TEXT,
                     cle TEXT NOT NULL,
                     iv TEXT,
                     tag TEXT,
@@ -369,12 +370,14 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesSQLite {
                     signature_identite TEXT NOT NULL
                     );
 
+                CREATE INDEX IF NOT EXISTS index_hachage_domaines ON cles (hachage_bytes, domaine);
+
                 CREATE TABLE IF NOT EXISTS identificateurs_document (
-                    hachage_bytes TEXT NOT NULL,
+                    cle_ref TEXT NOT NULL,
                     cle TEXT NOT NULL,
                     valeur TEXT NOT NULL,
-                    CONSTRAINT identificateurs_document_pk PRIMARY KEY (hachage_bytes, cle),
-                    CONSTRAINT cles_fk FOREIGN KEY (hachage_bytes) REFERENCES cles (hachage_bytes) ON DELETE CASCADE
+                    CONSTRAINT identificateurs_document_pk PRIMARY KEY (cle_ref, cle),
+                    CONSTRAINT cles_fk FOREIGN KEY (cle_ref) REFERENCES cles (cle_ref) ON DELETE CASCADE
                 );
                 ",
             ).expect("execute creer table");
@@ -640,12 +643,21 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
         }
     };
 
+    // Valider identite, calculer cle_ref
+    let cle_ref = {
+        let cle_secrete = extraire_cle_secrete(middleware.get_enveloppe_signature().cle_privee(), cle)?;
+        if commande.verifier_identite(&cle_secrete)? != true {
+            Err(format!("maitredescles_partition.commande_sauvegarder_cle Erreur verifier identite commande, signature invalide"))?
+        }
+        calculer_cle_ref(&commande, &cle_secrete)?
+    };
+
     {
         let connexion_guard = gestionnaire.ouvrir_connection_sauvegardercle(middleware)
             .lock().expect("requete_dechiffrage connection lock");
         let connexion = connexion_guard.as_ref().expect("requete_dechiffrage connection Some");
         connexion.execute("BEGIN;")?;
-        match sauvegarder_cle(connexion, fingerprint.as_str(), cle, &commande) {
+        match sauvegarder_cle(middleware, connexion, fingerprint.as_str(), cle, &commande) {
             Ok(()) => connexion.execute("COMMIT;")?,
             Err(e) => {
                 connexion.execute("ROLLBACK;")?;
@@ -731,7 +743,7 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
         debug!("commande_rechiffrer_batch Cle {:?}", info_cle);
 
         let commande: CommandeSauvegarderCle = info_cle.clone().into_commande(fingerprint.as_str());
-        sauvegarder_cle(&connexion, fingerprint.as_str(), &info_cle.cle, &commande)?;
+        sauvegarder_cle(middleware, &connexion, fingerprint.as_str(), &info_cle.cle, &commande)?;
 
         // Rechiffrer pour tous les autres maitre des cles
         if cles_chiffrage.len() > 0 {
@@ -1354,7 +1366,7 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
                         }
                     };
 
-                    sauvegarder_cle(&connexion, fingerprint, cle, &commande)?;
+                    sauvegarder_cle(middleware, &connexion, fingerprint, cle, &commande)?;
                 }
                 connexion.execute("COMMIT;")?;
             }
@@ -1684,17 +1696,27 @@ async fn evenement_cle_manquante<M>(middleware: &M, gestionnaire: &GestionnaireM
     Ok(None)
 }
 
-fn sauvegarder_cle<S,T>(connection: &Connection, fingerprint_: S, cle_: T, commande: &CommandeSauvegarderCle) -> Result<(), Box<dyn Error>>
-    where S: AsRef<str>, T: AsRef<str>
+fn sauvegarder_cle<M,S,T>(middleware: &M, connection: &Connection, fingerprint_: S, cle_: T, commande: &CommandeSauvegarderCle)
+    -> Result<(), Box<dyn Error>>
+    where M: FormatteurMessage, S: AsRef<str>, T: AsRef<str>
 {
     let cle = cle_.as_ref();
     let fingerprint = fingerprint_.as_ref();
     let hachage_bytes = commande.hachage_bytes.as_str();
 
+    // Valider identite, calculer cle_ref
+    let cle_ref = {
+        let cle_secrete = extraire_cle_secrete(middleware.get_enveloppe_signature().cle_privee(), cle)?;
+        if commande.verifier_identite(&cle_secrete)? != true {
+            Err(format!("maitredescles_partition.commande_sauvegarder_cle Erreur verifier identite commande, signature invalide"))?
+        }
+        calculer_cle_ref(&commande, &cle_secrete)?
+    };
+
     {
         let mut prepared_statement_verifier = connection
-            .prepare("SELECT hachage_bytes FROM cles WHERE hachage_bytes = ?")?;
-        prepared_statement_verifier.bind(1, hachage_bytes)?;
+            .prepare("SELECT cle_ref FROM cles WHERE cle_ref = ?")?;
+        prepared_statement_verifier.bind(1, cle_ref.as_str())?;
         if State::Row == prepared_statement_verifier.next()? {
             // Skip, la cle existe deja
             debug!("sauvegarder_cle Skip cle existante {}", hachage_bytes);
@@ -1706,7 +1728,7 @@ fn sauvegarder_cle<S,T>(connection: &Connection, fingerprint_: S, cle_: T, comma
     let mut prepared_statement_cle = connection
         .prepare("
             INSERT INTO cles
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ")?;
     let mut prepared_statement_identificateurs = connection
         .prepare("
@@ -1729,15 +1751,16 @@ fn sauvegarder_cle<S,T>(connection: &Connection, fingerprint_: S, cle_: T, comma
         None => None,
     };
 
-    prepared_statement_cle.bind(1, commande.hachage_bytes.as_str())?;
-    prepared_statement_cle.bind(2, cle)?;
-    prepared_statement_cle.bind(3, iv_str)?;
-    prepared_statement_cle.bind(4, tag_str)?;
-    prepared_statement_cle.bind(5, header_str)?;
-    prepared_statement_cle.bind(6, format_str.as_str())?;
-    prepared_statement_cle.bind(7, commande.domaine.as_str())?;
-    prepared_statement_cle.bind(8, 0)?;
-    prepared_statement_cle.bind(9, commande.signature_identite.as_str())?;
+    prepared_statement_cle.bind(1, cle_ref.as_str())?;
+    prepared_statement_cle.bind(2, commande.hachage_bytes.as_str())?;
+    prepared_statement_cle.bind(3, cle)?;
+    prepared_statement_cle.bind(4, iv_str)?;
+    prepared_statement_cle.bind(5, tag_str)?;
+    prepared_statement_cle.bind(6, header_str)?;
+    prepared_statement_cle.bind(7, format_str.as_str())?;
+    prepared_statement_cle.bind(8, commande.domaine.as_str())?;
+    prepared_statement_cle.bind(9, 0)?;
+    prepared_statement_cle.bind(10, commande.signature_identite.as_str())?;
 
     debug!("Conserver cle dans sqlite : {}", commande.hachage_bytes);
     let resultat = prepared_statement_cle.next()?;
@@ -1748,7 +1771,7 @@ fn sauvegarder_cle<S,T>(connection: &Connection, fingerprint_: S, cle_: T, comma
     }
 
     for (cle, valeur) in &commande.identificateurs_document {
-        prepared_statement_identificateurs.bind(1, commande.hachage_bytes.as_str())?;
+        prepared_statement_identificateurs.bind(1, cle_ref.as_str())?;
         prepared_statement_identificateurs.bind(2, cle.as_str())?;
         prepared_statement_identificateurs.bind(3, valeur.as_str())?;
         let resultat = prepared_statement_identificateurs.next()?;
@@ -1765,7 +1788,7 @@ fn charger_cle<S>(connexion: &Connection, hachage_bytes_: S)
     let hachage_bytes = hachage_bytes_.as_ref();
 
     let mut statement = connexion.prepare(
-        "SELECT hachage_bytes, cle, iv, tag, header, format, domaine, signature_identite \
+        "SELECT cle_ref, hachage_bytes, cle, iv, tag, header, format, domaine, signature_identite \
         FROM cles WHERE hachage_bytes = ?"
     )?;
     statement.bind(1, hachage_bytes)?;
@@ -1774,9 +1797,11 @@ fn charger_cle<S>(connexion: &Connection, hachage_bytes_: S)
         State::Done => return Ok(None)
     }
 
+    let cle_ref: String = statement.read(1)?;
+
     let mut statement_id = connexion.prepare(
-        "SELECT cle, valeur FROM identificateurs_document WHERE hachage_bytes = ?")?;
-    statement_id.bind(1, hachage_bytes)?;
+        "SELECT cle, valeur FROM identificateurs_document WHERE cle_ref = ?")?;
+    statement_id.bind(1, cle_ref.as_str())?;
     let mut identificateurs_document = HashMap::new();
     while State::Done != statement_id.next()? {
         let cle: String = statement_id.read(0)?;
@@ -1809,15 +1834,16 @@ fn charger_cle<S>(connexion: &Connection, hachage_bytes_: S)
     // };
 
     let document_cle = DocumentClePartition {
+        cle_ref: statement.read(0)?,
         hachage_bytes: hachage_bytes.to_owned(),
-        domaine: statement.read(6)?,
+        domaine: statement.read(7)?,
         identificateurs_document,
-        signature_identite: statement.read(7)?,
-        cle: statement.read(1)?,
+        signature_identite: statement.read(8)?,
+        cle: statement.read(2)?,
         format: format_chiffrage,
-        iv: statement.read(2)?,
-        tag: statement.read(3)?,
-        header: statement.read(4)?
+        iv: statement.read(3)?,
+        tag: statement.read(4)?,
+        header: statement.read(5)?,
     };
 
     Ok(Some(document_cle))

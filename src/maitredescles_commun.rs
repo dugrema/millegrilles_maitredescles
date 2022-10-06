@@ -368,6 +368,7 @@ impl TransactionCle {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DocumentClePartition {
     // Identite
+    pub cle_ref: String,
     pub hachage_bytes: String,
     pub domaine: String,
     pub identificateurs_document: HashMap<String, String>,
@@ -387,6 +388,7 @@ impl From<CommandeSauvegarderCle> for DocumentClePartition {
     fn from(value: CommandeSauvegarderCle) -> Self {
 
         Self {
+            cle_ref: "".to_string(),
             hachage_bytes: value.hachage_bytes,
             domaine: value.domaine,
             identificateurs_document: value.identificateurs_document,
