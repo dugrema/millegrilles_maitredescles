@@ -336,7 +336,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
     async fn preparer_database<M>(&self, middleware: &M) -> Result<(), String> where M: Middleware + 'static {
         if let Some(nom_collection_cles) = self.get_collection_cles() {
             debug!("preparer_database Ajouter index pour collection {}", nom_collection_cles);
-            preparer_index_mongodb_custom(middleware, nom_collection_cles.as_str()).await?;
+            preparer_index_mongodb_custom(middleware, nom_collection_cles.as_str(), false).await?;
             preparer_index_mongodb_partition(middleware, self).await?;
         } else {
             debug!("preparer_database Aucun fingerprint / partition");
@@ -661,13 +661,14 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
         }
     };
 
-    // Valider identite
-    {
+    // Valider identite, calculer cle_ref
+    let cle_ref = {
         let cle_secrete = extraire_cle_secrete(middleware.get_enveloppe_signature().cle_privee(), cle)?;
         if commande.verifier_identite(&cle_secrete)? != true {
             Err(format!("maitredescles_partition.commande_sauvegarder_cle Erreur verifier identite commande, signature invalide"))?
         }
-    }
+        calculer_cle_ref(&commande, &cle_secrete)?
+    };
 
     // Sauvegarde cle dans mongodb
 
@@ -677,6 +678,7 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
 
     doc_bson.insert("dirty", true);
     doc_bson.insert("confirmation_ca", false);
+    doc_bson.insert(CHAMP_CLE_REF, &cle_ref);
     doc_bson.insert("cle", cle);
     doc_bson.insert(CHAMP_CREATION, Utc::now());
     doc_bson.insert(CHAMP_MODIFICATION, Utc::now());
@@ -687,7 +689,7 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
 
     debug!("commande_sauvegarder_cle: Ops bson : {:?}", ops);
 
-    let filtre = doc! { "hachage_bytes": commande.hachage_bytes.as_str() };
+    let filtre = doc! { CHAMP_CLE_REF: &cle_ref };
     let opts = UpdateOptions::builder().upsert(true).build();
 
     let collection = middleware.get_collection(nom_collection_cles.as_str())?;

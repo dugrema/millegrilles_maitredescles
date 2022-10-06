@@ -17,12 +17,17 @@ use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::tokio::{sync::mpsc::Sender, time::{Duration, sleep}};
 use millegrilles_common_rust::certificats::ordered_map;
 use millegrilles_common_rust::common_messages::ReponseSignatureCertificat;
+use millegrilles_common_rust::{multibase, multibase::Base};
+use millegrilles_common_rust::hachages::hacher_bytes;
+use millegrilles_common_rust::multibase::Base::Base58Btc;
+use millegrilles_common_rust::multihash::Code;
 use crate::domaines_maitredescles::TypeGestionnaire;
 use crate::maitredescles_volatil::HandlerCleRechiffrage;
 
 pub const DOMAINE_NOM: &str = "MaitreDesCles";
 
 pub const INDEX_CLES_HACHAGE_BYTES: &str = "index_hachage_bytes";
+pub const INDEX_CLE_REF: &str = "index_cle_ref";
 pub const INDEX_CLES_HACHAGE_BYTES_DOMAINES: &str = "index_hachage_bytes_domaines";
 pub const INDEX_NON_DECHIFFRABLES: &str = "index_non_dechiffrables";
 
@@ -46,6 +51,7 @@ pub const CHAMP_LISTE_HACHAGE_BYTES: &str = "liste_hachage_bytes";
 // pub const CHAMP_LISTE_FINGERPRINTS: &str = "liste_fingerprints";
 pub const CHAMP_NON_DECHIFFRABLE: &str = "non_dechiffrable";
 // pub const CHAMP_FINGERPRINT_PK: &str = "fingerprint_pk";
+pub const CHAMP_CLE_REF: &str = "cle_ref";
 
 // pub const CHAMP_ACCES: &str = "acces";
 pub const CHAMP_ACCES_REFUSE: &str = "0.refuse";
@@ -55,27 +61,43 @@ pub const CHAMP_ACCES_PERMIS: &str = "1.permis";
 pub const CHAMP_ACCES_CLE_INCONNUE: &str = "4.inconnue";
 
 /// Creer index MongoDB
-pub async fn preparer_index_mongodb_custom<M>(middleware: &M, nom_collection_cles: &str) -> Result<(), String>
+pub async fn preparer_index_mongodb_custom<M>(middleware: &M, nom_collection_cles: &str, ca: bool) -> Result<(), String>
     where M: MongoDao
 {
-    // Index hachage_bytes
-    let options_unique_cles_hachage_bytes = IndexOptions {
-        nom_index: Some(String::from(INDEX_CLES_HACHAGE_BYTES)),
-        unique: true
-    };
-    let champs_index_cles_hachage_bytes = vec!(
-        ChampIndex {nom_champ: String::from(CHAMP_HACHAGE_BYTES), direction: 1},
-    );
-    middleware.create_index(
-        nom_collection_cles,
-        champs_index_cles_hachage_bytes,
-        Some(options_unique_cles_hachage_bytes)
-    ).await?;
+    // // Index hachage_bytes
+    // let options_unique_cles_hachage_bytes = IndexOptions {
+    //     nom_index: Some(String::from(INDEX_CLES_HACHAGE_BYTES)),
+    //     unique: true
+    // };
+    // let champs_index_cles_hachage_bytes = vec!(
+    //     ChampIndex {nom_champ: String::from(CHAMP_HACHAGE_BYTES), direction: 1},
+    // );
+    // middleware.create_index(
+    //     nom_collection_cles,
+    //     champs_index_cles_hachage_bytes,
+    //     Some(options_unique_cles_hachage_bytes)
+    // ).await?;
 
-    // Index hachage_bytes
+    // Index cle_ref (unique)
+    if ca == false {
+        let options_unique_cle_ref = IndexOptions {
+            nom_index: Some(String::from(INDEX_CLE_REF)),
+            unique: true
+        };
+        let champs_index_unique_cle_ref = vec!(
+            ChampIndex { nom_champ: String::from(CHAMP_CLE_REF), direction: 1 },
+        );
+        middleware.create_index(
+            nom_collection_cles,
+            champs_index_unique_cle_ref,
+            Some(options_unique_cle_ref)
+        ).await?;
+    }
+
+    // Index hachage_bytes/domaine
     let options_unique_cles_hachage_bytes_domaines = IndexOptions {
         nom_index: Some(String::from(INDEX_CLES_HACHAGE_BYTES_DOMAINES)),
-        unique: true
+        unique: false
     };
     let champs_index_cles_hachage_bytes_domaines = vec!(
         ChampIndex {nom_champ: String::from(CHAMP_HACHAGE_BYTES), direction: 1},
@@ -443,4 +465,47 @@ pub struct GestionnaireRessources {
     pub tx_messages: Option<Sender<TypeMessage>>,
     pub tx_triggers: Option<Sender<TypeMessage>>,
     pub routing: Mutex<HashMap<String, Sender<TypeMessage>>>,
+}
+
+/// Calcule la cle_ref a partir du hachage et cle_secret d'une cle recue (commande/transaction)
+pub fn calculer_cle_ref(commande: &CommandeSauvegarderCle, cle_secrete: &CleSecrete) -> Result<String, String>
+{
+    let hachage_bytes_str = commande.hachage_bytes.as_str();
+    let mut hachage_src_bytes: Vec<u8> = match multibase::decode(hachage_bytes_str) {
+        Ok(b) => b.1,
+        Err(e) => Err(format!("calculer_cle_ref Erreur decodage multibase hachage_bytes : {:?}", e))?
+    };
+
+    // Ajouter iv, tag, header si presents
+    if let Some(iv) = commande.iv.as_ref() {
+        let mut iv_bytes: Vec<u8> = match multibase::decode(iv) {
+            Ok(b) => b.1,
+            Err(e) => Err(format!("calculer_cle_ref Erreur decodage multibase iv : {:?}", e))?
+        };
+        hachage_src_bytes.extend(&iv_bytes[..]);
+    }
+
+    if let Some(tag) = commande.tag.as_ref() {
+        let mut tag_bytes: Vec<u8> = match multibase::decode(tag) {
+            Ok(b) => b.1,
+            Err(e) => Err(format!("calculer_cle_ref Erreur decodage multibase tag : {:?}", e))?
+        };
+        hachage_src_bytes.extend(&tag_bytes[..]);
+    }
+
+    if let Some(header) = commande.header.as_ref() {
+        let mut header_bytes: Vec<u8> = match multibase::decode(header) {
+            Ok(b) => b.1,
+            Err(e) => Err(format!("calculer_cle_ref Erreur decodage multibase header : {:?}", e))?
+        };
+        hachage_src_bytes.extend(&header_bytes[..]);
+    }
+
+    // Ajouter cle secrete
+    hachage_src_bytes.extend(cle_secrete.0);
+
+    // Hacher
+    let cle_ref = hacher_bytes(&hachage_src_bytes[..], Some(Code::Blake2s256), Some(Base58Btc));
+
+    Ok(cle_ref)
 }

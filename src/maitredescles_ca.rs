@@ -76,7 +76,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesCa {
     }
 
     async fn preparer_database<M>(&self, middleware: &M) -> Result<(), String> where M: Middleware + 'static {
-        preparer_index_mongodb_custom(middleware, NOM_COLLECTION_CLES).await
+        preparer_index_mongodb_custom(middleware, NOM_COLLECTION_CLES, true).await
     }
 
     async fn consommer_requete<M>(&self, middleware: &M, message: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>> where M: Middleware + 'static {
