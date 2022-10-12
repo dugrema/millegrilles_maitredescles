@@ -295,7 +295,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesSQLite {
             ];
             for commande in commandes_protegees {
                 rk_volatils.push(ConfigRoutingExchange {
-                    routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, commande),
+                    routing_key: format!("commande.{}.{}", DOMAINE_NOM, commande),
                     exchange: Securite::L3Protege
                 });
             }
@@ -718,18 +718,19 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
 
     let enveloppe_privee = middleware.get_enveloppe_signature();
     let fingerprint_ca = enveloppe_privee.enveloppe_ca.fingerprint.clone();
+    let fingerprint = enveloppe_privee.enveloppe.fingerprint.as_str();
 
-    // Determiner si on doit rechiffrer pour d'autres maitre des cles
-    let cles_chiffrage = {
-        let mut cles_chiffrage = Vec::new();
-        for fingerprint_cert_cle in middleware.get_publickeys_chiffrage() {
-            let fingerprint_cle = fingerprint_cert_cle.fingerprint;
-            if fingerprint_cle != fingerprint && fingerprint_cle != fingerprint_ca {
-                cles_chiffrage.push(fingerprint_cert_cle.public_key);
-            }
-        }
-        cles_chiffrage
-    };
+    // // Determiner si on doit rechiffrer pour d'autres maitre des cles
+    // let cles_chiffrage = {
+    //     let mut cles_chiffrage = Vec::new();
+    //     for fingerprint_cert_cle in middleware.get_publickeys_chiffrage() {
+    //         let fingerprint_cle = fingerprint_cert_cle.fingerprint;
+    //         if fingerprint_cle != fingerprint && fingerprint_cle != fingerprint_ca {
+    //             cles_chiffrage.push(fingerprint_cert_cle.public_key);
+    //         }
+    //     }
+    //     cles_chiffrage
+    // };
 
     let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
         .exchanges(vec![Securite::L4Secure])
@@ -738,13 +739,33 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
     // Traiter chaque cle individuellement
     // let mut redis_connexion = redis_dao.get_async_connection().await?;
     let liste_hachage_bytes: Vec<String> = commande.cles.iter().map(|c| c.hachage_bytes.to_owned()).collect();
+    let mut liste_cle_ref: Vec<String> = Vec::new();
     connexion.execute("BEGIN TRANSACTION;")?;
     for info_cle in commande.cles {
         debug!("commande_rechiffrer_batch Cle {:?}", info_cle);
-        todo!("Fix me");
         // let commande: CommandeSauvegarderCle = info_cle.clone().into_commande(fingerprint.as_str());
-        // sauvegarder_cle(middleware, &connexion, fingerprint.as_str(), &info_cle.cle, &commande)?;
-        //
+
+        let cle_chiffree_str = match info_cle.cles.get(fingerprint) {
+            Some(cle) => cle.as_str(),
+            None => {
+                debug!("maitredescles_sqlite.commande_rechiffrer_batch Commande rechiffrage sans fingerprint local pour cle {}", info_cle.hachage_bytes);
+                continue  // Skip
+            }
+        };
+
+        let cle_ref = {
+            let cle_secrete = extraire_cle_secrete(middleware.get_enveloppe_signature().cle_privee(), cle_chiffree_str)?;
+            if info_cle.verifier_identite(&cle_secrete)? != true {
+                warn!("maitredescles_sqlite.commande_sauvegarder_cle Erreur verifier identite commande, signature invalide pour cle {}", info_cle.hachage_bytes);
+                continue  // Skip
+            }
+            calculer_cle_ref(&info_cle, &cle_secrete)?
+        };
+
+        sauvegarder_cle(middleware, &connexion, fingerprint, cle_chiffree_str, &info_cle)?;
+
+        liste_cle_ref.push(cle_ref);
+
         // // Rechiffrer pour tous les autres maitre des cles
         // if cles_chiffrage.len() > 0 {
         //     let commande_rechiffree = rechiffrer_pour_maitredescles(middleware, info_cle)?;
@@ -759,6 +780,7 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
     let event_contenu = json!({
         "correlation": &m.correlation_id,
         "liste_hachage_bytes": liste_hachage_bytes,
+        CHAMP_LISTE_CLE_REF: liste_cle_ref,
     });
     middleware.emettre_evenement(routage_event, &event_contenu).await?;
 
