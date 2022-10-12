@@ -1834,7 +1834,7 @@ fn charger_cle<S>(connexion: &Connection, hachage_bytes_: S)
     let mut cles: HashMap<String, String> = HashMap::new();
     cles.insert(hachage_bytes.to_owned(), statement.read(1)?);
 
-    let format_str: String = statement.read(5)?;
+    let format_str: String = statement.read(6)?;
     let format_chiffrage = match format_str.as_str() {
         "mgs2" => FormatChiffrage::mgs2,
         "mgs3" => FormatChiffrage::mgs3,
