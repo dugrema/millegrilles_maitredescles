@@ -741,15 +741,15 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
     connexion.execute("BEGIN TRANSACTION;")?;
     for info_cle in commande.cles {
         debug!("commande_rechiffrer_batch Cle {:?}", info_cle);
-
-        let commande: CommandeSauvegarderCle = info_cle.clone().into_commande(fingerprint.as_str());
-        sauvegarder_cle(middleware, &connexion, fingerprint.as_str(), &info_cle.cle, &commande)?;
-
-        // Rechiffrer pour tous les autres maitre des cles
-        if cles_chiffrage.len() > 0 {
-            let commande_rechiffree = rechiffrer_pour_maitredescles(middleware, info_cle)?;
-            middleware.transmettre_commande(routage_commande.clone(), &commande_rechiffree, false).await?;
-        }
+        todo!("Fix me");
+        // let commande: CommandeSauvegarderCle = info_cle.clone().into_commande(fingerprint.as_str());
+        // sauvegarder_cle(middleware, &connexion, fingerprint.as_str(), &info_cle.cle, &commande)?;
+        //
+        // // Rechiffrer pour tous les autres maitre des cles
+        // if cles_chiffrage.len() > 0 {
+        //     let commande_rechiffree = rechiffrer_pour_maitredescles(middleware, info_cle)?;
+        //     middleware.transmettre_commande(routage_commande.clone(), &commande_rechiffree, false).await?;
+        // }
     }
     connexion.execute("COMMIT;")?;
 

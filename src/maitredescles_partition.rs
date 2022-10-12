@@ -208,7 +208,7 @@ impl GestionnaireMaitreDesClesPartition {
             COMMANDE_RECHIFFRER_BATCH,
         ];
         for commande in commandes_protegees {
-            rk_volatils.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, commande), exchange: L3Protege });
+            rk_volatils.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, commande), exchange: L3Protege });
         }
 
         // Queue de messages dechiffrage - taches partagees entre toutes les partitions
@@ -753,43 +753,73 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
     };
     let enveloppe_privee = middleware.get_enveloppe_signature();
     let fingerprint_ca = enveloppe_privee.enveloppe_ca.fingerprint.clone();
+    let fingerprint = enveloppe_privee.enveloppe.fingerprint.as_str();
 
     // Determiner si on doit rechiffrer pour d'autres maitre des cles
-    let cles_chiffrage = {
-        let mut cles_chiffrage = Vec::new();
-        for fingerprint_cert_cle in middleware.get_publickeys_chiffrage() {
-            let fingerprint_cle = fingerprint_cert_cle.fingerprint;
-            if fingerprint_cle != fingerprint && fingerprint_cle != fingerprint_ca {
-                cles_chiffrage.push(fingerprint_cert_cle.public_key);
-            }
-        }
-        cles_chiffrage
-    };
+    // let cles_chiffrage = {
+    //     let mut cles_chiffrage = Vec::new();
+    //     for fingerprint_cert_cle in middleware.get_publickeys_chiffrage() {
+    //         let fingerprint_cle = fingerprint_cert_cle.fingerprint;
+    //         if fingerprint_cle != fingerprint && fingerprint_cle != fingerprint_ca {
+    //             cles_chiffrage.push(fingerprint_cert_cle.public_key);
+    //         }
+    //     }
+    //     cles_chiffrage
+    // };
 
-    let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_TRANSFERT_CLE)
-        .exchanges(vec![Securite::L4Secure])
-        .build();
+    // let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_TRANSFERT_CLE)
+    //     .exchanges(vec![Securite::L4Secure])
+    //     .build();
 
     let collection = middleware.get_collection(nom_collection_cles.as_str())?;
 
     // Traiter chaque cle individuellement
     let liste_hachage_bytes: Vec<String> = commande.cles.iter().map(|c| c.hachage_bytes.to_owned()).collect();
+    let mut liste_cle_ref: Vec<String> = Vec::new();
     for cle in commande.cles {
+
+        let cle_chiffree_str = match cle.cles.get(fingerprint) {
+            Some(cle) => cle.as_str(),
+            None => {
+                debug!("maitredescles_partition.commande_rechiffrer_batch Commande rechiffrage sans fingerprint local pour cle {}", cle.hachage_bytes);
+                continue  // Skip
+            }
+        };
+
+        let cle_ref = {
+            let cle_secrete = extraire_cle_secrete(middleware.get_enveloppe_signature().cle_privee(), cle_chiffree_str)?;
+            if cle.verifier_identite(&cle_secrete)? != true {
+                warn!("maitredescles_partition.commande_sauvegarder_cle Erreur verifier identite commande, signature invalide pour cle {}", cle.hachage_bytes);
+                continue  // Skip
+            }
+            calculer_cle_ref(&cle, &cle_secrete)?
+        };
+
         let mut doc_cle = convertir_to_bson(cle.clone())?;
         doc_cle.insert("dirty", true);
         doc_cle.insert("confirmation_ca", false);
         doc_cle.insert(CHAMP_CREATION, Utc::now());
         doc_cle.insert(CHAMP_MODIFICATION, Utc::now());
-        let filtre = doc! { "hachage_bytes": cle.hachage_bytes.as_str() };
+        doc_cle.insert(CHAMP_CLE_REF, cle_ref.as_str());
+
+        // Retirer le champ cles
+        doc_cle.remove(CHAMP_LISTE_CLES);
+
+        // Inserer la cle pour cette partition
+        doc_cle.insert(TRANSACTION_CLE, cle_chiffree_str);
+
+        let filtre = doc! { CHAMP_CLE_REF: cle_ref.as_str() };
         let ops = doc! { "$setOnInsert": doc_cle };
         let opts = UpdateOptions::builder().upsert(true).build();
         let resultat = collection.update_one(filtre, ops, opts).await?;
 
-        // Rechiffrer pour tous les autres maitre des cles
-        if cles_chiffrage.len() > 0 {
-            let commande_rechiffree = rechiffrer_pour_maitredescles(middleware, cle)?;
-            middleware.transmettre_commande(routage_commande.clone(), &commande_rechiffree, false).await?;
-        }
+        liste_cle_ref.push(cle_ref);
+
+        // // Rechiffrer pour tous les autres maitre des cles
+        // if cles_chiffrage.len() > 0 {
+        //     let commande_rechiffree = rechiffrer_pour_maitredescles(middleware, cle)?;
+        //     middleware.transmettre_commande(routage_commande.clone(), &commande_rechiffree, false).await?;
+        // }
     }
 
     // Emettre un evenement pour confirmer le traitement.
@@ -798,6 +828,7 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
     let event_contenu = json!({
         "correlation": &m.correlation_id,
         CHAMP_LISTE_HACHAGE_BYTES: liste_hachage_bytes,
+        CHAMP_LISTE_CLE_REF: liste_cle_ref,
     });
     middleware.emettre_evenement(routage_event, &event_contenu).await?;
 
