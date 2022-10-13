@@ -160,6 +160,13 @@ impl GestionnaireMaitreDesClesPartition {
         let mut rk_commande_cle = Vec::new();
         let mut rk_volatils = Vec::new();
 
+        let dechiffrer = if let Ok(v) = std::env::var("DESACTIVER_DECHIFFRAGE") {
+            info!("Desactiver rechiffrage public/prive/protege");
+            false
+        } else {
+            true
+        };
+
         let fingerprint = match self.handler_rechiffrage.fingerprint() {
             Some(f) => f,
             None => panic!("maitredescles_partition.preparer_queues_rechiffrage Gestionnaire sans certificat/partition")
@@ -175,14 +182,17 @@ impl GestionnaireMaitreDesClesPartition {
 
         for sec in [Securite::L1Public, Securite::L2Prive, Securite::L3Protege] {
 
-            rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE), exchange: sec.clone() });
-            rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_VERIFIER_PREUVE), exchange: sec.clone() });
+            if dechiffrer {
+                rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE), exchange: sec.clone() });
+                rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_VERIFIER_PREUVE), exchange: sec.clone() });
+                rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}.{}", DOMAINE_NOM, nom_partition, REQUETE_VERIFIER_PREUVE), exchange: sec.clone() });
+            }
+
             rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_CERTIFICAT_MAITREDESCLES), exchange: sec.clone() });
 
             // Commande volatile
             rk_volatils.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_CERT_MAITREDESCLES), exchange: sec.clone() });
 
-            rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}.{}", DOMAINE_NOM, nom_partition, REQUETE_VERIFIER_PREUVE), exchange: sec.clone() });
             // Commande sauvegarder cles
             for commande in &commandes {
                 rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.*.{}", DOMAINE_NOM, commande), exchange: sec.clone() });
@@ -215,15 +225,17 @@ impl GestionnaireMaitreDesClesPartition {
         }
 
         // Queue de messages dechiffrage - taches partagees entre toutes les partitions
-        queues.push(QueueType::ExchangeQueue(
-            ConfigQueue {
-                nom_queue: NOM_Q_DECHIFFRAGE.into(),
-                routing_keys: rk_dechiffrage,
-                ttl: DEFAULT_Q_TTL.into(),
-                durable: false,
-                autodelete: false,
-            }
-        ));
+        if dechiffrer {
+            queues.push(QueueType::ExchangeQueue(
+                ConfigQueue {
+                    nom_queue: NOM_Q_DECHIFFRAGE.into(),
+                    routing_keys: rk_dechiffrage,
+                    ttl: DEFAULT_Q_TTL.into(),
+                    durable: false,
+                    autodelete: false,
+                }
+            ));
+        }
 
         // Queue commande de sauvegarde de cle
         if let Some(nom_queue) = self.get_q_sauvegarder_cle() {

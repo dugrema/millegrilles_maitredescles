@@ -297,9 +297,12 @@ async fn entretien<M>(middleware: Arc<M>)
                     debug!("entretien Effectuer sync des cles du CA non disponibles localement");
                     match g.synchroniser_cles(middleware.as_ref()).await {
                         Ok(()) => {
-                            prochain_sync = maintenant + intervalle_entretien;
+                            prochain_sync = maintenant + intervalle_sync;
                         },
-                        Err(e) => warn!("entretien Partition Erreur syncrhonization cles avec CA : {:?}", e)
+                        Err(e) => {
+                            prochain_sync = maintenant + intervalle_entretien;  // Reessayer dans 5 minutes
+                            warn!("entretien Partition Erreur syncrhonization cles avec CA : {:?}", e)
+                        }
                     }
                 }
 
@@ -316,7 +319,10 @@ async fn entretien<M>(middleware: Arc<M>)
                             reset_flag_confirmation_ca = false;
                             prochaine_confirmation_ca = maintenant + intervalle_entretien;
                         },
-                        Err(e) => warn!("entretien Partition Pousser les cles locales vers le CA : {:?}", e)
+                        Err(e) => {
+                            warn!("entretien Partition Pousser les cles locales vers le CA : {:?}", e);
+                            prochaine_confirmation_ca = maintenant + intervalle_entretien;  // Reessayer dans 5 minutes
+                        }
                     }
                 }
 
@@ -326,9 +332,12 @@ async fn entretien<M>(middleware: Arc<M>)
                     debug!("entretien Effectuer sync des cles du CA non disponibles localement");
                     match g.synchroniser_cles(middleware.as_ref()).await {
                         Ok(()) => {
-                            prochain_sync = maintenant + intervalle_entretien;
+                            prochain_sync = maintenant + intervalle_sync;
                         },
-                        Err(e) => warn!("entretien SQLite Erreur synchronization cles avec CA : {:?}", e)
+                        Err(e) => {
+                            prochain_sync = maintenant + intervalle_entretien;
+                            warn!("entretien SQLite Erreur synchronization cles avec CA : {:?}", e)
+                        }
                     }
                 }
 
@@ -345,7 +354,10 @@ async fn entretien<M>(middleware: Arc<M>)
                             reset_flag_confirmation_ca = false;
                             prochaine_confirmation_ca = maintenant + intervalle_entretien;
                         },
-                        Err(e) => warn!("entretien SQLITE Pousser les cles locales vers le CA : {:?}", e)
+                        Err(e) => {
+                            warn!("entretien SQLITE Pousser les cles locales vers le CA : {:?}", e);
+                            prochaine_confirmation_ca = maintenant + intervalle_entretien;
+                        }
                     }
                 }
             },

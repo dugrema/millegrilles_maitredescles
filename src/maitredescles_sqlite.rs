@@ -252,6 +252,13 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesSQLite {
         let mut rk_commande_cle = Vec::new();
         let mut rk_volatils = Vec::new();
 
+        let dechiffrer = if let Ok(v) = std::env::var("DESACTIVER_DECHIFFRAGE") {
+            info!("Desactiver rechiffrage public/prive/protege");
+            false
+        } else {
+            true
+        };
+
         let commandes: Vec<&str> = vec![
             COMMANDE_SAUVEGARDER_CLE,
         ];
@@ -264,15 +271,19 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesSQLite {
             let nom_partition = fingerprint.as_str();
 
             for sec in [Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure] {
-                rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE), exchange: sec.clone() });
-                rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_VERIFIER_PREUVE), exchange: sec.clone() });
+
+                if dechiffrer {
+                    rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE), exchange: sec.clone() });
+                    rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_VERIFIER_PREUVE), exchange: sec.clone() });
+                    rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}.{}", DOMAINE_NOM, nom_partition, REQUETE_VERIFIER_PREUVE), exchange: sec.clone() });
+                }
+
                 rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_CERTIFICAT_MAITREDESCLES), exchange: sec.clone() });
 
                 // Commande volatile
                 rk_volatils.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_CERT_MAITREDESCLES), exchange: sec.clone() });
 
                 // Commande sauvegarder cles
-                rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}.{}", DOMAINE_NOM, nom_partition, REQUETE_VERIFIER_PREUVE), exchange: sec.clone() });
                 for commande in &commandes {
                     rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.*.{}", DOMAINE_NOM, commande), exchange: sec.clone() });
                 }
@@ -305,15 +316,17 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesSQLite {
         let mut queues = Vec::new();
 
         // Queue de messages dechiffrage - taches partagees entre toutes les partitions
-        queues.push(QueueType::ExchangeQueue(
-            ConfigQueue {
-                nom_queue: NOM_Q_DECHIFFRAGE.into(),
-                routing_keys: rk_dechiffrage,
-                ttl: DEFAULT_Q_TTL.into(),
-                durable: false,
-                autodelete: false,
-            }
-        ));
+        if dechiffrer {
+            queues.push(QueueType::ExchangeQueue(
+                ConfigQueue {
+                    nom_queue: NOM_Q_DECHIFFRAGE.into(),
+                    routing_keys: rk_dechiffrage,
+                    ttl: DEFAULT_Q_TTL.into(),
+                    durable: false,
+                    autodelete: false,
+                }
+            ));
+        }
 
         // Queue commande de sauvegarde de cle
         if let Some(nom_queue) = self.get_q_sauvegarder_cle() {
@@ -701,7 +714,6 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
         Ok(None)
     }
 }
-
 
 async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesSQLite)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
@@ -1162,62 +1174,6 @@ fn rechiffrer_cle(cle: &mut DocumentClePartition, privee: &EnveloppePrivee, cert
     Ok(())
 }
 
-// fn rechiffrer_pour_maitredescles<M>(middleware: &M, cle: &TransactionCle)
-//     -> Result<CommandeSauvegarderCle, Box<dyn Error>>
-//     where M: GenerateurMessages + CleChiffrageHandler
-// {
-//     let enveloppe_privee = middleware.get_enveloppe_privee();
-//     let fingerprint_local = enveloppe_privee.fingerprint().as_str();
-//     let pk_chiffrage = middleware.get_publickeys_chiffrage();
-//     let cle_locale = cle.cle.as_str();
-//     let cle_privee = enveloppe_privee.cle_privee();
-//
-//     // Dechiffrer la cle secrete
-//     debug!("rechiffrer_pour_maitredescles Cle rechiffrage : {:?}", pk_chiffrage);
-//
-//     let mut fingerprint_partitions = Vec::new();
-//     let mut map_cles = HashMap::new();
-//
-//     // Inserer la cle locale
-//     map_cles.insert(fingerprint_local.to_owned(), cle_locale.to_owned());
-//
-//     for pk_item in pk_chiffrage {
-//         let fp = pk_item.fingerprint;
-//         let pk = pk_item.public_key;
-//
-//         // Conserver liste des partitions
-//         if ! pk_item.est_cle_millegrille {
-//             fingerprint_partitions.push(fp.clone());
-//         }
-//
-//         // Rechiffrer cle
-//         if fp.as_str() != fingerprint_local {
-//             // match chiffrer_asymetrique(&pk, &cle_secrete) {
-//             match rechiffrer_asymetrique_multibase(cle_privee, &pk, cle_locale) {
-//                 Ok(cle_rechiffree) => {
-//                     // let cle_mb = multibase::encode(Base::Base64, cle_rechiffree);
-//                     map_cles.insert(fp, cle_rechiffree);
-//                 },
-//                 Err(e) => error!("Erreur rechiffrage cle : {:?}", e)
-//             }
-//         }
-//     }
-//
-//     Ok(CommandeSauvegarderCle {
-//         hachage_bytes: cle.hachage_bytes.to_owned(),
-//         domaine: cle.domaine.to_owned(),
-//         identificateurs_document: cle.identificateurs_document.to_owned(),
-//         signature_identite: cle.signature_identite.to_owned(),
-//         cles: map_cles,
-//         format: cle.format.clone(),
-//         iv: cle.iv.to_owned(),
-//         tag: cle.tag.to_owned(),
-//         header: cle.header.to_owned(),
-//         partition: cle.partition.to_owned(),
-//         fingerprint_partitions: Some(fingerprint_partitions)
-//     })
-// }
-
 /// Genere une commande de sauvegarde de cles pour tous les certificats maitre des cles connus
 /// incluant le certificat de millegrille
 fn rechiffrer_pour_maitredescles<M>(middleware: &M, cle: DocumentClePartition)
@@ -1264,67 +1220,6 @@ fn rechiffrer_pour_maitredescles<M>(middleware: &M, cle: DocumentClePartition)
 
     Ok(commande_transfert)
 }
-
-// fn verifier_autorisation_dechiffrage_specifique(
-//     certificat_destination: &EnveloppeCertificat, permission: Option<&EnveloppePermission>, cle: &TransactionCle)
-//     -> Result<bool, Box<dyn Error>>
-// {
-//     let domaine_cle = &cle.domaine;
-//
-//     // Verifier si le certificat est une delegation pour le domaine
-//     if let Some(d) = certificat_destination.get_delegation_domaines()? {
-//         if d.contains(domaine_cle) {
-//             return Ok(true)
-//         }
-//     }
-//
-//     if let Some(p) = permission {
-//         // S'assurer que le hachage_bytes est inclus dans la permission
-//         let regles_permission = &p.permission;
-//
-//         let hachage_bytes_permis = &regles_permission.permission_hachage_bytes;
-//         let hachage_bytes_demande = &cle.hachage_bytes;
-//         if ! hachage_bytes_permis.contains(hachage_bytes_demande) {
-//             debug!("verifier_autorisation_dechiffrage_specifique Hachage_bytes {} n'est pas inclus dans la permission", hachage_bytes_demande);
-//             return Ok(false)
-//         }
-//
-//         let enveloppe_permission = p.enveloppe.as_ref();
-//         if enveloppe_permission.verifier_exchanges(vec![Securite::L4Secure]) {
-//             // Permission signee par un certificat 4.secure - autorisation globale
-//
-//             // On verifie si le certificat correspond a un des criteres mis dans la permission
-//             if let Some(user_id) = &regles_permission.user_id {
-//                 match certificat_destination.get_user_id()? {
-//                     Some(u) => {
-//                         if u != user_id {
-//                             debug!("verifier_autorisation_dechiffrage_specifique Mauvais user id {}", u);
-//                             return Ok(false)
-//                         }
-//                     },
-//                     None => return {
-//                         debug!("verifier_autorisation_dechiffrage_specifique Certificat sans user_id (requis = {:?}), acces refuse", user_id);
-//                         Ok(false)
-//                     }
-//                 }
-//             }
-//
-//             if let Some(domaine) = &regles_permission.domaines_permis {
-//                 let domaine_cle = &cle.domaine;
-//                 if ! domaine.contains(domaine_cle) {
-//                     debug!("verifier_autorisation_dechiffrage_specifique Cle n'est pas d'un domaine permis {}", domaine_cle);
-//                     return Ok(false)
-//                 }
-//             }
-//
-//             // Aucune regle n'as ete rejetee, acces permis
-//             return Ok(true)
-//         }
-//     }
-//
-//     // Reponse par defaut - acces refuse
-//     Ok(false)
-// }
 
 async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesSQLite) -> Result<(), Box<dyn Error>>
     where M: GenerateurMessages + VerificateurMessage + IsConfigNoeud
