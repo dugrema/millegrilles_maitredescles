@@ -288,6 +288,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesSQLite {
 
             for sec in [Securite::L3Protege, Securite::L4Secure] {
                 rk_volatils.push(ConfigRoutingExchange { routing_key: format!("evenement.{}.{}", DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION), exchange: sec.clone() });
+                rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION), exchange: sec.clone() });
             }
 
             let commandes_protegees = vec![
@@ -441,7 +442,7 @@ impl DocumentRechiffrage {
 }
 
 async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesSQLite) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: ValidateurX509 + GenerateurMessages + VerificateurMessage + IsConfigNoeud + CleChiffrageHandler
+    where M: ValidateurX509 + GenerateurMessages + VerificateurMessage + IsConfigNoeud + CleChiffrageHandler + ConfigMessages
 {
     debug!("Consommer requete : {:?}", &message.message);
 
@@ -466,6 +467,7 @@ async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, gest
                 REQUETE_CERTIFICAT_MAITREDESCLES => requete_certificat_maitredescles(middleware, message).await,
                 REQUETE_DECHIFFRAGE => requete_dechiffrage(middleware, message, gestionnaire).await,
                 REQUETE_VERIFIER_PREUVE => requete_verifier_preuve(middleware, message, gestionnaire).await,
+                EVENEMENT_CLES_MANQUANTES_PARTITION => evenement_cle_manquante(middleware, gestionnaire, &message).await,
                 _ => {
                     error!("Message requete/action inconnue : '{}'. Message dropped.", message.action);
                     Ok(None)
@@ -807,6 +809,7 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
     debug!("requete_dechiffrage cle parsed : {:?}", requete);
 
     let enveloppe_privee = middleware.get_enveloppe_signature();
+    let fingerprint = enveloppe_privee.fingerprint().as_str();
 
     let certificat_requete = m.message.certificat.as_ref();
     let domaines_permis = if let Some(c) = certificat_requete {
@@ -851,25 +854,49 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
 
     // Trouver les cles demandees et rechiffrer
     // let mut connection = gestionnaire.ouvrir_connection(middleware, true);
-    let cles = {
+    let mut cles = {
         let mut connection_guard = gestionnaire.ouvrir_connection_readonly(middleware)
             .lock().expect("requete_dechiffrage connection lock");
         let connection = connection_guard.as_mut().expect("requete_dechiffrage connection Some");
 
         get_cles_sqlite_rechiffrees(
-            middleware, connection, &requete, enveloppe_privee, certificat.as_ref(),
+            middleware, connection, &requete, enveloppe_privee.clone(), certificat.as_ref(),
             permission.as_ref(), domaines_permis.as_ref())?
     };
+
+    // Verifier si on a des cles inconnues
+    if cles.len() < requete.liste_hachage_bytes.len() {
+        debug!("requete_dechiffrage Cles manquantes, on a {} trouvees sur {} demandees", cles.len(), requete.liste_hachage_bytes.len());
+
+        let cles_connues = cles.keys().map(|s|s.to_owned()).collect();
+        // emettre_cles_inconnues(middleware, requete, cles_connues).await?;
+        match requete_cles_inconnues(middleware, &requete, cles_connues).await {
+            Ok(reponse) => {
+                debug!("Reponse cle manquantes recue : {:?}", reponse);
+                if let Some(liste_cles) = reponse.cles.as_ref() {
+                    let connexion = gestionnaire.ouvrir_connection(middleware, false);
+                    for cle in liste_cles {
+                        let commande: CommandeSauvegarderCle = cle.clone().into();
+                        if let Some(cle_str) = cle.cles.get(fingerprint) {
+                            let cle_secrete = extraire_cle_secrete(middleware.get_enveloppe_signature().cle_privee(), cle_str.as_str())?;
+                            let cle_ref = calculer_cle_ref(&commande, &cle_secrete)?;
+                            debug!("requete_dechiffrage.requete_cles_inconnues Sauvegarder cle_ref {} / hachage_bytes {}", cle_ref, cle.hachage_bytes);
+                            sauvegarder_cle(middleware, &connexion, fingerprint, cle_str, &commande)?;
+                            let doc_cle = DocumentClePartition::try_into_document_cle_partition(cle, fingerprint, cle_ref)?;
+                            cles.insert(fingerprint.to_string(), doc_cle);
+                        }
+                    }
+                }
+            },
+            Err(e) => {
+                error!("requete_dechiffrage Erreur requete_cles_inconnues, skip : {:?}", e)
+            }
+        }
+    }
 
     // Preparer la reponse
     // Verifier si on a au moins une cle dans la reponse
     let reponse = if cles.len() > 0 {
-
-        // Verifier si on a des cles inconnues
-        if cles.len() < requete.liste_hachage_bytes.len() {
-            let cles_connues = cles.keys().map(|s|s.to_owned()).collect();
-            emettre_cles_inconnues(middleware, requete, cles_connues).await?;
-        }
 
         let reponse = json!({
             "acces": CHAMP_ACCES_PERMIS,
@@ -878,21 +905,14 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
         });
         middleware.formatter_reponse(reponse, None)?
     } else {
-        if cles.len() > 0 {
-            // On a trouve des cles mais aucunes n'ont ete rechiffrees (acces refuse)
-            debug!("requete_dechiffrage Requete {:?} de dechiffrage {:?} refusee", m.correlation_id, &requete.liste_hachage_bytes);
-            let refuse = json!({"ok": false, "err": "Autorisation refusee", "acces": CHAMP_ACCES_REFUSE, "code": 0});
-            middleware.formatter_reponse(&refuse, None)?
-        } else {
-            // On n'a pas trouve de cles
-            debug!("requete_dechiffrage Requete {:?} de dechiffrage {:?}, cles inconnues", m.correlation_id, &requete.liste_hachage_bytes);
+        // On n'a pas trouve de cles
+        debug!("requete_dechiffrage Requete {:?} de dechiffrage {:?}, cles inconnues", m.correlation_id, &requete.liste_hachage_bytes);
 
-            let cles_connues = cles.keys().map(|s|s.to_owned()).collect();
-            emettre_cles_inconnues(middleware, requete, cles_connues).await?;
+        let cles_connues = cles.keys().map(|s|s.to_owned()).collect();
+        emettre_cles_inconnues(middleware, &requete, cles_connues).await?;
 
-            let inconnu = json!({"ok": false, "err": "Cles inconnues", "acces": CHAMP_ACCES_CLE_INCONNUE, "code": 4});
-            middleware.formatter_reponse(&inconnu, None)?
-        }
+        let inconnu = json!({"ok": false, "err": "Cles inconnues", "acces": CHAMP_ACCES_CLE_INCONNUE, "code": 4});
+        middleware.formatter_reponse(&inconnu, None)?
     };
 
     Ok(Some(reponse))
@@ -1690,6 +1710,7 @@ async fn evenement_cle_manquante<M>(middleware: &M, gestionnaire: &GestionnaireM
 
     let connexion = gestionnaire.ouvrir_connection(middleware, true);
 
+    let mut cles = Vec::new();
     for hachage_bytes in hachages_bytes_list {
         let commande = match charger_cle(&connexion, hachage_bytes.as_str()) {
             Ok(cle) => match cle {
@@ -1711,11 +1732,28 @@ async fn evenement_cle_manquante<M>(middleware: &M, gestionnaire: &GestionnaireM
             }
         };
 
-        debug!("evenement_cle_manquante Emettre cles rechiffrees pour CA : {:?}", commande);
-        middleware.transmettre_commande(routage_commande.clone(), &commande, false).await?;
+        if m.routing_key.starts_with("evenement.") {
+            debug!("evenement_cle_manquante Emettre cles rechiffrees : {:?}", commande);
+            middleware.transmettre_commande(routage_commande.clone(), &commande, false).await?;
+        } else if commande.cles.len() > 0 {
+            cles.push(commande);
+        }
     }
 
-    Ok(None)
+    if cles.len() > 0 {
+        // Repondre
+        let reponse = json!({
+            "ok": true,
+            "cles": cles,
+        });
+
+        debug!("evenement_cle_manquante Emettre reponse avec {} cles", cles.len());
+        Ok(Some(middleware.formatter_reponse(reponse, None)?))
+    } else {
+        // Si on n'a aucune cle, ne pas repondre. Un autre maitre des cles pourrait le faire
+        debug!("evenement_cle_manquante On n'a aucune des cles demandees");
+        Ok(None)
+    }
 }
 
 fn sauvegarder_cle<M,S,T>(middleware: &M, connection: &Connection, fingerprint_: S, cle_: T, commande: &CommandeSauvegarderCle)

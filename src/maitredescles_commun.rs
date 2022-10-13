@@ -213,7 +213,7 @@ where M: Middleware + 'static {
 
 /// Emettre evenement de cles inconnues suite a une requete. Permet de faire la difference entre
 /// les cles de la requete et les cles connues.
-pub async fn emettre_cles_inconnues<M>(middleware: &M, requete: RequeteDechiffrage, cles_connues: Vec<String>)
+pub async fn emettre_cles_inconnues<M>(middleware: &M, requete: &RequeteDechiffrage, cles_connues: Vec<String>)
     -> Result<(), Box<dyn Error>>
     where M: GenerateurMessages
 {
@@ -233,6 +233,39 @@ pub async fn emettre_cles_inconnues<M>(middleware: &M, requete: RequeteDechiffra
     let evenement_cles_manquantes = ReponseSynchroniserCles { liste_hachage_bytes: liste_cles };
 
     Ok(middleware.emettre_evenement(routage_evenement_manquant.clone(), &evenement_cles_manquantes).await?)
+}
+
+/// Emettre evenement de cles inconnues suite a une requete. Permet de faire la difference entre
+/// les cles de la requete et les cles connues.
+pub async fn requete_cles_inconnues<M>(middleware: &M, requete: &RequeteDechiffrage, cles_connues: Vec<String>)
+    -> Result<ReponseCleManquantes, Box<dyn Error>>
+    where M: GenerateurMessages
+{
+    // Faire une demande interne de sync pour voir si les cles inconnues existent (async)
+    let routage_evenement_manquant = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION)
+        .exchanges(vec![Securite::L4Secure])
+        .timeout_blocking(3000)
+        .build();
+
+    let mut set_cles = HashSet::new();
+    set_cles.extend(requete.liste_hachage_bytes.iter());
+    let mut set_cles_trouvees = HashSet::new();
+    set_cles_trouvees.extend(&cles_connues);
+    let set_diff = set_cles.difference(&set_cles_trouvees);
+    let liste_cles: Vec<String> = set_diff.into_iter().map(|m| m.to_string()).collect();
+    debug!("emettre_cles_inconnues Requete de cles inconnues : {:?}", liste_cles);
+
+    let evenement_cles_manquantes = ReponseSynchroniserCles { liste_hachage_bytes: liste_cles };
+
+    let reponse = match middleware.transmettre_requete(routage_evenement_manquant.clone(), &evenement_cles_manquantes).await? {
+        TypeMessage::Valide(m) => {
+            debug!("requete_cles_inconnues Reponse recue {:?}", m);
+            m.message.parsed.map_contenu::<ReponseCleManquantes>(None)?
+        },
+        _ => Err(format!("Erreur reponse pour requete cle manquante, mauvais type de reponse"))?
+    };
+
+    Ok(reponse)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -427,6 +460,32 @@ impl DocumentClePartition {
         }
     }
 
+    pub fn try_into_document_cle_partition<S,T>(value: &CommandeCleTransfert, fingerprint: S, cle_ref: T) -> Result<DocumentClePartition, String>
+        where S: Into<String>,
+              T: Into<String>
+    {
+        let fingerprint = fingerprint.into();
+        let cle_ref = cle_ref.into();
+
+        let cle = match value.cles.get(&fingerprint) {
+            Some(c) => c.as_str(),
+            None => Err(format!("DocumentClePartition.try_into_document_cle_partition Erreur cle introuvable {}", fingerprint))?
+        };
+
+        Ok(DocumentClePartition {
+            cle_ref,
+            hachage_bytes: value.hachage_bytes.clone(),
+            domaine: value.domaine.clone(),
+            identificateurs_document: value.identificateurs_document.clone(),
+            signature_identite: value.signature_identite.clone(),
+            cle: cle.to_string(),
+            format: value.format.clone(),
+            iv: value.iv.clone(),
+            tag: value.tag.clone(),
+            header: value.header.clone()
+        })
+    }
+
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -447,6 +506,30 @@ pub struct CommandeCleTransfert {
     pub iv: Option<String>,
     pub tag: Option<String>,
     pub header: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReponseCleManquantes {
+    pub ok: Option<bool>,
+    pub cles: Option<Vec<CommandeCleTransfert>>,
+}
+
+impl Into<CommandeSauvegarderCle> for CommandeCleTransfert {
+    fn into(self) -> CommandeSauvegarderCle {
+        CommandeSauvegarderCle {
+            hachage_bytes: self.hachage_bytes.clone(),
+            domaine: self.domaine.clone(),
+            identificateurs_document: self.identificateurs_document.clone(),
+            signature_identite: self.signature_identite.clone(),
+            cles: self.cles.clone(),
+            format: self.format.clone(),
+            iv: self.iv.clone(),
+            tag: self.tag.clone(),
+            header: self.header.clone(),
+            partition: None,
+            fingerprint_partitions: None
+        }
+    }
 }
 
 impl From<DocumentClePartition> for CommandeCleTransfert {

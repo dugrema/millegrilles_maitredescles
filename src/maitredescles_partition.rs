@@ -201,6 +201,9 @@ impl GestionnaireMaitreDesClesPartition {
         rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_VERIFIER_PREUVE), exchange: Securite::L4Secure });
 
         for sec in [Securite::L3Protege, Securite::L4Secure] {
+            // Evenement sert a synchronisation cles
+            rk_volatils.push(ConfigRoutingExchange { routing_key: format!("evenement.{}.{}", DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION), exchange: sec.clone() });
+            // Requete est utilise pour echange entre maitre des cles durant requete client
             rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION), exchange: sec.clone() });
         }
 
@@ -567,8 +570,9 @@ where
     }
 }
 
-async fn consommer_evenement<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition, m: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: ValidateurX509 + GenerateurMessages + MongoDao + CleChiffrageHandler
+async fn consommer_evenement<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition, m: MessageValideAction)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: ValidateurX509 + GenerateurMessages + MongoDao + CleChiffrageHandler + ConfigMessages
 {
     debug!("consommer_evenement Consommer evenement : {:?}", &m.message);
 
@@ -579,8 +583,8 @@ async fn consommer_evenement<M>(middleware: &M, gestionnaire: &GestionnaireMaitr
     }?;
 
     match m.action.as_str() {
-        // EVENEMENT_CLES_MANQUANTES_PARTITION => evenement_cle_manquante(middleware, gestionnaire, &m).await,
-        _ => Err(format!("consommer_transaction: Mauvais type d'action pour une transaction : {}", m.action))?,
+        EVENEMENT_CLES_MANQUANTES_PARTITION => evenement_cle_manquante(middleware, m, gestionnaire).await,
+        _ => Err(format!("consommer_evenement: Mauvais type d'action pour un evenement : {}", m.action))?,
     }
 }
 
@@ -915,8 +919,9 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
 
         // Verifier si on a des cles inconnues
         if cles.len() < requete.liste_hachage_bytes.len() {
-            let cles_connues = cles.keys().map(|s|s.to_owned()).collect();
-            emettre_cles_inconnues(middleware, requete, cles_connues).await?;
+            //let cles_connues = cles.keys().map(|s|s.to_owned()).collect();
+            //emettre_cles_inconnues(middleware, &requete, cles_connues).await?;
+            //todo!("Fix me");
         }
 
         let reponse = json!({
@@ -937,7 +942,7 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
 
             // Faire une demande interne de sync pour voir si les cles inconnues existent (async)
             let cles_connues = cles.keys().map(|s|s.to_owned()).collect();
-            emettre_cles_inconnues(middleware, requete, cles_connues).await?;
+            emettre_cles_inconnues(middleware, &requete, cles_connues).await?;
 
             // Retourner cle inconnu a l'usager
             let inconnu = json!({"ok": false, "err": "Cles inconnues", "acces": CHAMP_ACCES_CLE_INCONNUE, "code": 4});
@@ -1592,23 +1597,23 @@ async fn evenement_cle_manquante<M>(middleware: &M, m: MessageValideAction, gest
             Err(e) => Err(format!("maitredescles_partition.traiter_cles_manquantes_ca Erreur lecture curseur : {:?}", e))?
         };
 
-        if commande.cles.len() > 0 {
+        if m.routing_key.starts_with("evenement.") {
+            debug!("evenement_cle_manquante Emettre cles rechiffrees : {:?}", commande);
+            middleware.transmettre_commande(routage_commande.clone(), &commande, false).await?;
+        } else if commande.cles.len() > 0 {
             // debug!("evenement_cle_manquante Emettre cles rechiffrees pour partition : {:?}", partition);
-            // middleware.transmettre_commande(routage_commande.clone(), &commande, false).await?;
             cles.push(commande);
-        } else {
-            debug!("evenement_cle_manquante Aucune cle manquante n'est connue localement");
         }
     }
 
     if cles.len() > 0 {
+        // Repondre
         let reponse = json!({
             "ok": true,
             "cles": cles,
         });
 
         debug!("evenement_cle_manquante Emettre reponse avec {} cles", cles.len());
-
         Ok(Some(middleware.formatter_reponse(reponse, None)?))
     } else {
         // Si on n'a aucune cle, ne pas repondre. Un autre maitre des cles pourrait le faire
