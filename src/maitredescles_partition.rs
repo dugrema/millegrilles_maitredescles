@@ -665,6 +665,59 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
         }
     };
 
+    sauvegarder_cle(middleware, &commande, nom_collection_cles).await?;
+
+    // if let Some(uid) = resultat.upserted_id {
+    //     debug!("commande_sauvegarder_cle Nouvelle cle insere _id: {}, generer transaction", uid);
+    //     // Detecter si on doit rechiffrer et re-emettre la cles
+    //     // Survient si on a recu une commande sur un exchange autre que 4.secure et qu'il a moins de
+    //     // cles dans la commande que le nombre de cles de rechiffrage connues (incluant cert maitre des cles)
+    //     if let Some(exchange) = m.exchange.as_ref() {
+    //         if exchange != SECURITE_4_SECURE {
+    //             let cle_len = commande.cles.len();
+    //             let cle_str = match commande.cles.get(fingerprint.as_str()) {
+    //                 Some(c) => c.to_owned(),
+    //                 None => Err(format!("maitredescles_partition.commande_sauvegarder_cle Erreur cle partition {} introuvable", fingerprint))?
+    //             };
+    //             let mut cle_transfert = DocumentClePartition::from(commande);
+    //             cle_transfert.cle = cle_str;  // Injecter la cle de cette partition
+    //
+    //             let pk_chiffrage = middleware.get_publickeys_chiffrage();
+    //             if pk_chiffrage.len() > cle_len {
+    //                 debug!("commande_sauvegarder_cle Nouvelle cle sur exchange != 4.secure, re-emettre a l'interne");
+    //                 let commande_cle_rechiffree = rechiffrer_pour_maitredescles(middleware, cle_transfert)?;
+    //                 let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
+    //                     .exchanges(vec![Securite::L4Secure])
+    //                     .build();
+    //                 middleware.transmettre_commande(routage_commande, &commande_cle_rechiffree, false).await?;
+    //             }
+    //         }
+    //     }
+    //
+    // }
+
+    if Some(fingerprint.as_str()) == partition_message {
+        // Le message etait adresse a cette partition
+        Ok(middleware.reponse_ok()?)
+    } else {
+        // Cle sauvegardee mais aucune reponse requise
+        Ok(None)
+    }
+}
+
+async fn sauvegarder_cle<M, S>(middleware: &M, commande: &CommandeSauvegarderCle, nom_collection_cles: S)
+    -> Result<bool, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao, S: AsRef<str>
+{
+    let nom_collection_cles = nom_collection_cles.as_ref();
+
+    let enveloppe_privee = middleware.get_enveloppe_signature();
+    let fingerprint = enveloppe_privee.fingerprint().as_str();
+    let cle = match commande.cles.get(fingerprint) {
+        Some(cle) => cle.as_str(),
+        None => Err(format!("sauvegarder_cle Cle non disponible pour {}", fingerprint))?
+    };
+
     // Valider identite, calculer cle_ref
     let cle_ref = {
         let cle_secrete = extraire_cle_secrete(middleware.get_enveloppe_signature().cle_privee(), cle)?;
@@ -696,46 +749,13 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
     let filtre = doc! { CHAMP_CLE_REF: &cle_ref };
     let opts = UpdateOptions::builder().upsert(true).build();
 
-    let collection = middleware.get_collection(nom_collection_cles.as_str())?;
+    let collection = middleware.get_collection(nom_collection_cles)?;
     let resultat = collection.update_one(filtre, ops, opts).await?;
     debug!("commande_sauvegarder_cle Resultat update : {:?}", resultat);
 
-    if let Some(uid) = resultat.upserted_id {
-        debug!("commande_sauvegarder_cle Nouvelle cle insere _id: {}, generer transaction", uid);
-        // Detecter si on doit rechiffrer et re-emettre la cles
-        // Survient si on a recu une commande sur un exchange autre que 4.secure et qu'il a moins de
-        // cles dans la commande que le nombre de cles de rechiffrage connues (incluant cert maitre des cles)
-        if let Some(exchange) = m.exchange.as_ref() {
-            if exchange != SECURITE_4_SECURE {
-                let cle_len = commande.cles.len();
-                let cle_str = match commande.cles.get(fingerprint.as_str()) {
-                    Some(c) => c.to_owned(),
-                    None => Err(format!("maitredescles_partition.commande_sauvegarder_cle Erreur cle partition {} introuvable", fingerprint))?
-                };
-                let mut cle_transfert = DocumentClePartition::from(commande);
-                cle_transfert.cle = cle_str;  // Injecter la cle de cette partition
+    let insere = resultat.upserted_id.is_some();
 
-                let pk_chiffrage = middleware.get_publickeys_chiffrage();
-                if pk_chiffrage.len() > cle_len {
-                    debug!("commande_sauvegarder_cle Nouvelle cle sur exchange != 4.secure, re-emettre a l'interne");
-                    let commande_cle_rechiffree = rechiffrer_pour_maitredescles(middleware, cle_transfert)?;
-                    let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
-                        .exchanges(vec![Securite::L4Secure])
-                        .build();
-                    middleware.transmettre_commande(routage_commande, &commande_cle_rechiffree, false).await?;
-                }
-            }
-        }
-
-    }
-
-    if Some(fingerprint.as_str()) == partition_message {
-        // Le message etait adresse a cette partition
-        Ok(middleware.reponse_ok()?)
-    } else {
-        // Cle sauvegardee mais aucune reponse requise
-        Ok(None)
-    }
+    Ok(insere)
 }
 
 async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesPartition)
@@ -859,6 +879,7 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
     debug!("requete_dechiffrage cle parsed : {:?}", requete);
 
     let enveloppe_privee = middleware.get_enveloppe_signature();
+    let fingerprint = enveloppe_privee.fingerprint().as_str();
 
     let certificat_requete = m.message.certificat.as_ref();
     let domaines_permis = if let Some(c) = certificat_requete {
@@ -891,8 +912,6 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
     }
 
     // Verifier si on a une autorisation de dechiffrage global
-    // let (requete_autorisee_globalement, permission) = verifier_autorisation_dechiffrage_global(
-    //     middleware, &m, &requete).await?;
     let requete_autorisee_globalement = verifier_autorisation_dechiffrage_global(
         middleware, &m, &requete).await?;
 
@@ -910,20 +929,60 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
     let mut curseur = preparer_curseur_cles(middleware, gestionnaire, &requete, domaines_permis.as_ref()).await?;
     // let (cles, cles_trouvees) = rechiffrer_cles(
     //     middleware, &m, &requete, enveloppe_privee, certificat.as_ref(), requete_autorisee_globalement, permission, &mut curseur).await?;
-    let (cles, cles_trouvees) = rechiffrer_cles(
-        middleware, &m, &requete, enveloppe_privee, certificat.as_ref(), requete_autorisee_globalement, &mut curseur).await?;
+    let (mut cles, cles_trouvees) = rechiffrer_cles(
+        middleware, &m, &requete, enveloppe_privee.clone(), certificat.as_ref(), requete_autorisee_globalement, &mut curseur).await?;
+
+    let nom_collection = match gestionnaire.get_collection_cles() {
+        Some(n) => n,
+        None => Err(format!("maitredescles_partition.preparer_curseur_cles Collection cles n'est pas definie"))?
+    };
+
+    // Verifier si on a des cles inconnues
+    if cles.len() < requete.liste_hachage_bytes.len() {
+        debug!("requete_dechiffrage Cles manquantes, on a {} trouvees sur {} demandees", cles.len(), requete.liste_hachage_bytes.len());
+
+        let cles_connues = cles.keys().map(|s|s.to_owned()).collect();
+        // emettre_cles_inconnues(middleware, requete, cles_connues).await?;
+        let reponse = match requete_cles_inconnues(middleware, &requete, cles_connues).await {
+            Ok(reponse) => match reponse.cles {
+                Some(cles) => Some(cles),
+                None => None
+            },
+            Err(e) => {
+                error!("requete_dechiffrage Erreur requete_cles_inconnues, skip : {:?}", e);
+                None
+            }
+        };
+
+        debug!("Reponse cle manquantes recue : {:?}", reponse);
+        if let Some(liste_cles) = reponse.as_ref() {
+            for cle in liste_cles {
+                let commande: CommandeSauvegarderCle = cle.clone().into();
+                if let Some(cle_str) = cle.cles.get(fingerprint) {
+                    let cle_secrete = extraire_cle_secrete(middleware.get_enveloppe_signature().cle_privee(), cle_str.as_str())?;
+                    let cle_ref = calculer_cle_ref(&commande, &cle_secrete)?;
+                    debug!("requete_dechiffrage.requete_cles_inconnues Sauvegarder cle_ref {} / hachage_bytes {}", cle_ref, cle.hachage_bytes);
+
+                    if let Err(e) = sauvegarder_cle(middleware, &commande, nom_collection.as_str()).await {
+                        warn!("Erreur sauvegarde cle inconnue {} : {:?}", fingerprint, e);
+                    }
+
+                    let doc_cle = DocumentClePartition::try_into_document_cle_partition(cle, fingerprint, cle_ref)?;
+                    cles.insert(fingerprint.to_string(), doc_cle);
+                }
+            }
+        }
+    }
+
+    if cles.len() < requete.liste_hachage_bytes.len() {
+        debug!("Emettre un evenement de requete de rechiffrage pour les cles qui sont encore inconnues");
+        let cles_connues = cles.keys().map(|s| s.to_owned()).collect();
+        emettre_cles_inconnues(middleware, &requete, cles_connues).await?;
+    }
 
     // Preparer la reponse
     // Verifier si on a au moins une cle dans la reponse
     let reponse = if cles.len() > 0 {
-
-        // Verifier si on a des cles inconnues
-        if cles.len() < requete.liste_hachage_bytes.len() {
-            //let cles_connues = cles.keys().map(|s|s.to_owned()).collect();
-            //emettre_cles_inconnues(middleware, &requete, cles_connues).await?;
-            //todo!("Fix me");
-        }
-
         let reponse = json!({
             "acces": CHAMP_ACCES_PERMIS,
             "code": 1,
@@ -931,23 +990,12 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
         });
         middleware.formatter_reponse(reponse, None)?
     } else {
-        if cles_trouvees {
-            // On a trouve des cles mais aucunes n'ont ete rechiffrees (acces refuse)
-            debug!("requete_dechiffrage Requete {:?} de dechiffrage {:?} refusee", m.correlation_id, &requete.liste_hachage_bytes);
-            let refuse = json!({"ok": false, "err": "Autorisation refusee", "acces": CHAMP_ACCES_REFUSE, "code": 0});
-            middleware.formatter_reponse(&refuse, None)?
-        } else {
-            // On n'a pas trouve de cles
-            debug!("requete_dechiffrage Requete {:?} de dechiffrage {:?}, cles inconnues", m.correlation_id, &requete.liste_hachage_bytes);
+        // On n'a pas trouve de cles
+        debug!("requete_dechiffrage Requete {:?} de dechiffrage {:?}, cles inconnues", m.correlation_id, &requete.liste_hachage_bytes);
 
-            // Faire une demande interne de sync pour voir si les cles inconnues existent (async)
-            let cles_connues = cles.keys().map(|s|s.to_owned()).collect();
-            emettre_cles_inconnues(middleware, &requete, cles_connues).await?;
-
-            // Retourner cle inconnu a l'usager
-            let inconnu = json!({"ok": false, "err": "Cles inconnues", "acces": CHAMP_ACCES_CLE_INCONNUE, "code": 4});
-            middleware.formatter_reponse(&inconnu, None)?
-        }
+        // Retourner cle inconnu a l'usager
+        let inconnu = json!({"ok": false, "err": "Cles inconnues", "acces": CHAMP_ACCES_CLE_INCONNUE, "code": 4});
+        middleware.formatter_reponse(&inconnu, None)?
     };
 
     Ok(Some(reponse))

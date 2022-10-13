@@ -894,10 +894,15 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
         }
     }
 
+    if cles.len() < requete.liste_hachage_bytes.len() {
+        debug!("Emettre un evenement de requete de rechiffrage pour les cles qui sont encore inconnues");
+        let cles_connues = cles.keys().map(|s| s.to_owned()).collect();
+        emettre_cles_inconnues(middleware, &requete, cles_connues).await?;
+    }
+
     // Preparer la reponse
     // Verifier si on a au moins une cle dans la reponse
     let reponse = if cles.len() > 0 {
-
         let reponse = json!({
             "acces": CHAMP_ACCES_PERMIS,
             "code": 1,
@@ -907,10 +912,6 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
     } else {
         // On n'a pas trouve de cles
         debug!("requete_dechiffrage Requete {:?} de dechiffrage {:?}, cles inconnues", m.correlation_id, &requete.liste_hachage_bytes);
-
-        let cles_connues = cles.keys().map(|s|s.to_owned()).collect();
-        emettre_cles_inconnues(middleware, &requete, cles_connues).await?;
-
         let inconnu = json!({"ok": false, "err": "Cles inconnues", "acces": CHAMP_ACCES_CLE_INCONNUE, "code": 4});
         middleware.formatter_reponse(&inconnu, None)?
     };
@@ -1857,7 +1858,7 @@ fn charger_cle<S>(connexion: &Connection, hachage_bytes_: S)
         State::Done => return Ok(None)
     }
 
-    let cle_ref: String = statement.read(1)?;
+    let cle_ref: String = statement.read(0)?;
 
     let mut statement_id = connexion.prepare(
         "SELECT cle, valeur FROM identificateurs_document WHERE cle_ref = ?")?;
