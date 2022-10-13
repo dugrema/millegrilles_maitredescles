@@ -1526,12 +1526,6 @@ async fn evenement_cle_manquante<M>(middleware: &M, m: MessageValideAction, gest
     where M: ValidateurX509 + GenerateurMessages + MongoDao + CleChiffrageHandler + ConfigMessages
 {
     debug!("evenement_cle_manquante Verifier si on peut transmettre la cle manquante {:?}", &m.message);
-    let nom_collection = match gestionnaire.get_collection_cles() {
-        Some(n) => n,
-        None => Err(format!("maitredescles_partition.evenement_cle_manquante Collection cles n'est pas definie"))?
-    };
-
-    let event_non_dechiffrables: ReponseSynchroniserCles = m.message.get_msg().map_contenu(None)?;
 
     let enveloppe = match m.message.certificat.clone() {
         Some(e) => {
@@ -1545,10 +1539,25 @@ async fn evenement_cle_manquante<M>(middleware: &M, m: MessageValideAction, gest
         None => return Ok(None)  // Type certificat inconnu
     };
 
+    let partition = enveloppe.fingerprint.as_str();
+    let enveloppe_privee = middleware.get_enveloppe_signature();
+    let partition_locale = enveloppe_privee.fingerprint().as_str();
+
+    if partition == partition_locale {
+        debug!("evenement_cle_manquante Evenement emis par la partition locale, on l'ignore");
+        return Ok(None)
+    }
+
+    let event_non_dechiffrables: ReponseSynchroniserCles = m.message.get_msg().map_contenu(None)?;
+
+    let nom_collection = match gestionnaire.get_collection_cles() {
+        Some(n) => n,
+        None => Err(format!("maitredescles_partition.evenement_cle_manquante Collection cles n'est pas definie"))?
+    };
+
     // S'assurer que le certificat de maitre des cles recus est dans la liste de rechiffrage
     middleware.recevoir_certificat_chiffrage(middleware, &m.message).await?;
 
-    let partition = enveloppe.fingerprint.as_str();
     let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_TRANSFERT_CLE)
         .exchanges(vec![Securite::L4Secure])
         .partition(partition)

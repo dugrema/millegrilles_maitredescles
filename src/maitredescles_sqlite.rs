@@ -1674,7 +1674,7 @@ async fn evenement_cle_manquante<M>(middleware: &M, gestionnaire: &GestionnaireM
     let partition_locale = enveloppe_privee.fingerprint().as_str();
 
     if partition == partition_locale {
-        // Evenement emis par la partition locale - on l'ignore
+        debug!("evenement_cle_manquante Evenement emis par la partition locale, on l'ignore");
         return Ok(None)
     }
 
