@@ -1106,8 +1106,6 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
 
     debug!("Resultat verification preuve : {:?}", map_validite_fuuid);
 
-    todo!("fix me")
-
     // // Verifier toutes les cles qui n'ont pas ete identifiees dans la base de donnees (inconnues)
     // let liste_inconnues: Vec<String> = liste_verification.iter().filter(|(k, v)| match v {
     //     Some(_) => false,
@@ -1134,14 +1132,14 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
     //         // liste_verification.insert(hachage_bytes, Some(true));
     //     }
     // }
-    //
-    // // Preparer la reponse
-    // let reponse_json = json!({
-    //     "verification": liste_verification,
-    // });
-    // let reponse = middleware.formatter_reponse(reponse_json, None)?;
-    //
-    // Ok(Some(reponse))
+
+    // Preparer la reponse
+    let reponse_json = json!({
+        "verification": map_validite_fuuid,
+    });
+    let reponse = middleware.formatter_reponse(reponse_json, None)?;
+
+    Ok(Some(reponse))
 }
 
 async fn rechiffrer_cles<M>(
