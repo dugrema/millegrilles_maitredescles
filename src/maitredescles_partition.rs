@@ -184,8 +184,8 @@ impl GestionnaireMaitreDesClesPartition {
 
             if dechiffrer {
                 rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE), exchange: sec.clone() });
-                rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_VERIFIER_PREUVE), exchange: sec.clone() });
-                rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}.{}", DOMAINE_NOM, nom_partition, REQUETE_VERIFIER_PREUVE), exchange: sec.clone() });
+                // rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_VERIFIER_PREUVE), exchange: sec.clone() });
+                // rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}.{}", DOMAINE_NOM, nom_partition, REQUETE_VERIFIER_PREUVE), exchange: sec.clone() });
             }
 
             rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_CERTIFICAT_MAITREDESCLES), exchange: sec.clone() });
@@ -1028,12 +1028,23 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
     let requete: RequeteVerifierPreuve = m.message.get_msg().map_contenu(None)?;
     debug!("requete_verifier_preuve cle parsed : {:?}", requete);
 
+    let certificat = match &m.message.certificat {
+        Some(inner) => inner.clone(),
+        None => Err(format!("maitredescles_partition.requete_verifier_preuve Certificat manquant"))?
+    };
+    let domaines = match certificat.get_domaines()? {
+        Some(inner) => inner,
+        None => Err(format!("maitredescles_partition.requete_verifier_preuve Certificat sans domaines"))?
+    };
+
     // La preuve doit etre recente (moins de 5 minutes)
+    let date_now = Utc::now();
+    let date_valid_min = date_now - Duration::minutes(5);  // Expiration
+    let date_valid_max = date_now + Duration::minutes(2);  // Futur - systime sync issue
     {
         let estampille = &m.message.get_entete().estampille;
         let datetime_estampille = estampille.get_datetime();
-        let date_expiration = Utc::now() - Duration::minutes(5);
-        if datetime_estampille < &date_expiration {
+        if &date_valid_min > datetime_estampille || &date_valid_max < datetime_estampille {
             Err(format!("maitredescles_partition.requete_verifier_preuve Demande preuve est expiree ({:?})", datetime_estampille))?;
         }
     }
@@ -1041,21 +1052,16 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
     let enveloppe_privee = middleware.get_enveloppe_signature();
 
     // Preparer une liste de verification pour chaque cle par hachage_bytes
-    let mut map_hachage_bytes = HashMap::new();
-    for cle in requete.cles.into_iter() {
-        map_hachage_bytes.insert(cle.hachage_bytes.clone(), cle);
-    }
-
+    let mut map_validite_fuuid = HashMap::new();  // fuuid = valide(true/false)
     let mut liste_hachage_bytes = Vec::new();
-    let mut liste_verification: HashMap<String, Option<String>> = HashMap::new();
-    for (hachage_bytes, _) in map_hachage_bytes.iter() {
-        let hachage_bytes = hachage_bytes.as_str();
-        liste_hachage_bytes.push(hachage_bytes);
-        liste_verification.insert(hachage_bytes.to_owned(), None);
+    for (cle, _) in requete.preuves.iter() {
+        map_validite_fuuid.insert(cle.clone(), false);
+        liste_hachage_bytes.push(cle);
     }
 
     // Trouver les cles en reference
     let filtre = doc! {
+        "domaine": {"$in": domaines},
         CHAMP_HACHAGE_BYTES: {"$in": liste_hachage_bytes}
     };
     debug!("requete_verifier_preuve Filtre cles sur collection {} : {:?}", nom_collection, filtre);
@@ -1066,7 +1072,7 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
     let cle_privee = enveloppe_privee.cle_privee();
     while let Some(rc) = curseur.next().await {
         let doc_cle = rc?;
-        let cle_mongo_chiffree: TransactionCle = match convertir_bson_deserializable::<TransactionCle>(doc_cle) {
+        let cle_mongo_chiffree: DocumentClePartition = match convertir_bson_deserializable(doc_cle) {
             Ok(c) => c,
             Err(e) => {
                 error!("requete_verifier_preuve Erreur conversion bson vers TransactionCle : {:?}", e);
@@ -1075,59 +1081,67 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
         };
         let cle_mongo_dechiffree = extraire_cle_secrete(cle_privee, cle_mongo_chiffree.cle.as_str())?;
         let hachage_bytes_mongo = cle_mongo_chiffree.hachage_bytes.as_str();
-        if let Some(cle_preuve) = map_hachage_bytes.get(hachage_bytes_mongo) {
-            todo!("Fix me");
-            // match dechiffrer_asymetrique_multibase(cle_privee, cle_preuve.cle.as_str()){
-            //     Ok(cle_preuve_dechiffree) => {
-            //         if cle_mongo_dechiffree == cle_preuve_dechiffree {
-            //             // La cle preuve correspond a la cle dans la base de donnees, verification OK
-            //             liste_verification.insert(hachage_bytes_mongo.into(), Some(true));
-            //         } else {
-            //             liste_verification.insert(hachage_bytes_mongo.into(), Some(false));
-            //         }
-            //     },
-            //     Err(e) => {
-            //         error!("requete_verifier_preuve Erreur dechiffrage cle {} : {:?}", hachage_bytes_mongo, e);
-            //         liste_verification.insert(hachage_bytes_mongo.into(), Some(false));
-            //     }
-            // }
+
+        debug!("requete_verifier_preuve Resultat mongo hachage_bytes {}", hachage_bytes_mongo);
+
+        if let Some(cle_preuve) = requete.preuves.get(hachage_bytes_mongo) {
+            let date_preuve = cle_preuve.date.get_datetime();
+            if &date_valid_min > date_preuve || &date_valid_max < date_preuve {
+                warn!("requete_verifier_preuve Date preuve {} invalide : {:?}", hachage_bytes_mongo, date_preuve);
+                continue;  // Skip
+            }
+
+            // Valider la preuve (hachage)
+            let valide = match cle_preuve.verifier_preuve(requete.fingerprint.as_str(), &cle_mongo_dechiffree) {
+                Ok(inner) => inner,
+                Err(e) => {
+                    error!("Erreur verification preuve : {:?}", e);
+                    false
+                }
+            };
+
+            map_validite_fuuid.insert(hachage_bytes_mongo.to_string(), valide);
         }
     }
 
-    // Verifier toutes les cles qui n'ont pas ete identifiees dans la base de donnees (inconnues)
-    let liste_inconnues: Vec<String> = liste_verification.iter().filter(|(k, v)| match v {
-        Some(_) => false,
-        None => true
-    }).map(|(k,_)| k.to_owned()).collect();
-    for hachage_bytes in liste_inconnues.into_iter() {
-        if let Some(info_cle) = map_hachage_bytes.remove(&hachage_bytes) {
-            debug!("requete_verifier_preuve Conserver nouvelle cle {}", hachage_bytes);
+    debug!("Resultat verification preuve : {:?}", map_validite_fuuid);
 
-            todo!("Fix me");
-            // let commande_cle = rechiffrer_pour_maitredescles(middleware, &info_cle)?;
-            //
-            // // Conserver la cle via commande
-            // let partition = gestionnaire.fingerprint.as_str();
-            // let routage = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
-            //     .partition(partition)
-            //     .build();
-            // // Conserver la cle
-            // // let commande_cle = info_cle.into_commande(partition);
-            // // Transmettre commande de sauvegarde - on n'attend pas la reponse (deadlock)
-            // middleware.transmettre_commande(routage, &commande_cle, false).await?;
-            //
-            // // Indiquer que la cle est autorisee (c'est l'usager qui vient de la pousser)
-            // liste_verification.insert(hachage_bytes, Some(true));
-        }
-    }
+    todo!("fix me")
 
-    // Preparer la reponse
-    let reponse_json = json!({
-        "verification": liste_verification,
-    });
-    let reponse = middleware.formatter_reponse(reponse_json, None)?;
-
-    Ok(Some(reponse))
+    // // Verifier toutes les cles qui n'ont pas ete identifiees dans la base de donnees (inconnues)
+    // let liste_inconnues: Vec<String> = liste_verification.iter().filter(|(k, v)| match v {
+    //     Some(_) => false,
+    //     None => true
+    // }).map(|(k,_)| k.to_owned()).collect();
+    // for hachage_bytes in liste_inconnues.into_iter() {
+    //     if let Some(info_cle) = map_hachage_bytes.remove(&hachage_bytes) {
+    //         debug!("requete_verifier_preuve Conserver nouvelle cle {}", hachage_bytes);
+    //
+    //         todo!("Fix me");
+    //         // let commande_cle = rechiffrer_pour_maitredescles(middleware, &info_cle)?;
+    //         //
+    //         // // Conserver la cle via commande
+    //         // let partition = gestionnaire.fingerprint.as_str();
+    //         // let routage = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
+    //         //     .partition(partition)
+    //         //     .build();
+    //         // // Conserver la cle
+    //         // // let commande_cle = info_cle.into_commande(partition);
+    //         // // Transmettre commande de sauvegarde - on n'attend pas la reponse (deadlock)
+    //         // middleware.transmettre_commande(routage, &commande_cle, false).await?;
+    //         //
+    //         // // Indiquer que la cle est autorisee (c'est l'usager qui vient de la pousser)
+    //         // liste_verification.insert(hachage_bytes, Some(true));
+    //     }
+    // }
+    //
+    // // Preparer la reponse
+    // let reponse_json = json!({
+    //     "verification": liste_verification,
+    // });
+    // let reponse = middleware.formatter_reponse(reponse_json, None)?;
+    //
+    // Ok(Some(reponse))
 }
 
 async fn rechiffrer_cles<M>(

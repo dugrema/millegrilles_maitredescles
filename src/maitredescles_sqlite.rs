@@ -951,57 +951,57 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
         }
     }
 
-    // Preparer une liste de verification pour chaque cle par hachage_bytes
-    let mut map_hachage_bytes = HashMap::new();
-    for cle in requete.cles.into_iter() {
-        map_hachage_bytes.insert(cle.hachage_bytes.clone(), cle);
-    }
-
-    let mut liste_hachage_bytes = Vec::new();
-    let mut liste_verification: HashMap<String, Option<String>> = HashMap::new();
-    for (hachage_bytes, _) in map_hachage_bytes.iter() {
-        let hachage_bytes = hachage_bytes.as_str();
-        liste_hachage_bytes.push(hachage_bytes);
-        liste_verification.insert(hachage_bytes.to_owned(), None);
-    }
-
-    // Trouver les cles en reference
-    let connexion = gestionnaire.ouvrir_connection(middleware, true);
-    let enveloppe_privee = middleware.get_enveloppe_signature();
-    let cle_privee = enveloppe_privee.cle_privee();
-
-    for hachage_bytes in liste_hachage_bytes {
-        let transaction_cle = match charger_cle(&connexion, hachage_bytes) {
-            Ok(c) => match c{
-                Some(c) => c,
-                None => continue
-            },
-            Err(e) => {
-                error!("requete_verifier_preuve Erreur chargement cle {} : {:?}", hachage_bytes, e);
-                continue
-            }
-        };
-
-        let cle_db_dechiffree = extraire_cle_secrete(cle_privee, transaction_cle.cle.as_str())?;
-        let hachage_bytes_db = transaction_cle.hachage_bytes.as_str();
-        if let Some(cle_preuve) = map_hachage_bytes.get(hachage_bytes_db) {
-            todo!("Fix me");
-            // match dechiffrer_asymetrique_multibase(cle_privee, cle_preuve.cle.as_str()){
-            //     Ok(cle_preuve_dechiffree) => {
-            //         if cle_db_dechiffree == cle_preuve_dechiffree {
-            //             // La cle preuve correspond a la cle dans la base de donnees, verification OK
-            //             liste_verification.insert(hachage_bytes_db.into(), Some(true));
-            //         } else {
-            //             liste_verification.insert(hachage_bytes_db.into(), Some(false));
-            //         }
-            //     },
-            //     Err(e) => {
-            //         error!("requete_verifier_preuve Erreur dechiffrage cle {} : {:?}", hachage_bytes_db, e);
-            //         liste_verification.insert(hachage_bytes_db.into(), Some(false));
-            //     }
-            // }
-        }
-    }
+    // // Preparer une liste de verification pour chaque cle par hachage_bytes
+    // let mut map_hachage_bytes = HashMap::new();
+    // for cle in requete.cles.into_iter() {
+    //     map_hachage_bytes.insert(cle.hachage_bytes.clone(), cle);
+    // }
+    //
+    // let mut liste_hachage_bytes = Vec::new();
+    // let mut liste_verification: HashMap<String, Option<String>> = HashMap::new();
+    // for (hachage_bytes, _) in map_hachage_bytes.iter() {
+    //     let hachage_bytes = hachage_bytes.as_str();
+    //     liste_hachage_bytes.push(hachage_bytes);
+    //     liste_verification.insert(hachage_bytes.to_owned(), None);
+    // }
+    //
+    // // Trouver les cles en reference
+    // let connexion = gestionnaire.ouvrir_connection(middleware, true);
+    // let enveloppe_privee = middleware.get_enveloppe_signature();
+    // let cle_privee = enveloppe_privee.cle_privee();
+    //
+    // for hachage_bytes in liste_hachage_bytes {
+    //     let transaction_cle = match charger_cle(&connexion, hachage_bytes) {
+    //         Ok(c) => match c{
+    //             Some(c) => c,
+    //             None => continue
+    //         },
+    //         Err(e) => {
+    //             error!("requete_verifier_preuve Erreur chargement cle {} : {:?}", hachage_bytes, e);
+    //             continue
+    //         }
+    //     };
+    //
+    //     let cle_db_dechiffree = extraire_cle_secrete(cle_privee, transaction_cle.cle.as_str())?;
+    //     let hachage_bytes_db = transaction_cle.hachage_bytes.as_str();
+    //     if let Some(cle_preuve) = map_hachage_bytes.get(hachage_bytes_db) {
+    //         todo!("Fix me");
+    //         // match dechiffrer_asymetrique_multibase(cle_privee, cle_preuve.cle.as_str()){
+    //         //     Ok(cle_preuve_dechiffree) => {
+    //         //         if cle_db_dechiffree == cle_preuve_dechiffree {
+    //         //             // La cle preuve correspond a la cle dans la base de donnees, verification OK
+    //         //             liste_verification.insert(hachage_bytes_db.into(), Some(true));
+    //         //         } else {
+    //         //             liste_verification.insert(hachage_bytes_db.into(), Some(false));
+    //         //         }
+    //         //     },
+    //         //     Err(e) => {
+    //         //         error!("requete_verifier_preuve Erreur dechiffrage cle {} : {:?}", hachage_bytes_db, e);
+    //         //         liste_verification.insert(hachage_bytes_db.into(), Some(false));
+    //         //     }
+    //         // }
+    //     }
+    // }
 
     todo!("Fix me")
 
