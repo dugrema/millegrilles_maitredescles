@@ -129,12 +129,13 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M, nom_collection_cle
     Ok(())
 }
 
-pub async fn entretien<M>(_middleware: Arc<M>)
+pub async fn entretien<M>(middleware: Arc<M>)
     where M: Middleware + 'static
 {
     loop {
         sleep(Duration::new(30, 0)).await;
         debug!("Cycle entretien {}", DOMAINE_NOM);
+        middleware.entretien_validateur().await;
     }
 }
 
