@@ -1000,6 +1000,7 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
             "code": 1,
             "cles": &cles,
         });
+        debug!("requete_dechiffrage Reponse rechiffrage {:?} : {:?}", m.correlation_id, reponse);
         middleware.formatter_reponse(reponse, None)?
     } else {
         // On n'a pas trouve de cles
