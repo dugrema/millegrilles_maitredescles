@@ -592,6 +592,10 @@ pub fn calculer_cle_ref(commande: &CommandeSauvegarderCle, cle_secrete: &CleSecr
     // Ajouter cle secrete
     hachage_src_bytes.extend(cle_secrete.0);
 
+    // Ajouter domaine
+    let domaine = commande.domaine.as_str();
+    hachage_src_bytes.extend(domaine.as_bytes());
+
     // Hacher
     let cle_ref = hacher_bytes(&hachage_src_bytes[..], Some(Code::Blake2s256), Some(Base58Btc));
 
