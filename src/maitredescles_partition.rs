@@ -1642,7 +1642,7 @@ async fn evenement_cle_manquante<M>(middleware: &M, m: MessageValideAction, gest
     // S'assurer que le certificat de maitre des cles recus est dans la liste de rechiffrage
     middleware.recevoir_certificat_chiffrage(middleware, &m.message).await?;
 
-    let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_TRANSFERT_CLE)
+    let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
         .exchanges(vec![Securite::L4Secure])
         .partition(partition)
         .build();
