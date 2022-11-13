@@ -18,6 +18,7 @@ use millegrilles_common_rust::tokio::{sync::mpsc::Sender, time::{Duration, sleep
 use millegrilles_common_rust::certificats::ordered_map;
 use millegrilles_common_rust::common_messages::ReponseSignatureCertificat;
 use millegrilles_common_rust::{multibase, multibase::Base};
+use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::hachages::hacher_bytes;
 use millegrilles_common_rust::multibase::Base::Base58Btc;
 use millegrilles_common_rust::multihash::Code;
@@ -64,7 +65,7 @@ pub const CHAMP_ACCES_CLE_INCONNUE: &str = "4.inconnue";
 
 /// Creer index MongoDB
 pub async fn preparer_index_mongodb_custom<M>(middleware: &M, nom_collection_cles: &str, ca: bool) -> Result<(), String>
-    where M: MongoDao
+    where M: MongoDao + ConfigMessages
 {
     // // Index hachage_bytes
     // let options_unique_cles_hachage_bytes = IndexOptions {
@@ -90,6 +91,7 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M, nom_collection_cle
             ChampIndex { nom_champ: String::from(CHAMP_CLE_REF), direction: 1 },
         );
         middleware.create_index(
+            middleware,
             nom_collection_cles,
             champs_index_unique_cle_ref,
             Some(options_unique_cle_ref)
@@ -106,6 +108,7 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M, nom_collection_cle
         ChampIndex {nom_champ: String::from(TRANSACTION_CHAMP_DOMAINE), direction: 1},
     );
     middleware.create_index(
+        middleware,
         nom_collection_cles,
         champs_index_cles_hachage_bytes_domaines,
         Some(options_unique_cles_hachage_bytes_domaines)
@@ -121,6 +124,7 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M, nom_collection_cle
         ChampIndex {nom_champ: String::from(CHAMP_CREATION), direction: 1},
     );
     middleware.create_index(
+        middleware,
         nom_collection_cles,
         champs_index_non_dechiffrables,
         Some(options_non_dechiffrables)

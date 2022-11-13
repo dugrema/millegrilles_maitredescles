@@ -348,7 +348,9 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
         false
     }
 
-    async fn preparer_database<M>(&self, middleware: &M) -> Result<(), String> where M: Middleware + 'static {
+    async fn preparer_database<M>(&self, middleware: &M) -> Result<(), String>
+        where M: Middleware + 'static
+    {
         if let Some(nom_collection_cles) = self.get_collection_cles() {
             debug!("preparer_database Ajouter index pour collection {}", nom_collection_cles);
             preparer_index_mongodb_custom(middleware, nom_collection_cles.as_str(), false).await?;
@@ -445,7 +447,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
 }
 
 pub async fn preparer_index_mongodb_partition<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition) -> Result<(), String>
-    where M: MongoDao
+    where M: MongoDao + ConfigMessages
 {
     if let Some(collection_cles) = gestionnaire.get_collection_cles() {
 
@@ -458,6 +460,7 @@ pub async fn preparer_index_mongodb_partition<M>(middleware: &M, gestionnaire: &
             ChampIndex { nom_champ: String::from(CHAMP_CONFIRMATION_CA), direction: 1 },
         );
         middleware.create_index(
+            middleware,
             collection_cles.as_str(),
             champs_index_confirmation_ca,
             Some(options_confirmation_ca)
