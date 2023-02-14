@@ -614,10 +614,10 @@ pub fn rechiffrer_cle(cle: &mut DocumentClePartition, privee: &EnveloppePrivee, 
         // Ok, acces global
     } else if certificat_destination.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
         // Ok, acces global,
-    } else if certificat_destination.verifier_roles(vec![RolesCertificats::ComptePrive]) {
-        // Compte prive, certificats sont verifies par le domaine (relai de permission)
-    } else if certificat_destination.verifier_roles(vec![RolesCertificats::Stream]) {
-        // Certificat de streaming - on doit se fier a l'autorisation pour garantir que c'est un fichier video/audio
+    } else if certificat_destination.verifier_roles(vec![RolesCertificats::ComptePrive, RolesCertificats::Stream, RolesCertificats::Fichiers]) {
+        // ComptePrive : certificats sont verifies par le domaine (relai de permission)
+        // Stream : on doit se fier a l'autorisation pour garantir que c'est un fichier video/audio
+        // Fichiers : on doit se fier a l'autorisation pour garantir que c'est une cle permise (e.g. configuration)
     } else {
         Err(format!("maitredescles_partition.rechiffrer_cle Certificat sans user_id ni L4Secure, acces refuse"))?
     }
