@@ -610,15 +610,18 @@ pub fn calculer_cle_ref(commande: &CommandeSauvegarderCle, cle_secrete: &CleSecr
 pub fn rechiffrer_cle(cle: &mut DocumentClePartition, privee: &EnveloppePrivee, certificat_destination: &EnveloppeCertificat)
     -> Result<(), Box<dyn Error>>
 {
-    if certificat_destination.verifier_exchanges(vec![Securite::L4Secure]) {
-        // Ok, acces global
+    if certificat_destination.verifier_exchanges(vec![Securite::L4Secure, Securite::L3Protege, Securite::L2Prive, Securite::L1Public]) {
+        // Ok, certificat de composant avec acces MQ
     } else if certificat_destination.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
         // Ok, acces global,
-    } else if certificat_destination.verifier_roles(vec![RolesCertificats::ComptePrive, RolesCertificats::Stream, RolesCertificats::Fichiers]) {
-        // ComptePrive : certificats sont verifies par le domaine (relai de permission)
-        // Stream : on doit se fier a l'autorisation pour garantir que c'est un fichier video/audio
-        // Fichiers : on doit se fier a l'autorisation pour garantir que c'est une cle permise (e.g. configuration)
-    } else {
+    }
+    // else if certificat_destination.verifier_roles(
+    //     vec![RolesCertificats::ComptePrive, RolesCertificats::Stream, RolesCertificats::Fichiers]) {
+    //     // ComptePrive : certificats sont verifies par le domaine (relai de permission)
+    //     // Stream : on doit se fier a l'autorisation pour garantir que c'est un fichier video/audio
+    //     // Fichiers : on doit se fier a l'autorisation pour garantir que c'est une cle permise (e.g. configuration)
+    // }
+    else {
         Err(format!("maitredescles_partition.rechiffrer_cle Certificat sans user_id ni L4Secure, acces refuse"))?
     }
 
