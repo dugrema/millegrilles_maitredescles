@@ -138,6 +138,10 @@ pub async fn entretien<M>(middleware: Arc<M>)
 {
     loop {
         sleep(Duration::new(30, 0)).await;
+        if middleware.get_mode_regeneration() == true {
+            debug!("entretien Regeneration en cours, skip entretien");
+            continue;
+        }
         debug!("Cycle entretien {}", DOMAINE_NOM);
         middleware.entretien_validateur().await;
     }
