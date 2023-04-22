@@ -648,7 +648,7 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
     where M: GenerateurMessages + MongoDao + CleChiffrageHandler
 {
     debug!("commande_sauvegarder_cle Consommer commande : {:?}", & m.message);
-    let commande: CommandeSauvegarderCle = m.message.get_msg().map_contenu(None)?;
+    let commande: CommandeSauvegarderCle = m.message.get_msg().map_contenu()?;
     debug!("Commande sauvegarder cle parsed : {:?}", commande);
 
     let partition_message = m.get_partition();
@@ -783,7 +783,7 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
         None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Gestionnaire sans partition/certificat"))?
     };
 
-    let commande: CommandeRechiffrerBatch = m.message.get_msg().map_contenu(None)?;
+    let commande: CommandeRechiffrerBatch = m.message.get_msg().map_contenu()?;
     debug!("commande_rechiffrer_batch Commande parsed : {:?}", commande);
 
     let fingerprint = match gestionnaire.handler_rechiffrage.fingerprint() {
@@ -879,9 +879,14 @@ async fn aiguillage_transaction<M, T>(middleware: &M, transaction: T, gestionnai
         M: ValidateurX509 + GenerateurMessages + MongoDao,
         T: Transaction
 {
-    match transaction.get_action() {
+    let action = match transaction.get_routage().action.as_ref() {
+        Some(inner) => inner.as_str(),
+        None => Err(format!("core_backup.aiguillage_transaction: Transaction {} n'a pas d'action", transaction.get_uuid_transaction()))?
+    };
+
+    match action {
         // TRANSACTION_CLE => transaction_cle(middleware, transaction, gestionnaire).await,
-        _ => Err(format!("core_backup.aiguillage_transaction: Transaction {} est de type non gere : {}", transaction.get_uuid_transaction(), transaction.get_action())),
+        _ => Err(format!("core_backup.aiguillage_transaction: Transaction {} est de type non gere : {}", transaction.get_uuid_transaction(), action)),
     }
 }
 
@@ -890,7 +895,7 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
     where M: GenerateurMessages + MongoDao + VerificateurMessage + ValidateurX509
 {
     debug!("requete_dechiffrage Consommer requete : {:?}", & m.message);
-    let requete: RequeteDechiffrage = m.message.get_msg().map_contenu(None)?;
+    let requete: RequeteDechiffrage = m.message.get_msg().map_contenu()?;
     debug!("requete_dechiffrage cle parsed : {:?}", requete);
 
     let enveloppe_privee = middleware.get_enveloppe_signature();
@@ -1029,7 +1034,7 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
     };
 
     debug!("requete_verifier_preuve Consommer requete : {:?}", & m.message);
-    let requete: RequeteVerifierPreuve = m.message.get_msg().map_contenu(None)?;
+    let requete: RequeteVerifierPreuve = m.message.get_msg().map_contenu()?;
     debug!("requete_verifier_preuve cle parsed : {:?}", requete);
 
     let certificat = match &m.message.certificat {
@@ -1046,7 +1051,7 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
     let date_valid_min = date_now - Duration::minutes(5);  // Expiration
     let date_valid_max = date_now + Duration::minutes(2);  // Futur - systime sync issue
     {
-        let estampille = &m.message.get_entete().estampille;
+        let estampille = &m.message.parsed.estampille;
         let datetime_estampille = estampille.get_datetime();
         if &date_valid_min > datetime_estampille || &date_valid_max < datetime_estampille {
             Err(format!("maitredescles_partition.requete_verifier_preuve Demande preuve est expiree ({:?})", datetime_estampille))?;
@@ -1394,7 +1399,7 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
     loop {
         let reponse = match middleware.transmettre_requete(routage_sync.clone(), &requete_sync).await? {
             TypeMessage::Valide(reponse) => {
-                reponse.message.get_msg().map_contenu::<ReponseSynchroniserCles>(None)?
+                reponse.message.get_msg().map_contenu::<ReponseSynchroniserCles>()?
             },
             _ => {
                 warn!("synchroniser_cles Mauvais type de reponse recu, on abort");
@@ -1524,7 +1529,7 @@ async fn emettre_cles_vers_ca<M>(
             match r {
                 TypeMessage::Valide(reponse) => {
                     debug!("emettre_cles_vers_ca Reponse confirmer cle sur CA : {:?}", reponse);
-                    let reponse_cles_manquantes: ReponseConfirmerClesSurCa = reponse.message.get_msg().map_contenu(None)?;
+                    let reponse_cles_manquantes: ReponseConfirmerClesSurCa = reponse.message.get_msg().map_contenu()?;
                     let cles_manquantes = reponse_cles_manquantes.cles_manquantes;
                     traiter_cles_manquantes_ca(middleware, gestionnaire, &hachage_bytes, &cles_manquantes).await?;
                 },
@@ -1632,7 +1637,7 @@ async fn evenement_cle_manquante<M>(middleware: &M, m: MessageValideAction, gest
         return Ok(None)
     }
 
-    let event_non_dechiffrables: ReponseSynchroniserCles = m.message.get_msg().map_contenu(None)?;
+    let event_non_dechiffrables: ReponseSynchroniserCles = m.message.get_msg().map_contenu()?;
 
     let nom_collection = match gestionnaire.get_collection_cles() {
         Some(n) => n,

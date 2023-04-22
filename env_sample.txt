@@ -1,0 +1,74 @@
+run --package millegrilles_maitredescles --bin millegrilles_maitredescles
+
+Cargo: maitredescles CA + partition (level: WORKSPACE)
+CAFILE=/var/opt/millegrilles/configuration/pki.millegrille.cert
+CERTFILE=/var/opt/millegrilles/secrets/pki.maitredescles.cert
+KEYFILE=/var/opt/millegrilles/secrets/pki.maitredescles.cle
+MG_MAITREDESCLES_MODE=CA_partition
+MG_MONGO_HOST=localhost
+MG_MQ_HOST=localhost
+MG_NOEUD_ID=42c6d697-84d7-4b07-b62a-f7758804f5b2
+MG_REDIS_PASSWORD_FILE=/var/opt/millegrilles/secrets/passwd.redis.txt
+MG_REDIS_URL=rediss://client_rust@localhost:6379#insecure
+RUST_LOG=warn,millegrilles_maitredescles=info,millegrilles_maitredescles::maitredescles_partition=debug,millegrilles_common_rust::common_messages=debug
+
+Cargo: maitredescles CA + partvolatil (level: WORKSPACE)
+CAFILE=/var/opt/millegrilles/configuration/pki.millegrille.cert
+CERTFILE=/var/opt/millegrilles/secrets/pki.maitredescles_ca_partvolatil.cert
+KEYFILE=/var/opt/millegrilles/secrets/pki.maitredescles_ca_partvolatil.cle
+MG_MAITREDESCLES_MODE=CA_partition
+MG_MONGO_HOST=localhost
+MG_MQ_HOST=localhost
+MG_NOEUD_ID=42c6d697-84d7-4b07-b62a-f7758804f5b2
+MG_REDIS_PASSWORD_FILE=/var/opt/millegrilles/secrets/passwd.redis.txt
+MG_REDIS_URL=rediss://client_rust@localhost:6379#insecure
+RUST_LOG=warn,millegrilles_maitredescles=info,millegrilles_maitredescles::maitredescles_partition=debug,millegrilles_maitredescles::domaines_maitredescles=debug,millegrilles_maitredescles::maitredescles_commun=debug
+
+Cargo: maitredescles CA (level: WORKSPACE)
+CAFILE=/var/opt/millegrilles/configuration/pki.millegrille.cert
+CERTFILE=/var/opt/millegrilles/secrets/pki.maitredescles.cert
+KEYFILE=/var/opt/millegrilles/secrets/pki.maitredescles.cle
+MG_MAITREDESCLES_MODE=CA
+MG_MONGO_HOST=localhost
+MG_MQ_HOST=localhost
+MG_NOEUD_ID=42c6d697-84d7-4b07-b62a-f7758804f5b2
+MG_REDIS_PASSWORD_FILE=/var/opt/millegrilles/secrets/passwd.redis.txt
+MG_REDIS_URL=rediss://client_rust@localhost:6379#insecure
+RUST_LOG=warn,millegrilles_maitredescles=info,millegrilles_maitredescles::maitredescles_partition=debug,millegrilles_maitredescles::domaines_maitredescles=debug
+
+Cargo: maitredescles partition (level: WORKSPACE)
+CAFILE=/var/opt/millegrilles/configuration/pki.millegrille.cert
+CERTFILE=/var/opt/millegrilles/secrets/pki.maitredescles.cert
+KEYFILE=/var/opt/millegrilles/secrets/pki.maitredescles.cle
+MG_MAITREDESCLES_MODE=partition
+MG_MONGO_HOST=localhost
+MG_MQ_HOST=localhost
+MG_NOEUD_ID=42c6d697-84d7-4b07-b62a-f7758804f5b2
+MG_REDIS_PASSWORD_FILE=/var/opt/millegrilles/secrets/passwd.redis.txt
+MG_REDIS_URL=rediss://client_rust@localhost:6379#insecure
+RUST_LOG=warn,millegrilles_maitredescles=info,millegrilles_maitredescles::maitredescles_partition=debug,millegrilles_maitredescles::domaines_maitredescles=debug
+
+Cargo: maitredescles sqlite1 no redis (level: WORKSPACE)
+CAFILE=/var/opt/millegrilles/configuration/pki.millegrille.cert
+CERTFILE=/var/opt/millegrilles/secrets/pki.maitredescles_sqlite1.cert
+KEYFILE=/var/opt/millegrilles/secrets/pki.maitredescles_sqlite1.cle
+MG_MAITREDESCLES_MODE=sqlite
+MG_MONGO_HOST=localhost
+MG_MQ_HOST=localhost
+MG_NOEUD_ID=42c6d697-84d7-4b07-b62a-f7758804f5b2
+MG_SQLITE_PATH=/tmp
+RUST_LOG=warn,millegrilles_maitredescles=info,millegrilles_maitredescles::maitredescles_sqlite=debug,millegrilles_common_rust::middleware_db=debug
+
+Cargo: maitredescles sqlite1 (level: WORKSPACE)
+CAFILE=/var/opt/millegrilles/configuration/pki.millegrille.cert
+CERTFILE=/var/opt/millegrilles/secrets/pki.maitredescles_sqlite1.cert
+KEYFILE=/var/opt/millegrilles/secrets/pki.maitredescles_sqlite1.cle
+MG_MAITREDESCLES_MODE=sqlite
+MG_MONGO_HOST=localhost
+MG_MQ_HOST=localhost
+MG_NOEUD_ID=42c6d697-84d7-4b07-b62a-f7758804f5b2
+MG_REDIS_PASSWORD_FILE=/var/opt/millegrilles/secrets/passwd.redis.txt
+MG_REDIS_URL=rediss://client_rust@localhost:6379#insecure
+MG_SQLITE_PATH=/tmp
+RUST_LOG=warn,millegrilles_maitredescles=info,millegrilles_maitredescles::maitredescles_sqlite=debug,millegrilles_common_rust::middleware_db=debug
+DESACTIVER_DECHIFFRAGE=1

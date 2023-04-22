@@ -15,7 +15,7 @@ use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMil
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::messages_generiques::MessageCedule;
 use millegrilles_common_rust::middleware::{Middleware, sauvegarder_traiter_transaction};
-use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};
+use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, MongoDao};
 use millegrilles_common_rust::mongodb::options::{CountOptions, FindOptions, Hint, UpdateOptions};
 use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange, QueueType};
 use millegrilles_common_rust::recepteur_messages::MessageValideAction;
@@ -329,7 +329,7 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
     where M: GenerateurMessages + MongoDao,
 {
     debug!("commande_sauvegarder_cle Consommer commande : {:?}", & m.message);
-    let commande: CommandeSauvegarderCle = m.message.get_msg().map_contenu(None)?;
+    let commande: CommandeSauvegarderCle = m.message.get_msg().map_contenu()?;
     debug!("Commande sauvegarder cle parsed : {:?}", commande);
 
     // // Valider identite
@@ -417,9 +417,14 @@ async fn aiguillage_transaction<M, T>(middleware: &M, transaction: T) -> Result<
         M: ValidateurX509 + GenerateurMessages + MongoDao,
         T: Transaction
 {
-    match transaction.get_action() {
+    let action = match transaction.get_routage().action.as_ref() {
+        Some(inner) => inner.as_str(),
+        None => Err(format!("core_backup.aiguillage_transaction: Transaction {} n'a pas d'action", transaction.get_uuid_transaction()))?
+    };
+
+    match action {
         TRANSACTION_CLE => transaction_cle(middleware, transaction).await,
-        _ => Err(format!("core_backup.aiguillage_transaction: Transaction {} est de type non gere : {}", transaction.get_uuid_transaction(), transaction.get_action())),
+        _ => Err(format!("maitredescles.aiguillage_transaction: Transaction {} est de type non gere : {}", transaction.get_uuid_transaction(), action)),
     }
 }
 
@@ -442,8 +447,11 @@ async fn transaction_cle<M, T>(middleware: &M, transaction: T) -> Result<Option<
     //     }
     // }
 
-    let hachage_bytes = transaction_cle.hachage_bytes.as_str();
-    let mut doc_bson_transaction = transaction.contenu();
+    let hachage_bytes = transaction_cle.hachage_bytes.clone();
+    let mut doc_bson_transaction = match convertir_to_bson(transaction_cle) {
+        Ok(inner) => inner,
+        Err(e) => Err(format!("maitredescles_ca.transaction_cle Erreur convertir_to_bson : {:?}", e))?
+    };
 
     doc_bson_transaction.insert(CHAMP_NON_DECHIFFRABLE, true);  // Flag non-dechiffrable par defaut (setOnInsert seulement)
     doc_bson_transaction.insert(CHAMP_CREATION, DateTime::now());  // Flag non-dechiffrable par defaut (setOnInsert seulement)
@@ -493,7 +501,7 @@ async fn requete_cles_non_dechiffrables<M>(middleware: &M, m: MessageValideActio
     where M: GenerateurMessages + MongoDao + VerificateurMessage,
 {
     debug!("requete_cles_non_dechiffrables Consommer commande : {:?}", & m.message);
-    let requete: RequeteClesNonDechiffrable = m.message.get_msg().map_contenu(None)?;
+    let requete: RequeteClesNonDechiffrable = m.message.get_msg().map_contenu()?;
     debug!("requete_cles_non_dechiffrables cle parsed : {:?}", requete);
 
     let mut curseur = {
@@ -572,7 +580,7 @@ async fn requete_synchronizer_cles<M>(middleware: &M, m: MessageValideAction, _g
     where M: GenerateurMessages + MongoDao + VerificateurMessage,
 {
     debug!("requete_synchronizer_cles Consommer requete : {:?}", & m.message);
-    let requete: RequeteSynchroniserCles = m.message.get_msg().map_contenu(None)?;
+    let requete: RequeteSynchroniserCles = m.message.get_msg().map_contenu()?;
     debug!("requete_synchronizer_cles cle parsed : {:?}", requete);
 
     let mut curseur = {
@@ -622,7 +630,7 @@ async fn evenement_cle_manquante<M>(middleware: &M, m: &MessageValideAction) -> 
     where M: ValidateurX509 + GenerateurMessages + MongoDao,
 {
     debug!("evenement_cle_manquante Marquer cles comme non dechiffrables {:?}", &m.message);
-    let event_non_dechiffrables: ReponseSynchroniserCles = m.message.get_msg().map_contenu(None)?;
+    let event_non_dechiffrables: ReponseSynchroniserCles = m.message.get_msg().map_contenu()?;
 
     let filtre = doc! { CHAMP_HACHAGE_BYTES: { "$in": event_non_dechiffrables.liste_hachage_bytes }};
     let ops = doc! {
@@ -641,7 +649,7 @@ async fn evenement_cle_recue_partition<M>(middleware: &M, m: &MessageValideActio
     where M: ValidateurX509 + GenerateurMessages + MongoDao,
 {
     debug!("evenement_cle_recue_partition Marquer cle comme confirmee (dechiffrable) par la partition {:?}", &m.message);
-    let event_cles_recues: ReponseSynchroniserCles = m.message.get_msg().map_contenu(None)?;
+    let event_cles_recues: ReponseSynchroniserCles = m.message.get_msg().map_contenu()?;
 
     let filtre = doc! { CHAMP_HACHAGE_BYTES: { "$in": event_cles_recues.liste_hachage_bytes }};
     let ops = doc! {
@@ -660,7 +668,7 @@ async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValideActio
     where M: GenerateurMessages + MongoDao + VerificateurMessage,
 {
     debug!("commande_confirmer_cles_sur_ca Consommer commande : {:?}", & m.message);
-    let requete: ReponseSynchroniserCles = m.message.get_msg().map_contenu(None)?;
+    let requete: ReponseSynchroniserCles = m.message.get_msg().map_contenu()?;
     debug!("requete_synchronizer_cles cle parsed : {:?}", requete);
 
     let mut cles_manquantes = HashSet::new();

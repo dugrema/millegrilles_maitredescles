@@ -186,7 +186,7 @@ pub async fn generer_certificat_volatil<M>(middleware: &M, handler_rechiffrage: 
 
     let reponse: ReponseSignatureCertificat = match middleware.transmettre_commande(routage, &csr_volatil, true).await? {
         Some(m) => match m {
-            TypeMessage::Valide(m) => m.message.parsed.map_contenu(None)?,
+            TypeMessage::Valide(m) => m.message.parsed.map_contenu()?,
             _ => Err(format!("maitredescles_commun.generer_certificat_volatil Mauvais type de reponse"))?
         },
         None => Err(format!("maitredescles_commun.generer_certificat_volatil Aucune reponse recue"))?
@@ -269,7 +269,7 @@ pub async fn requete_cles_inconnues<M>(middleware: &M, requete: &RequeteDechiffr
     let reponse = match middleware.transmettre_requete(routage_evenement_manquant.clone(), &evenement_cles_manquantes).await? {
         TypeMessage::Valide(m) => {
             debug!("requete_cles_inconnues Reponse recue {:?}", m);
-            m.message.parsed.map_contenu::<ReponseCleManquantes>(None)?
+            m.message.parsed.map_contenu::<ReponseCleManquantes>()?
         },
         _ => Err(format!("Erreur reponse pour requete cle manquante, mauvais type de reponse"))?
     };
