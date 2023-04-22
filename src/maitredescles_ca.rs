@@ -207,10 +207,13 @@ async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, gest
     debug!("Consommer requete : {:?}", &message.message);
 
     // Autorisation : On accepte les requetes de 3.protege ou 4.secure
-    match message.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure]) {
-        true => Ok(()),
-        false => Err(format!("Trigger cedule autorisation invalide (pas d'un exchange reconnu)")),
-    }?;
+    match message.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+        true => (),
+        false => match message.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure]) {
+            true => (),
+            false => Err(format!("Trigger cedule autorisation invalide (pas d'un exchange reconnu)"))?,
+        }
+    }
 
     match message.domaine.as_str() {
         DOMAINE_NOM => {
