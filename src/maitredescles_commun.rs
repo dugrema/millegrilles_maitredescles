@@ -337,8 +337,11 @@ pub struct TransactionCle {
 
     // Dechiffrage contenu
     pub format: FormatChiffrage,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub iv: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub header: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
