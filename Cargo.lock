@@ -1549,7 +1549,7 @@ checksum = "308cc39be01b73d0d18f82a0e7b2a3df85245f84af96fdddc5d202d27e47b86a"
 
 [[package]]
 name = "millegrilles_common_rust"
-version = "2023.5.0"
+version = "2023.5.1"
 dependencies = [
  "async-recursion",
  "async-std",
@@ -1594,7 +1594,7 @@ dependencies = [
 
 [[package]]
 name = "millegrilles_maitredescles"
-version = "2023.5.0"
+version = "2023.5.1"
 dependencies = [
  "env_logger",
  "log",
