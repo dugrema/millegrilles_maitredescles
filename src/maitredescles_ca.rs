@@ -256,7 +256,7 @@ where
 
 async fn consommer_transaction<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesCa) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
 where
-    M: ValidateurX509 + GenerateurMessages + MongoDao,
+    M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage
 {
     debug!("maitredescles_ca.consommer_transaction Consommer transaction : {:?}", &m.message);
 
