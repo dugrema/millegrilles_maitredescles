@@ -7,6 +7,7 @@ use millegrilles_common_rust::chiffrage_ed25519::{chiffrer_asymmetrique_ed25519,
 use millegrilles_common_rust::{multibase, openssl, openssl::pkey::{Id, PKey, Private, Public}};
 use millegrilles_common_rust::certificats::{EnveloppeCertificat, EnveloppePrivee};
 use millegrilles_common_rust::chiffrage_rsa::dechiffrer_asymetrique;
+use millegrilles_common_rust::chiffrage_streamxchacha20poly1305::CipherMgs4;
 use millegrilles_common_rust::common_messages::DemandeSignature;
 use millegrilles_common_rust::constantes::{ROLE_MAITRE_DES_CLES, ROLE_MAITRE_DES_CLES_VOLATIL, SECURITE_4_SECURE};
 use millegrilles_common_rust::multibase::Base;
@@ -14,6 +15,15 @@ use millegrilles_common_rust::openssl::hash::MessageDigest;
 use millegrilles_common_rust::openssl::nid::Nid;
 use millegrilles_common_rust::openssl::symm::Mode;
 use millegrilles_common_rust::openssl::x509::{X509Algorithm, X509Name, X509ReqBuilder};
+use millegrilles_common_rust::chacha20poly1305::{
+    aead::{Aead, AeadCore, KeyInit, OsRng},
+    XChaCha20Poly1305, XNonce
+};
+
+pub struct CleInterneChiffree {
+    pub cle: String,
+    pub nonce: String,
+}
 
 pub struct HandlerCleRechiffrage {
     /// Cle privee utilisee pour dechiffrer cles recues
@@ -201,5 +211,54 @@ impl HandlerCleRechiffrage {
         *guard = Some(cle_secrete);
 
         Ok(())
+    }
+
+    pub fn chiffrer_cle_secrete(&self, cle: &[u8]) -> Result<CleInterneChiffree, Box<dyn Error>> {
+        let (nonce, ciphertext) = {
+            let guard = self.cle_symmetrique.lock().expect("lock");
+            match guard.as_ref() {
+                Some(inner) => {
+                    // let key = XChaCha20Poly1305::generate_key(&mut OsRng);
+                    // let cipher = XChaCha20Poly1305::new(&inner.0[0..32]);
+                    let mut cipher = XChaCha20Poly1305::new((&inner.0).into());
+                    let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
+                    let ciphertext = match cipher.encrypt(&nonce, cle) {
+                        Ok(inner) => inner,
+                        Err(e) => Err(format!("maitredescles_volatil chiffrer_cle_secrete Erreur encrypt {:?}", e))?
+                    };
+                    (nonce, ciphertext)
+                },
+                None => panic!("Cle secrete non initialisee")
+            }
+        };
+
+        let nonce_string: String = multibase::encode(Base::Base64, &nonce[..]);
+        let cle_chiffree = multibase::encode(Base::Base64, &ciphertext[..]);;
+
+        // Ok((nonce_string, cle_chiffree))
+        Ok(CleInterneChiffree {cle: cle_chiffree, nonce: nonce_string})
+    }
+
+    pub fn dechiffer_cle_secrete(&self, cle: CleInterneChiffree) -> Result<CleSecrete, Box<dyn Error>> {
+        let nonce = multibase::decode(cle.nonce)?;
+        let cle_chiffree = multibase::decode(cle.cle)?;
+
+        let guard = self.cle_symmetrique.lock().expect("lock");
+        match guard.as_ref() {
+            Some(inner) => {
+                let mut cipher = XChaCha20Poly1305::new((&inner.0).into());
+                let cle_secrete = match cipher.decrypt((&nonce.1[..]).into(), &cle_chiffree.1[..]) {
+                    Ok(inner) => {
+                        let mut buffer = [0u8; 32];
+                        buffer.copy_from_slice(&inner[0..32]);
+                        CleSecrete(buffer)
+                    },
+                    Err(e) => Err(format!("maitredescles_volatil chiffrer_cle_secrete Erreur encrypt {:?}", e))?
+                };
+
+                Ok(cle_secrete)
+            },
+            None => panic!("Cle secrete non initialisee")
+        }
     }
 }

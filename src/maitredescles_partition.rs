@@ -11,7 +11,7 @@ use millegrilles_common_rust::multibase::Base;
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{doc, Document};
 use millegrilles_common_rust::certificats::{EnveloppeCertificat, EnveloppePrivee, ValidateurX509, VerificateurPermissions};
-use millegrilles_common_rust::chiffrage::{Chiffreur, CleChiffrageHandler, extraire_cle_secrete, rechiffrer_asymetrique_multibase};
+use millegrilles_common_rust::chiffrage::{chiffrer_asymetrique_multibase, Chiffreur, CleChiffrageHandler, extraire_cle_secrete, rechiffrer_asymetrique_multibase};
 use millegrilles_common_rust::chiffrage_cle::CommandeSauvegarderCle;
 use millegrilles_common_rust::chrono::{Duration, Utc};
 use millegrilles_common_rust::configuration::ConfigMessages;
@@ -44,7 +44,7 @@ use millegrilles_common_rust::transactions::{EtatTransaction, marquer_transactio
 use millegrilles_common_rust::verificateur::VerificateurMessage;
 
 use crate::maitredescles_commun::*;
-use crate::maitredescles_volatil::HandlerCleRechiffrage;
+use crate::maitredescles_volatil::{CleInterneChiffree, HandlerCleRechiffrage};
 
 // const NOM_COLLECTION_RECHIFFRAGE: &str = "MaitreDesCles/rechiffrage";
 
@@ -127,7 +127,7 @@ impl GestionnaireMaitreDesClesPartition {
     fn get_collection_cles(&self) -> Option<String> {
         match self.get_partition_tronquee() {
             Some(p) => {
-                Some(format!("MaitreDesCles/{}/cles", p))
+                Some("MaitreDesCles/cles".to_string())
             },
             None => None
         }
@@ -705,7 +705,7 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
         }
     };
 
-    sauvegarder_cle(middleware, &commande, nom_collection_cles).await?;
+    sauvegarder_cle(middleware, gestionnaire, &commande, nom_collection_cles).await?;
 
     // if let Some(uid) = resultat.upserted_id {
     //     debug!("commande_sauvegarder_cle Nouvelle cle insere _id: {}, generer transaction", uid);
@@ -745,7 +745,10 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
     }
 }
 
-async fn sauvegarder_cle<M, S>(middleware: &M, commande: &CommandeSauvegarderCle, nom_collection_cles: S)
+async fn sauvegarder_cle<M, S>(
+    middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition,
+    commande: &CommandeSauvegarderCle, nom_collection_cles: S
+)
     -> Result<bool, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao, S: AsRef<str>
 {
@@ -759,15 +762,20 @@ async fn sauvegarder_cle<M, S>(middleware: &M, commande: &CommandeSauvegarderCle
     };
 
     // Valider identite, calculer cle_ref
-    let cle_ref = {
+    let (cle_ref, cle_chiffree) = {
         let cle_secrete = extraire_cle_secrete(middleware.get_enveloppe_signature().cle_privee(), cle)?;
         if commande.verifier_identite(&cle_secrete)? != true {
             Err(format!("maitredescles_partition.commande_sauvegarder_cle Erreur verifier identite commande, signature invalide"))?
         }
-        calculer_cle_ref(&commande, &cle_secrete)?
-    };
 
-    // Sauvegarde cle dans mongodb
+        // Chiffrer avec cle symmetrique locale
+        let handler_rechiffrage = gestionnaire.handler_rechiffrage.as_ref();
+        let cle_chiffree = handler_rechiffrage.chiffrer_cle_secrete(&cle_secrete.0[..])?;
+
+        let cle_ref = calculer_cle_ref(&commande, &cle_secrete)?;
+
+        (cle_ref, cle_chiffree)
+    };
 
     let mut doc_bson: Document = commande.clone().into();
     // Retirer cles, on re-insere la cle necessaire uniquement
@@ -777,6 +785,10 @@ async fn sauvegarder_cle<M, S>(middleware: &M, commande: &CommandeSauvegarderCle
     doc_bson.insert("confirmation_ca", false);
     doc_bson.insert(CHAMP_CLE_REF, &cle_ref);
     doc_bson.insert("cle", cle);
+
+    doc_bson.insert("cle_symmetrique", cle_chiffree.cle);
+    doc_bson.insert("nonce_symmetrique", cle_chiffree.nonce);
+
     doc_bson.insert(CHAMP_CREATION, Utc::now());
     doc_bson.insert(CHAMP_MODIFICATION, Utc::now());
 
@@ -975,7 +987,9 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
     // let (cles, cles_trouvees) = rechiffrer_cles(
     //     middleware, &m, &requete, enveloppe_privee, certificat.as_ref(), requete_autorisee_globalement, permission, &mut curseur).await?;
     let (mut cles, cles_trouvees) = rechiffrer_cles(
-        middleware, &m, &requete, enveloppe_privee.clone(), certificat.as_ref(), requete_autorisee_globalement, &mut curseur).await?;
+        middleware, gestionnaire,
+        &m, &requete, enveloppe_privee.clone(), certificat.as_ref(),
+        requete_autorisee_globalement, &mut curseur).await?;
 
     let nom_collection = match gestionnaire.get_collection_cles() {
         Some(n) => n,
@@ -1004,11 +1018,19 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
             for cle in liste_cles {
                 let commande: CommandeSauvegarderCle = cle.clone().into();
                 if let Some(cle_str) = cle.cles.get(fingerprint) {
-                    let cle_secrete = extraire_cle_secrete(middleware.get_enveloppe_signature().cle_privee(), cle_str.as_str())?;
+
+                    // let cle_chiffree = CleInterneChiffree { cle: cle_str.to_owned(), nonce: "aaa".into() };
+                    // let cle_secrete = gestionnaire.handler_rechiffrage.dechiffer_cle_secrete(CleInterneChiffree {})?;
+
+                    let cle_secrete = extraire_cle_secrete(
+                        middleware.get_enveloppe_signature().cle_privee(), cle_str.as_str())?;
+
                     let cle_ref = calculer_cle_ref(&commande, &cle_secrete)?;
                     debug!("requete_dechiffrage.requete_cles_inconnues Sauvegarder cle_ref {} / hachage_bytes {}", cle_ref, cle.hachage_bytes);
 
-                    if let Err(e) = sauvegarder_cle(middleware, &commande, nom_collection.as_str()).await {
+                    if let Err(e) = sauvegarder_cle(
+                        middleware, gestionnaire, &commande, nom_collection.as_str()).await
+                    {
                         warn!("Erreur sauvegarde cle inconnue {} : {:?}", fingerprint, e);
                     }
 
@@ -1178,6 +1200,7 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
 
 async fn rechiffrer_cles<M>(
     _middleware: &M,
+    gestionnaire: &GestionnaireMaitreDesClesPartition,
     _m: &MessageValideAction,
     _requete: &RequeteDechiffrage,
     enveloppe_privee: Arc<EnveloppePrivee>,
@@ -1191,6 +1214,8 @@ async fn rechiffrer_cles<M>(
 {
     let mut cles: HashMap<String, DocumentClePartition> = HashMap::new();
     let mut cles_trouvees = false;  // Flag pour dire qu'on a matche au moins 1 cle
+
+    let rechiffreur = &gestionnaire.handler_rechiffrage;
 
     while let Some(rc) = curseur.next().await {
         debug!("rechiffrer_cles document {:?}", rc);
@@ -1206,7 +1231,8 @@ async fn rechiffrer_cles<M>(
                 };
                 let hachage_bytes = cle.hachage_bytes.clone();
 
-                match rechiffrer_cle(&mut cle, enveloppe_privee.as_ref(), certificat) {
+                // match rechiffrer_cle(&mut cle, enveloppe_privee.as_ref(), certificat) {
+                match rechiffrer_cle(&mut cle, rechiffreur, certificat) {
                     Ok(()) => {
                         cles.insert(hachage_bytes, cle);
                     },
@@ -1320,6 +1346,53 @@ async fn verifier_autorisation_dechiffrage_global<M>(middleware: &M, m: &Message
 }
 
 /// Rechiffre une cle secrete
+fn rechiffrer_cle(cle: &mut DocumentClePartition, rechiffreur: &HandlerCleRechiffrage, certificat_destination: &EnveloppeCertificat)
+    -> Result<(), Box<dyn Error>>
+{
+    if certificat_destination.verifier_exchanges(vec![Securite::L4Secure]) {
+        // Ok, acces global
+    } else if certificat_destination.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+        // Ok, acces global,
+    } else if certificat_destination.verifier_roles(vec![RolesCertificats::ComptePrive]) {
+        // Compte prive, certificats sont verifies par le domaine (relai de permission)
+    } else if certificat_destination.verifier_roles(vec![RolesCertificats::Stream]) &&
+        certificat_destination.verifier_exchanges(vec![Securite::L2Prive]) {
+        // Certificat de streaming - on doit se fier a l'autorisation pour garantir que c'est un fichier video/audio
+    } else {
+        Err(format!("maitredescles_partition.rechiffrer_cle Certificat sans user_id ni L4Secure, acces refuse"))?
+    }
+
+    let hachage_bytes = cle.hachage_bytes.as_str();
+
+    let cle_secrete = match cle.cle_symmetrique.as_ref() {
+        Some(cle_symmetrique) => {
+            match cle.nonce_symmetrique.as_ref() {
+                Some(nonce) => {
+                    let cle_interne = CleInterneChiffree { cle: cle_symmetrique.to_owned(), nonce: nonce.to_owned() };
+                    rechiffreur.dechiffer_cle_secrete(cle_interne)?
+                },
+                None => {
+                    Err(format!("rechiffrer_cles Nonce manquant pour {}", hachage_bytes))?
+                }
+            }
+        },
+        None => {
+            Err(format!("rechiffrer_cles Cle symmetrique manquant pour {}", hachage_bytes))?
+        }
+    };
+
+    // let cle_originale = cle.cle.as_str();
+    // let cle_privee = privee.cle_privee();
+    let cle_publique = certificat_destination.certificat().public_key()?;
+    // let cle_rechiffree = rechiffrer_asymetrique_multibase(cle_privee, &cle_publique, cle_originale)?;
+    let cle_rechiffree = chiffrer_asymetrique_multibase(cle_secrete, &cle_publique)?;
+
+    // Remplacer cle dans message reponse
+    cle.cle = cle_rechiffree;
+
+    Ok(())
+}
+
 // fn rechiffrer_cle(cle: &mut DocumentClePartition, privee: &EnveloppePrivee, certificat_destination: &EnveloppeCertificat)
 //     -> Result<(), Box<dyn Error>>
 // {

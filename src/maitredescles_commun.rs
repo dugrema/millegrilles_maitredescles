@@ -434,6 +434,9 @@ pub struct DocumentClePartition {
     // Cle chiffree
     pub cle: String,
 
+    pub cle_symmetrique: Option<String>,
+    pub nonce_symmetrique: Option<String>,
+
     // Dechiffrage contenu
     pub format: FormatChiffrage,
     pub iv: Option<String>,
@@ -451,6 +454,8 @@ impl From<CommandeSauvegarderCle> for DocumentClePartition {
             identificateurs_document: value.identificateurs_document,
             signature_identite: value.signature_identite,
             cle: "".to_string(),
+            cle_symmetrique: None,
+            nonce_symmetrique: None,
             format: value.format,
             iv: value.iv,
             tag: value.tag,
@@ -494,6 +499,8 @@ impl DocumentClePartition {
             None => Err(format!("DocumentClePartition.try_into_document_cle_partition Erreur cle introuvable {}", fingerprint))?
         };
 
+        todo!("Chiffrer en cle symmetrique");
+
         Ok(DocumentClePartition {
             cle_ref,
             hachage_bytes: value.hachage_bytes.clone(),
@@ -501,6 +508,8 @@ impl DocumentClePartition {
             identificateurs_document: value.identificateurs_document.clone(),
             signature_identite: value.signature_identite.clone(),
             cle: cle.to_string(),
+            cle_symmetrique: None,
+            nonce_symmetrique: None,
             format: value.format.clone(),
             iv: value.iv.clone(),
             tag: value.tag.clone(),

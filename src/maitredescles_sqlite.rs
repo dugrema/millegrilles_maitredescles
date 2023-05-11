@@ -1838,6 +1838,8 @@ fn charger_cle<S>(connexion: &Connection, hachage_bytes_: S)
         identificateurs_document,
         signature_identite: statement.read(8)?,
         cle: statement.read(2)?,
+        cle_symmetrique: None,
+        nonce_symmetrique: None,
         format: format_chiffrage,
         iv: statement.read(3)?,
         tag: statement.read(4)?,
