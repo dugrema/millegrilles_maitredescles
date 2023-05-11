@@ -78,7 +78,8 @@ fn preprarer_handler_rechiffrage() -> HandlerCleRechiffrage {
         // On a un certificat MaitreDesCles, utiliser directement
         HandlerCleRechiffrage::with_certificat(enveloppe_privee)
     } else if certificat.verifier_roles(vec![RolesCertificats::MaitreDesClesConnexion]) {
-        HandlerCleRechiffrage::new_volatil_memoire().expect("HandlerCleRechiffrageCle")
+        // HandlerCleRechiffrage::new_volatil_memoire().expect("HandlerCleRechiffrageCle")
+        panic!("Mode volatil obsolete");
     } else {
         panic!("domaines_maitredescles.charger_gestionnaires Type de certificat non supporte pour Maitre des cles");
     }

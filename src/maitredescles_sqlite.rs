@@ -79,12 +79,13 @@ impl Clone for GestionnaireMaitreDesClesSQLite {
 
 impl Debug for GestionnaireMaitreDesClesSQLite {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self.handler_rechiffrage.fingerprint() {
-            Some(fingerprint) => {
-                f.write_str(format!("GestionnaireMaitreDesClesSQLite fingerprint {}", fingerprint).as_str())
-            },
-            None => f.write_str(format!("GestionnaireMaitreDesClesSQLite sans rechiffreur").as_str())
-        }
+        f.write_str(format!("GestionnaireMaitreDesClesSQLite fingerprint {}", self.handler_rechiffrage.fingerprint()).as_str())
+        // match self.handler_rechiffrage.fingerprint() {
+        //     Some(fingerprint) => {
+        //         f.write_str(format!("GestionnaireMaitreDesClesSQLite fingerprint {}", fingerprint).as_str())
+        //     },
+        //     None => f.write_str(format!("GestionnaireMaitreDesClesSQLite sans rechiffreur").as_str())
+        // }
     }
 }
 
@@ -105,10 +106,11 @@ impl GestionnaireMaitreDesClesSQLite {
     }
 
     fn ouvrir_connection<M>(&self, middleware: &M, read_only: bool) -> Connection where M: IsConfigNoeud {
-        let fingerprint = match self.handler_rechiffrage.fingerprint() {
-            Some(f) => f,
-            None => panic!("maitredescles_sqlite.ouvrir_connection Erreur aucun handler_rechiffrage")
-        };
+        // let fingerprint = match self.handler_rechiffrage.fingerprint() {
+        //     Some(f) => f,
+        //     None => panic!("maitredescles_sqlite.ouvrir_connection Erreur aucun handler_rechiffrage")
+        // };
+        let fingerprint = self.handler_rechiffrage.fingerprint();
 
         let sqlite_path = middleware.get_configuration_noeud().sqlite_path.as_ref().expect("preparer_database sqlite");
         let db_path = format!("{}/maitredescles_{}.sqlite", sqlite_path, fingerprint);
@@ -146,22 +148,26 @@ impl GestionnaireMaitreDesClesSQLite {
     /// Retourne une version tronquee du nom de partition
     /// Utilise pour nommer certaines ressources (e.g. collections Mongo)
     pub fn get_partition_tronquee(&self) -> Option<String> {
-        match self.handler_rechiffrage.fingerprint() {
-            Some(f) => {
-                // On utilise les 12 derniers chars du fingerprint (35..48)
-                Some(String::from(&f[35..]))
-            },
-            None => None
-        }
+        let fingerprint = self.handler_rechiffrage.fingerprint();
+        Some(String::from(&fingerprint[35..]))
+        // match self.handler_rechiffrage.fingerprint() {
+        //     Some(f) => {
+        //         // On utilise les 12 derniers chars du fingerprint (35..48)
+        //         Some(String::from(&f[35..]))
+        //     },
+        //     None => None
+        // }
     }
 
     fn get_q_sauvegarder_cle(&self) -> Option<String> {
-        match self.handler_rechiffrage.fingerprint() {
-            Some(f) => {
-                Some(format!("MaitreDesCles/{}/sauvegarder", f))
-            },
-            None => None
-        }
+        let fingerprint = self.handler_rechiffrage.fingerprint();
+        Some(format!("MaitreDesCles/{}/sauvegarder", fingerprint))
+        // match self.handler_rechiffrage.fingerprint() {
+        //     Some(f) => {
+        //         Some(format!("MaitreDesCles/{}/sauvegarder", f))
+        //     },
+        //     None => None
+        // }
     }
 
     fn get_collection_cles(&self) -> Option<String> {
@@ -206,10 +212,11 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesSQLite {
     fn get_nom_domaine(&self) -> String { String::from(DOMAINE_NOM) }
 
     fn get_partition(&self) -> Option<String> {
-        match self.handler_rechiffrage.fingerprint() {
-            Some(f) => Some(f),
-            None => None
-        }
+        Some(self.handler_rechiffrage.fingerprint().to_owned())
+        // match self.handler_rechiffrage.fingerprint() {
+        //     Some(f) => Some(f),
+        //     None => None
+        // }
     }
 
     fn get_collection_transactions(&self) -> Option<String> {
@@ -221,30 +228,36 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesSQLite {
     }
 
     fn get_q_transactions(&self) -> Option<String> {
-        match self.handler_rechiffrage.fingerprint() {
-            Some(f) => {
-                Some(format!("MaitreDesCles/{}/transactions", f))
-            },
-            None => None
-        }
+        let fingerprint = self.handler_rechiffrage.fingerprint();
+        Some(format!("MaitreDesCles/{}/transactions", fingerprint))
+        // match self.handler_rechiffrage.fingerprint() {
+        //     Some(f) => {
+        //         Some(format!("MaitreDesCles/{}/transactions", f))
+        //     },
+        //     None => None
+        // }
     }
 
     fn get_q_volatils(&self) -> Option<String> {
-        match self.handler_rechiffrage.fingerprint() {
-            Some(f) => {
-                Some(format!("MaitreDesCles/{}/volatils", f))
-            },
-            None => None
-        }
+        let fingerprint = self.handler_rechiffrage.fingerprint();
+        Some(format!("MaitreDesCles/{}/volatils", fingerprint))
+        // match self.handler_rechiffrage.fingerprint() {
+        //     Some(f) => {
+        //         Some(format!("MaitreDesCles/{}/volatils", f))
+        //     },
+        //     None => None
+        // }
     }
 
     fn get_q_triggers(&self) -> Option<String> {
-        match self.handler_rechiffrage.fingerprint() {
-            Some(f) => {
-                Some(format!("MaitreDesCles/{}/triggers", f))
-            },
-            None => None
-        }
+        let fingerprint = self.handler_rechiffrage.fingerprint();
+        Some(format!("MaitreDesCles/{}/triggers", fingerprint))
+        // match self.handler_rechiffrage.fingerprint() {
+        //     Some(f) => {
+        //         Some(format!("MaitreDesCles/{}/triggers", f))
+        //     },
+        //     None => None
+        // }
     }
 
     fn preparer_queues(&self) -> Vec<QueueType> {
@@ -262,13 +275,14 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesSQLite {
         let commandes: Vec<&str> = vec![
             COMMANDE_SAUVEGARDER_CLE,
         ];
-        let fingerprint_option = match self.handler_rechiffrage.fingerprint() {
-            Some(f) => Some(f),
-            None => None
-        };
+        let fingerprint = self.handler_rechiffrage.fingerprint();
+        // let fingerprint_option = match self.handler_rechiffrage.fingerprint() {
+        //     Some(f) => Some(f),
+        //     None => None
+        // };
 
-        if let Some(fingerprint) = fingerprint_option {
-            let nom_partition = fingerprint.as_str();
+        //if let Some(fingerprint) = fingerprint_option {
+            let nom_partition = fingerprint;//.as_str();
 
             for sec in [Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure] {
 
@@ -311,7 +325,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesSQLite {
                     exchange: Securite::L3Protege
                 });
             }
-        }
+        //}
 
         let mut queues = Vec::new();
 
@@ -355,9 +369,10 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesSQLite {
         }
 
         // Queue de triggers
-        if let Some(f) = self.handler_rechiffrage.fingerprint() {
-            queues.push(QueueType::Triggers(format!("MaitreDesCles.{}", f), Securite::L3Protege));
-        }
+        let fingerprint = self.handler_rechiffrage.fingerprint();
+        //if let Some(f) = self.handler_rechiffrage.fingerprint() {
+            queues.push(QueueType::Triggers(format!("MaitreDesCles.{}", fingerprint), Securite::L3Protege));
+        //}
 
         queues
     }
@@ -630,22 +645,23 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
     where M: GenerateurMessages + IsConfigNoeud + CleChiffrageHandler
 {
     debug!("commande_sauvegarder_cle Consommer commande : {:?}", & m.message);
-    let fingerprint = match gestionnaire.handler_rechiffrage.fingerprint() {
-        Some(f) => f,
-        None => Err(format!("maitredescles_volatil.commande_sauvegarder_cle Erreur aucun handler_rechiffrage"))?
-    };
+    // let fingerprint = match gestionnaire.handler_rechiffrage.fingerprint() {
+    //     Some(f) => f,
+    //     None => Err(format!("maitredescles_volatil.commande_sauvegarder_cle Erreur aucun handler_rechiffrage"))?
+    // };
+    let fingerprint = gestionnaire.handler_rechiffrage.fingerprint();
 
     let commande: CommandeSauvegarderCle = m.message.get_msg().map_contenu()?;
     debug!("Commande sauvegarder cle parsed : {:?}", commande);
 
     let partition_message = m.get_partition();
 
-    let cle = match commande.cles.get(fingerprint.as_str()) {
+    let cle = match commande.cles.get(fingerprint) {
         Some(cle) => cle.as_str(),
         None => {
             // La cle locale n'est pas presente. Verifier si le message de sauvegarde etait
             // adresse a cette partition.
-            let reponse = if Some(fingerprint.as_str()) == partition_message {
+            let reponse = if Some(fingerprint) == partition_message {
                 let message = format!("maitredescles_sqlite1.commande_sauvegarder_cle: Erreur validation - commande sauvegarder cles ne contient pas la cle CA : {:?}", commande);
                 warn!("{}", message);
                 let reponse_err = json!({"ok": false, "err": message});
@@ -672,7 +688,7 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
             .lock().expect("requete_dechiffrage connection lock");
         let connexion = connexion_guard.as_ref().expect("requete_dechiffrage connection Some");
         connexion.execute("BEGIN;")?;
-        match sauvegarder_cle(middleware, connexion, fingerprint.as_str(), cle, &commande) {
+        match sauvegarder_cle(middleware, connexion, fingerprint, cle, &commande) {
             Ok(()) => connexion.execute("COMMIT;")?,
             Err(e) => {
                 connexion.execute("ROLLBACK;")?;
@@ -689,7 +705,7 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
             let pk_chiffrage = middleware.get_publickeys_chiffrage();
             if pk_chiffrage.len() > commande.cles.len() {
                 debug!("commande_sauvegarder_cle Nouvelle cle sur exchange != 4.secure, re-emettre a l'interne");
-                let cle_str = match commande.cles.get(fingerprint.as_str()) {
+                let cle_str = match commande.cles.get(fingerprint) {
                     Some(c) => c.to_owned(),
                     None => Err(format!("maitredescles_partition.commande_sauvegarder_cle Erreur cle partition {} introuvable", fingerprint))?
                 };
@@ -706,7 +722,7 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
         }
     }
 
-    if Some(fingerprint.as_str()) == partition_message {
+    if Some(fingerprint) == partition_message {
         // Le message etait adresse a cette partition
         Ok(middleware.reponse_ok()?)
     } else {
@@ -720,10 +736,11 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
     where M: GenerateurMessages + IsConfigNoeud + CleChiffrageHandler
 {
     debug!("commande_rechiffrer_batch Consommer commande : {:?}", & m.message);
-    let fingerprint = match gestionnaire.handler_rechiffrage.fingerprint() {
-        Some(f) => f,
-        None => Err(format!("maitredescles_volatil.commande_rechiffrer_batch Erreur aucun handler_rechiffrage"))?
-    };
+    // let fingerprint = match gestionnaire.handler_rechiffrage.fingerprint() {
+    //     Some(f) => f,
+    //     None => Err(format!("maitredescles_volatil.commande_rechiffrer_batch Erreur aucun handler_rechiffrage"))?
+    // };
+    let fingerprint = gestionnaire.handler_rechiffrage.fingerprint();
 
     let commande: CommandeRechiffrerBatch = m.message.get_msg().map_contenu()?;
     debug!("commande_rechiffrer_batch Commande parsed : {:?}", commande);
@@ -1246,10 +1263,11 @@ struct MessageListeCles {
 async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesSQLite) -> Result<(), Box<dyn Error>>
     where M: GenerateurMessages + VerificateurMessage + IsConfigNoeud
 {
-    let fingerprint = match gestionnaire.handler_rechiffrage.fingerprint() {
-        Some(f) => f,
-        None => Err(format!("maitredescles_volatil.synchroniser_cles Erreur aucun handler_rechiffrage"))?
-    };
+    // let fingerprint = match gestionnaire.handler_rechiffrage.fingerprint() {
+    //     Some(f) => f,
+    //     None => Err(format!("maitredescles_volatil.synchroniser_cles Erreur aucun handler_rechiffrage"))?
+    // };
+    let fingerprint = gestionnaire.handler_rechiffrage.fingerprint();
 
     // Requete vers CA pour obtenir la liste des cles connues
     let mut requete_sync = RequeteSynchroniserCles {page: 0, limite: 250};

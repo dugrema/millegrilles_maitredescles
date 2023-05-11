@@ -27,6 +27,8 @@ use crate::maitredescles_volatil::HandlerCleRechiffrage;
 
 pub const DOMAINE_NOM: &str = "MaitreDesCles";
 
+pub const NOM_COLLECTION_CONFIGURATION: &str = "MaitreDesCles/configuration";
+
 pub const INDEX_CLES_HACHAGE_BYTES: &str = "index_hachage_bytes";
 pub const INDEX_CLE_REF: &str = "index_cle_ref";
 pub const INDEX_CLES_HACHAGE_BYTES_DOMAINES: &str = "index_hachage_bytes_domaines";
@@ -171,44 +173,52 @@ pub async fn entretien<M>(middleware: Arc<M>)
 //     }
 // }
 
-pub async fn generer_certificat_volatil<M>(middleware: &M, handler_rechiffrage: &HandlerCleRechiffrage)
+// pub async fn generer_certificat_volatil<M>(middleware: &M, handler_rechiffrage: &HandlerCleRechiffrage)
+//     -> Result<(), Box<dyn Error>>
+//     where M: GenerateurMessages + ValidateurX509
+// {
+//     let idmg = middleware.get_enveloppe_signature().idmg()?;
+//     let csr_volatil = handler_rechiffrage.generer_csr(idmg)?;
+//     debug!("generer_certificat_volatil Demande de generer un certificat volatil, CSR : {:?}", csr_volatil);
+//
+//     let routage = RoutageMessageAction::builder(DOMAINE_PKI, "signerCsr")
+//         .exchanges(vec![Securite::L3Protege])
+//         // .timeout_blocking(20000)
+//         .build();
+//
+//     let reponse: ReponseSignatureCertificat = match middleware.transmettre_commande(routage, &csr_volatil, true).await? {
+//         Some(m) => match m {
+//             TypeMessage::Valide(m) => m.message.parsed.map_contenu()?,
+//             _ => Err(format!("maitredescles_commun.generer_certificat_volatil Mauvais type de reponse"))?
+//         },
+//         None => Err(format!("maitredescles_commun.generer_certificat_volatil Aucune reponse recue"))?
+//     };
+//
+//     debug!("generer_certificat_volatil Reponse {:?}", reponse);
+//     if Some(true) == reponse.ok {
+//         match reponse.certificat {
+//             Some(vec_certificat_pem) => {
+//                 let enveloppe_ca = middleware.get_enveloppe_signature().enveloppe_ca.clone();
+//                 let ca_pem = enveloppe_ca.get_pem_vec().get(0).expect("CA").pem.clone();
+//                 let enveloppe = middleware.charger_enveloppe(&vec_certificat_pem, None, Some(ca_pem.as_str())).await?;
+//                 handler_rechiffrage.set_certificat(enveloppe, enveloppe_ca)?;
+//
+//                 // Certificat pret
+//                 Ok(())
+//             },
+//             None => Err(format!("maitredescles_commun.generer_certificat_volatil Erreur creation certificat volatil cote serveur, aucun certificat recu"))?
+//         }
+//     } else {
+//         Err(format!("maitredescles_commun.generer_certificat_volatil Erreur creation certificat volatil cote serveur (certissuer ok == false)"))?
+//     }
+// }
+
+pub async fn preparer_rechiffreur<M>(middleware: &M, handler_rechiffrage: &HandlerCleRechiffrage)
     -> Result<(), Box<dyn Error>>
     where M: GenerateurMessages + ValidateurX509
 {
-    let idmg = middleware.get_enveloppe_signature().idmg()?;
-    let csr_volatil = handler_rechiffrage.generer_csr(idmg)?;
-    debug!("generer_certificat_volatil Demande de generer un certificat volatil, CSR : {:?}", csr_volatil);
-
-    let routage = RoutageMessageAction::builder(DOMAINE_PKI, "signerCsr")
-        .exchanges(vec![Securite::L3Protege])
-        // .timeout_blocking(20000)
-        .build();
-
-    let reponse: ReponseSignatureCertificat = match middleware.transmettre_commande(routage, &csr_volatil, true).await? {
-        Some(m) => match m {
-            TypeMessage::Valide(m) => m.message.parsed.map_contenu()?,
-            _ => Err(format!("maitredescles_commun.generer_certificat_volatil Mauvais type de reponse"))?
-        },
-        None => Err(format!("maitredescles_commun.generer_certificat_volatil Aucune reponse recue"))?
-    };
-
-    debug!("generer_certificat_volatil Reponse {:?}", reponse);
-    if Some(true) == reponse.ok {
-        match reponse.certificat {
-            Some(vec_certificat_pem) => {
-                let enveloppe_ca = middleware.get_enveloppe_signature().enveloppe_ca.clone();
-                let ca_pem = enveloppe_ca.get_pem_vec().get(0).expect("CA").pem.clone();
-                let enveloppe = middleware.charger_enveloppe(&vec_certificat_pem, None, Some(ca_pem.as_str())).await?;
-                handler_rechiffrage.set_certificat(enveloppe, enveloppe_ca)?;
-
-                // Certificat pret
-                Ok(())
-            },
-            None => Err(format!("maitredescles_commun.generer_certificat_volatil Erreur creation certificat volatil cote serveur, aucun certificat recu"))?
-        }
-    } else {
-        Err(format!("maitredescles_commun.generer_certificat_volatil Erreur creation certificat volatil cote serveur (certissuer ok == false)"))?
-    }
+    info!("preparer_rechiffreur Generer nouvelle cle symmetrique de rechiffrage");
+    handler_rechiffrage.generer_cle_symmetrique()
 }
 
 pub async fn traiter_cedule<M>(_middleware: &M, _trigger: &MessageCedule) -> Result<(), Box<dyn Error>>
@@ -637,4 +647,13 @@ pub fn rechiffrer_cle(cle: &mut DocumentClePartition, privee: &EnveloppePrivee, 
     cle.cle = cle_rechiffree;
 
     Ok(())
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DocumentCleRechiffrage {
+    #[serde(rename="type")]
+    pub type_: String,
+    pub instance_id: String,
+    pub fingerprint: Option<String>,
+    pub cle: String,
 }

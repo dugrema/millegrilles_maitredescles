@@ -67,10 +67,11 @@ pub struct GestionnaireMaitreDesClesPartition {
 
 impl Debug for GestionnaireMaitreDesClesPartition {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self.handler_rechiffrage.fingerprint() {
-            Some(fingerprint) => f.write_str(format!("GestionnaireMaitreDesClesPartition {}", fingerprint).as_str()),
-            None => f.write_str("GestionnaireMaitreDesClesPartition non initialise")
-        }
+        // match self.handler_rechiffrage.fingerprint() {
+        //     Some(fingerprint) => f.write_str(format!("GestionnaireMaitreDesClesPartition {}", fingerprint).as_str()),
+        //     None => f.write_str("GestionnaireMaitreDesClesPartition non initialise")
+        // }
+        f.write_str(format!("GestionnaireMaitreDesClesPartition {}", self.handler_rechiffrage.fingerprint()).as_str())
     }
 }
 
@@ -101,22 +102,26 @@ impl GestionnaireMaitreDesClesPartition {
     /// Retourne une version tronquee du nom de partition
     /// Utilise pour nommer certaines ressources (e.g. collections Mongo)
     pub fn get_partition_tronquee(&self) -> Option<String> {
-        match self.handler_rechiffrage.fingerprint() {
-            Some(f) => {
-                // On utilise les 12 derniers chars du fingerprint (35..48)
-                Some(String::from(&f[35..]))
-            },
-            None => None
-        }
+        let fingerprint = self.handler_rechiffrage.fingerprint();
+        Some(String::from(&fingerprint[35..]))
+        // match self.handler_rechiffrage.fingerprint() {
+        //     Some(f) => {
+        //         // On utilise les 12 derniers chars du fingerprint (35..48)
+        //         Some(String::from(&f[35..]))
+        //     },
+        //     None => None
+        // }
     }
 
     fn get_q_sauvegarder_cle(&self) -> Option<String> {
-        match self.handler_rechiffrage.fingerprint() {
-            Some(f) => {
-                Some(format!("MaitreDesCles/{}/sauvegarder", f))
-            },
-            None => None
-        }
+        let fingerprint = self.handler_rechiffrage.fingerprint();
+        Some(format!("MaitreDesCles/{}/sauvegarder", fingerprint))
+        // match self.handler_rechiffrage.fingerprint() {
+        //     Some(f) => {
+        //         Some(format!("MaitreDesCles/{}/sauvegarder", f))
+        //     },
+        //     None => None
+        // }
     }
 
     fn get_collection_cles(&self) -> Option<String> {
@@ -167,14 +172,15 @@ impl GestionnaireMaitreDesClesPartition {
             true
         };
 
-        let fingerprint = match self.handler_rechiffrage.fingerprint() {
-            Some(f) => f,
-            None => panic!("maitredescles_partition.preparer_queues_rechiffrage Gestionnaire sans certificat/partition")
-        };
+        let fingerprint = self.handler_rechiffrage.fingerprint();
+        // let fingerprint = match self.handler_rechiffrage.fingerprint() {
+        //     Some(f) => f,
+        //     None => panic!("maitredescles_partition.preparer_queues_rechiffrage Gestionnaire sans certificat/partition")
+        // };
 
         let mut queues = Vec::new();
 
-        let nom_partition = fingerprint.as_str();
+        let nom_partition = fingerprint;
 
         let commandes: Vec<&str> = vec![
             COMMANDE_SAUVEGARDER_CLE,
@@ -286,10 +292,11 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
     fn get_nom_domaine(&self) -> String { String::from(DOMAINE_NOM) }
 
     fn get_partition(&self) -> Option<String> {
-        match self.handler_rechiffrage.fingerprint() {
-            Some(f) => Some(f),
-            None => None
-        }
+        Some(self.handler_rechiffrage.fingerprint().to_owned())
+        // match self.handler_rechiffrage.fingerprint() {
+        //     Some(f) => Some(f),
+        //     None => None
+        // }
     }
 
     fn get_collection_transactions(&self) -> Option<String> {
@@ -307,30 +314,36 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
     }
 
     fn get_q_transactions(&self) -> Option<String> {
-        match self.handler_rechiffrage.fingerprint() {
-            Some(f) => {
-                Some(format!("MaitreDesCles/{}/transactions", f))
-            },
-            None => None
-        }
+        let fingerprint = self.handler_rechiffrage.fingerprint();
+        Some(format!("MaitreDesCles/{}/transactions", fingerprint))
+        // match self.handler_rechiffrage.fingerprint() {
+        //     Some(f) => {
+        //         Some(format!("MaitreDesCles/{}/transactions", f))
+        //     },
+        //     None => None
+        // }
     }
 
     fn get_q_volatils(&self) -> Option<String> {
-        match self.handler_rechiffrage.fingerprint() {
-            Some(f) => {
-                Some(format!("MaitreDesCles/{}/volatils", f))
-            },
-            None => None
-        }
+        let fingerprint = self.handler_rechiffrage.fingerprint();
+        Some(format!("MaitreDesCles/{}/volatils", fingerprint))
+        // match self.handler_rechiffrage.fingerprint() {
+        //     Some(f) => {
+        //         Some(format!("MaitreDesCles/{}/volatils", f))
+        //     },
+        //     None => None
+        // }
     }
 
     fn get_q_triggers(&self) -> Option<String> {
-        match self.handler_rechiffrage.fingerprint() {
-            Some(f) => {
-                Some(format!("MaitreDesCles/{}/triggers", f))
-            },
-            None => None
-        }
+        let fingerprint = self.handler_rechiffrage.fingerprint();
+        Some(format!("MaitreDesCles/{}/triggers", fingerprint))
+        // match self.handler_rechiffrage.fingerprint() {
+        //     Some(f) => {
+        //         Some(format!("MaitreDesCles/{}/triggers", f))
+        //     },
+        //     None => None
+        // }
     }
 
     fn preparer_queues(&self) -> Vec<QueueType> {
@@ -383,7 +396,17 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
         loop {
             if !self.handler_rechiffrage.is_ready() {
                 info!("entretien_rechiffreur Aucun certificat configure, on demande de generer un certificat volatil");
-                let resultat = match generer_certificat_volatil(middleware.as_ref(), handler_rechiffrage.as_ref()).await {
+                // let resultat = match generer_certificat_volatil(middleware.as_ref(), handler_rechiffrage.as_ref()).await {
+                //     Ok(()) => {
+                //         debug!("entretien.Certificat pret, activer Qs et synchroniser cles");
+                //         true
+                //     },
+                //     Err(e) => {
+                //         error!("entretien_rechiffreur Erreur generation certificat volatil : {:?}", e);
+                //         false
+                //     }
+                // };
+                let resultat = match preparer_rechiffreur_mongo(middleware.as_ref(), handler_rechiffrage.as_ref()).await {
                     Ok(()) => {
                         debug!("entretien.Certificat pret, activer Qs et synchroniser cles");
                         true
@@ -416,11 +439,11 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
                         let named_queue = NamedQueue::new(queue, tx, Some(1), Some(futures_consumer));
                         middleware.ajouter_named_queue(queue_name, named_queue);
 
-                        // Switch le certificat de signature
-                        match handler_rechiffrage.get_enveloppe_privee() {
-                            Some(e) => middleware.set_enveloppe_signature(e),
-                            None => panic!("maitredescles_partition.entretien Erreur recuperation cle volatile")
-                        }
+                        // // Switch le certificat de signature
+                        // match handler_rechiffrage.get_enveloppe_privee() {
+                        //     Some(e) => middleware.set_enveloppe_signature(e),
+                        //     None => panic!("maitredescles_partition.entretien Erreur recuperation cle volatile")
+                        // }
                     }
                 }
             }
@@ -653,21 +676,23 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
 
     let partition_message = m.get_partition();
 
-    let fingerprint = match gestionnaire.handler_rechiffrage.fingerprint() {
-        Some(f) => f,
-        None => Err(format!("maitredescles_partition.commande_sauvegarder_cle Gestionnaire sans partition/certificat"))?
-    };
+    // let fingerprint = match gestionnaire.handler_rechiffrage.fingerprint() {
+    //     Some(f) => f,
+    //     None => Err(format!("maitredescles_partition.commande_sauvegarder_cle Gestionnaire sans partition/certificat"))?
+    // };
+    let fingerprint = gestionnaire.handler_rechiffrage.fingerprint();
     let nom_collection_cles = match gestionnaire.get_collection_cles() {
         Some(c) => c,
         None => Err(format!("maitredescles_partition.commande_sauvegarder_cle Gestionnaire sans partition/certificat"))?
     };
 
-    let cle = match commande.cles.get(fingerprint.as_str()) {
+    // let cle = match commande.cles.get(fingerprint.as_str()) {
+    let cle = match commande.cles.get(fingerprint) {
         Some(cle) => cle.as_str(),
         None => {
             // La cle locale n'est pas presente. Verifier si le message de sauvegarde etait
             // adresse a cette partition.
-            let reponse = if Some(fingerprint.as_str()) == partition_message {
+            let reponse = if Some(fingerprint) == partition_message {
                 let message = format!("maitredescles_partition.commande_sauvegarder_cle: Erreur validation - commande sauvegarder cles ne contient pas la cle CA : {:?}", commande);
                 warn!("{}", message);
                 let reponse_err = json!({"ok": false, "err": message});
@@ -711,7 +736,7 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
     //
     // }
 
-    if Some(fingerprint.as_str()) == partition_message {
+    if Some(fingerprint) == partition_message {
         // Le message etait adresse a cette partition
         Ok(middleware.reponse_ok()?)
     } else {
@@ -786,10 +811,10 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
     let commande: CommandeRechiffrerBatch = m.message.get_msg().map_contenu()?;
     debug!("commande_rechiffrer_batch Commande parsed : {:?}", commande);
 
-    let fingerprint = match gestionnaire.handler_rechiffrage.fingerprint() {
-        Some(f) => f,
-        None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Gestionnaire sans partition/certificat"))?
-    };
+    // let fingerprint = match gestionnaire.handler_rechiffrage.fingerprint() {
+    //     Some(f) => f,
+    //     None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Gestionnaire sans partition/certificat"))?
+    // };
     let enveloppe_privee = middleware.get_enveloppe_signature();
     let fingerprint_ca = enveloppe_privee.enveloppe_ca.fingerprint.clone();
     let fingerprint = enveloppe_privee.enveloppe.fingerprint.as_str();
@@ -1705,6 +1730,71 @@ async fn evenement_cle_manquante<M>(middleware: &M, m: MessageValideAction, gest
         Ok(None)
     }
 }
+
+pub async fn preparer_rechiffreur_mongo<M>(middleware: &M, handler_rechiffrage: &HandlerCleRechiffrage)
+    -> Result<(), Box<dyn Error>>
+    where M: GenerateurMessages + ValidateurX509 + MongoDao
+{
+
+    let enveloppe_privee = middleware.get_enveloppe_signature();
+    let instance_id = enveloppe_privee.enveloppe.get_common_name()?;
+
+    // Verifier si les cles de dechiffrage existent deja.
+    let collection = middleware.get_collection(NOM_COLLECTION_CONFIGURATION)?;
+    let filtre = doc!{"type": "CA", "instance_id": instance_id.as_str()};
+    match collection.find_one(filtre, None).await? {
+        Some(doc_cle_ca) => {
+            info!("preparer_rechiffreur_mongo Cle de rechiffrage CA est presente");
+
+            let filtre = doc!{
+                "type": "dechiffrage",
+                "instance_id": instance_id.as_str(),
+                "fingerprint": enveloppe_privee.fingerprint(),
+            };
+
+            match collection.find_one(filtre, None).await? {
+                Some(doc_cle_locale) => {
+                    let cle_locale: DocumentCleRechiffrage = convertir_bson_deserializable(doc_cle_locale)?;
+                    handler_rechiffrage.set_cle_symmetrique(cle_locale.cle)?;
+                    info!("preparer_rechiffreur_mongo Cle de rechiffrage locale est chargee");
+                },
+                None => {
+                    todo!("demander rechiffrage cle locale");
+                }
+            }
+
+        },
+        None => {
+            // Initialiser la base de donnees
+            info!("preparer_rechiffreur_mongo Initiliser cle de rechiffrage");
+
+            preparer_rechiffreur(middleware, handler_rechiffrage).await?;
+
+            // Conserver la cle de rechiffrage
+            let cle_secrete_chiffree_ca = handler_rechiffrage.get_cle_symmetrique_chiffree(&enveloppe_privee.enveloppe_ca.cle_publique)?;
+            let cle_secrete_chiffree_local = handler_rechiffrage.get_cle_symmetrique_chiffree(&enveloppe_privee.cle_publique())?;
+            debug!("Cle secrete chiffree pour instance {} :\nCA = {}\n local = {}", instance_id, cle_secrete_chiffree_ca, cle_secrete_chiffree_local);
+
+            let cle_ca = doc! {
+                "type": "CA",
+                "instance_id": instance_id.as_str(),
+                "cle": cle_secrete_chiffree_ca,
+            };
+            collection.insert_one(cle_ca, None).await?;
+
+            let cle_locale = doc! {
+                "type": "dechiffrage",
+                "instance_id": instance_id.as_str(),
+                "fingerprint": enveloppe_privee.fingerprint(),
+                "cle": cle_secrete_chiffree_local,
+            };
+            collection.insert_one(cle_locale, None).await?;
+        }
+    }
+
+    Ok(())
+}
+
 
 // #[cfg(test)]
 // mod ut {
