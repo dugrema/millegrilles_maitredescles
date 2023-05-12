@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use log::{debug, error, info};
 use millegrilles_common_rust::certificats::{EnveloppeCertificat, EnveloppePrivee, ValidateurX509, VerificateurPermissions};
-use millegrilles_common_rust::chiffrage::{CleSecrete, FormatChiffrage, rechiffrer_asymetrique_multibase};
+use millegrilles_common_rust::chiffrage::{chiffrer_asymetrique_multibase, CleSecrete, FormatChiffrage, rechiffrer_asymetrique_multibase};
 use millegrilles_common_rust::chiffrage_cle::{CommandeSauvegarderCle, IdentiteCle};
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::formatteur_messages::MessageMilleGrille;
@@ -24,7 +24,7 @@ use millegrilles_common_rust::multibase::Base::Base58Btc;
 use millegrilles_common_rust::multihash::Code;
 use crate::domaines_maitredescles::TypeGestionnaire;
 use crate::maitredescles_sqlite::GestionnaireMaitreDesClesSQLite;
-use crate::maitredescles_volatil::HandlerCleRechiffrage;
+use crate::maitredescles_volatil::{CleInterneChiffree, HandlerCleRechiffrage};
 
 pub const DOMAINE_NOM: &str = "MaitreDesCles";
 
@@ -634,7 +634,8 @@ pub fn calculer_cle_ref(commande: &CommandeSauvegarderCle, cle_secrete: &CleSecr
 }
 
 /// Rechiffre une cle secrete
-pub fn rechiffrer_cle(cle: &mut DocumentClePartition, privee: &EnveloppePrivee, certificat_destination: &EnveloppeCertificat)
+// pub fn rechiffrer_cle(cle: &mut DocumentClePartition, privee: &EnveloppePrivee, certificat_destination: &EnveloppeCertificat)
+pub fn rechiffrer_cle(cle: &mut DocumentClePartition, handler_rechiffrage: &HandlerCleRechiffrage, certificat_destination: &EnveloppeCertificat)
     -> Result<(), Box<dyn Error>>
 {
     if certificat_destination.verifier_exchanges(vec![Securite::L4Secure, Securite::L3Protege, Securite::L2Prive, Securite::L1Public]) {
@@ -647,11 +648,16 @@ pub fn rechiffrer_cle(cle: &mut DocumentClePartition, privee: &EnveloppePrivee, 
         Err(format!("maitredescles_partition.rechiffrer_cle Certificat sans user_id ni L4Secure, acces refuse"))?
     }
 
-    let cle_originale = cle.cle.as_str();
-    let cle_privee = privee.cle_privee();
-    let cle_publique = certificat_destination.certificat().public_key()?;
+    let cle_interne = CleInterneChiffree::try_from(cle.clone())?;
+    let cle_secrete = handler_rechiffrage.dechiffer_cle_secrete(cle_interne)?;
 
-    let cle_rechiffree = rechiffrer_asymetrique_multibase(cle_privee, &cle_publique, cle_originale)?;
+    // let cle_originale = cle.cle.as_str();
+    // let cle_privee = privee.cle_privee();
+    let cle_publique = certificat_destination.certificat().public_key()?;
+    // let cle_rechiffree = rechiffrer_asymetrique_multibase(cle_privee, &cle_publique, cle_originale)?;
+    let cle_rechiffree = chiffrer_asymetrique_multibase(cle_secrete, &cle_publique)?;
+
+    debug!("rechiffrer_cle Cle {} rechiffree : {}", cle.hachage_bytes, cle_rechiffree);
 
     // Remplacer cle dans message reponse
     cle.cle = cle_rechiffree;

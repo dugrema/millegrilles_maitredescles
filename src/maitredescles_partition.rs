@@ -1328,55 +1328,55 @@ async fn verifier_autorisation_dechiffrage_global<M>(middleware: &M, m: &Message
 }
 
 /// Rechiffre une cle secrete
-fn rechiffrer_cle(cle: &mut DocumentClePartition, rechiffreur: &HandlerCleRechiffrage, certificat_destination: &EnveloppeCertificat)
-    -> Result<(), Box<dyn Error>>
-{
-    if certificat_destination.verifier_exchanges(vec![Securite::L4Secure]) {
-        // Ok, acces global
-    } else if certificat_destination.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
-        // Ok, acces global,
-    } else if certificat_destination.verifier_roles(vec![RolesCertificats::ComptePrive]) {
-        // Compte prive, certificats sont verifies par le domaine (relai de permission)
-    } else if certificat_destination.verifier_roles(vec![RolesCertificats::Stream]) &&
-        certificat_destination.verifier_exchanges(vec![Securite::L2Prive]) {
-        // Certificat de streaming - on doit se fier a l'autorisation pour garantir que c'est un fichier video/audio
-    } else {
-        Err(format!("maitredescles_partition.rechiffrer_cle Certificat sans user_id ni L4Secure, acces refuse"))?
-    }
-
-    let hachage_bytes = cle.hachage_bytes.as_str();
-
-    let cle_interne = CleInterneChiffree::try_from(cle.clone())?;
-    let cle_secrete = rechiffreur.dechiffer_cle_secrete(cle_interne)?;
-
-    // let cle_secrete = match cle.cle_symmetrique.as_ref() {
-    //     Some(cle_symmetrique) => {
-    //         match cle.nonce_symmetrique.as_ref() {
-    //             Some(nonce) => {
-    //                 let cle_interne = CleInterneChiffree { cle: cle_symmetrique.to_owned(), nonce: nonce.to_owned() };
-    //                 rechiffreur.dechiffer_cle_secrete(cle_interne)?
-    //             },
-    //             None => {
-    //                 Err(format!("rechiffrer_cles Nonce manquant pour {}", hachage_bytes))?
-    //             }
-    //         }
-    //     },
-    //     None => {
-    //         Err(format!("rechiffrer_cles Cle symmetrique manquant pour {}", hachage_bytes))?
-    //     }
-    // };
-
-    // let cle_originale = cle.cle.as_str();
-    // let cle_privee = privee.cle_privee();
-    let cle_publique = certificat_destination.certificat().public_key()?;
-    // let cle_rechiffree = rechiffrer_asymetrique_multibase(cle_privee, &cle_publique, cle_originale)?;
-    let cle_rechiffree = chiffrer_asymetrique_multibase(cle_secrete, &cle_publique)?;
-
-    // Remplacer cle dans message reponse
-    cle.cle = cle_rechiffree;
-
-    Ok(())
-}
+// fn rechiffrer_cle(cle: &mut DocumentClePartition, rechiffreur: &HandlerCleRechiffrage, certificat_destination: &EnveloppeCertificat)
+//     -> Result<(), Box<dyn Error>>
+// {
+//     if certificat_destination.verifier_exchanges(vec![Securite::L4Secure]) {
+//         // Ok, acces global
+//     } else if certificat_destination.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+//         // Ok, acces global,
+//     } else if certificat_destination.verifier_roles(vec![RolesCertificats::ComptePrive]) {
+//         // Compte prive, certificats sont verifies par le domaine (relai de permission)
+//     } else if certificat_destination.verifier_roles(vec![RolesCertificats::Stream]) &&
+//         certificat_destination.verifier_exchanges(vec![Securite::L2Prive]) {
+//         // Certificat de streaming - on doit se fier a l'autorisation pour garantir que c'est un fichier video/audio
+//     } else {
+//         Err(format!("maitredescles_partition.rechiffrer_cle Certificat sans user_id ni L4Secure, acces refuse"))?
+//     }
+//
+//     let hachage_bytes = cle.hachage_bytes.as_str();
+//
+//     let cle_interne = CleInterneChiffree::try_from(cle.clone())?;
+//     let cle_secrete = rechiffreur.dechiffer_cle_secrete(cle_interne)?;
+//
+//     // let cle_secrete = match cle.cle_symmetrique.as_ref() {
+//     //     Some(cle_symmetrique) => {
+//     //         match cle.nonce_symmetrique.as_ref() {
+//     //             Some(nonce) => {
+//     //                 let cle_interne = CleInterneChiffree { cle: cle_symmetrique.to_owned(), nonce: nonce.to_owned() };
+//     //                 rechiffreur.dechiffer_cle_secrete(cle_interne)?
+//     //             },
+//     //             None => {
+//     //                 Err(format!("rechiffrer_cles Nonce manquant pour {}", hachage_bytes))?
+//     //             }
+//     //         }
+//     //     },
+//     //     None => {
+//     //         Err(format!("rechiffrer_cles Cle symmetrique manquant pour {}", hachage_bytes))?
+//     //     }
+//     // };
+//
+//     // let cle_originale = cle.cle.as_str();
+//     // let cle_privee = privee.cle_privee();
+//     let cle_publique = certificat_destination.certificat().public_key()?;
+//     // let cle_rechiffree = rechiffrer_asymetrique_multibase(cle_privee, &cle_publique, cle_originale)?;
+//     let cle_rechiffree = chiffrer_asymetrique_multibase(cle_secrete, &cle_publique)?;
+//
+//     // Remplacer cle dans message reponse
+//     cle.cle = cle_rechiffree;
+//
+//     Ok(())
+// }
 
 // fn rechiffrer_cle(cle: &mut DocumentClePartition, privee: &EnveloppePrivee, certificat_destination: &EnveloppeCertificat)
 //     -> Result<(), Box<dyn Error>>

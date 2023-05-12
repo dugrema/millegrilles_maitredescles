@@ -1147,7 +1147,7 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
         let connection = connection_guard.as_mut().expect("requete_dechiffrage connection Some");
 
         get_cles_sqlite_rechiffrees(
-            middleware, connection, &requete, enveloppe_privee.clone(), certificat.as_ref(),
+            middleware, gestionnaire, connection, &requete, enveloppe_privee.clone(), certificat.as_ref(),
             permission.as_ref(), domaines_permis.as_ref())?
     };
 
@@ -1316,6 +1316,7 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
 
 fn get_cles_sqlite_rechiffrees<M>(
     middleware: &M,
+    gestionnaire: &GestionnaireMaitreDesClesSQLite,
     connexion: &mut Connection,
     requete: &RequeteDechiffrage,
     enveloppe_privee: Arc<EnveloppePrivee>,
@@ -1358,7 +1359,8 @@ fn get_cles_sqlite_rechiffrees<M>(
         }
 
         // Rechiffrer
-        rechiffrer_cle(&mut cle_transaction, enveloppe_privee.as_ref(), certificat)?;
+        // rechiffrer_cle(&mut cle_transaction, enveloppe_privee.as_ref(), certificat)?;
+        rechiffrer_cle(&mut cle_transaction, &gestionnaire.handler_rechiffrage, certificat)?;
 
         cles.insert(hachage_bytes.clone(), cle_transaction);
     }
@@ -2060,7 +2062,9 @@ fn charger_cle<S>(connexion: &Connection, hachage_bytes_: S)
     let hachage_bytes = hachage_bytes_.as_ref();
 
     let mut statement = connexion.prepare(
-        "SELECT cle_ref, hachage_bytes, cle, iv, tag, header, format, domaine, signature_identite \
+        "\
+        SELECT cle_ref, hachage_bytes, cle, iv, tag, header, format, domaine, signature_identite, \
+               cle_symmetrique, nonce_symmetrique \
         FROM cles WHERE hachage_bytes = ?"
     )?;
     statement.bind(1, hachage_bytes)?;
@@ -2092,19 +2096,6 @@ fn charger_cle<S>(connexion: &Connection, hachage_bytes_: S)
         _ => Err(format!("Format chiffrage inconnu : {}", format_str))?
     };
 
-    // let commande = TransactionCle {
-    //     hachage_bytes: hachage_bytes.to_owned(),
-    //     domaine: statement.read(6)?,
-    //     identificateurs_document,
-    //     signature_identite: "".into(),
-    //     cle: statement.read(1)?,
-    //     partition: None,
-    //     format: format_chiffrage,
-    //     iv: statement.read(2)?,
-    //     tag: statement.read(3)?,
-    //     header: statement.read(4)?,
-    // };
-
     let document_cle = DocumentClePartition {
         cle_ref: statement.read(0)?,
         hachage_bytes: hachage_bytes.to_owned(),
@@ -2112,8 +2103,8 @@ fn charger_cle<S>(connexion: &Connection, hachage_bytes_: S)
         identificateurs_document,
         signature_identite: statement.read(8)?,
         cle: statement.read(2)?,
-        cle_symmetrique: None,
-        nonce_symmetrique: None,
+        cle_symmetrique: Some(statement.read(9)?),
+        nonce_symmetrique: Some(statement.read(10)?),
         format: format_chiffrage,
         iv: statement.read(3)?,
         tag: statement.read(4)?,
