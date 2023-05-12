@@ -13,6 +13,7 @@ use millegrilles_common_rust::bson::{doc, Document};
 use millegrilles_common_rust::certificats::{EnveloppeCertificat, EnveloppePrivee, ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chiffrage::{chiffrer_asymetrique_multibase, Chiffreur, CleChiffrageHandler, extraire_cle_secrete, rechiffrer_asymetrique_multibase};
 use millegrilles_common_rust::chiffrage_cle::CommandeSauvegarderCle;
+use millegrilles_common_rust::chiffrage_ed25519::dechiffrer_asymmetrique_ed25519;
 use millegrilles_common_rust::chrono::{Duration, Utc};
 use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::constantes::*;
@@ -25,9 +26,10 @@ use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageM
 use millegrilles_common_rust::hachages::hacher_bytes;
 use millegrilles_common_rust::messages_generiques::MessageCedule;
 use millegrilles_common_rust::middleware::{Middleware, sauvegarder_transaction};
-use millegrilles_common_rust::mongo_dao::{ChampIndex, convertir_bson_deserializable, convertir_to_bson, IndexOptions, MongoDao};
+use millegrilles_common_rust::mongo_dao::{ChampIndex, convertir_bson_deserializable, convertir_to_bson, IndexOptions, MongoDao, verifier_erreur_duplication_mongo};
 use millegrilles_common_rust::mongodb::Cursor;
-use millegrilles_common_rust::mongodb::options::{FindOptions, UpdateOptions};
+use millegrilles_common_rust::mongodb::options::{FindOptions, InsertOneOptions, UpdateOptions};
+use millegrilles_common_rust::multibase;
 use millegrilles_common_rust::multihash::Code;
 use millegrilles_common_rust::openssl::pkey::{PKey, Private};
 use millegrilles_common_rust::openssl::rsa::Rsa;
@@ -222,6 +224,7 @@ impl GestionnaireMaitreDesClesPartition {
             // Requete est utilise pour echange entre maitre des cles durant requete client
             rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION), exchange: sec.clone() });
         }
+        rk_volatils.push(ConfigRoutingExchange { routing_key: format!("evenement.{}.{}", DOMAINE_NOM, EVENEMENT_CLES_RECHIFFRAGE), exchange: Securite::L4Secure });
 
         let commandes_protegees = vec![
             COMMANDE_RECHIFFRER_BATCH,
@@ -470,6 +473,23 @@ pub async fn preparer_index_mongodb_partition<M>(middleware: &M, gestionnaire: &
 
     }
 
+    // Index confirmation ca (table cles)
+    let options_configuration = IndexOptions {
+        nom_index: Some(String::from("pk")),
+        unique: true
+    };
+    let champs_index_configuration = vec!(
+        ChampIndex { nom_champ: String::from("type"), direction: 1 },
+        ChampIndex { nom_champ: String::from("instance_id"), direction: 1 },
+        ChampIndex { nom_champ: String::from("fingerprint"), direction: 1 },
+    );
+    middleware.create_index(
+        middleware,
+        NOM_COLLECTION_CONFIGURATION,
+        champs_index_configuration,
+        Some(options_configuration)
+    ).await?;
+
     Ok(())
 }
 
@@ -530,41 +550,41 @@ async fn requete_certificat_maitredescles<M>(middleware: &M, m: MessageValideAct
 /// Emet le certificat de maitre des cles
 /// Le message n'a aucun contenu, c'est l'enveloppe qui permet de livrer le certificat
 /// Si message est None, emet sur evenement.MaitreDesCles.certMaitreDesCles
-pub async fn emettre_certificat_maitredescles<M>(middleware: &M, m: Option<MessageValideAction>)
-    -> Result<(), Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao
-{
-    debug!("emettre_certificat_maitredescles");
-
-    let reponse = json!({});
-
-    match m {
-        Some(demande) => {
-            match demande.reply_q.as_ref() {
-                Some(reply_q) => {
-                    // On utilise une correlation fixe pour permettre au demandeur de recevoir les
-                    // reponses de plusieurs partitions de maitre des cles en meme temps.
-                    let routage = RoutageMessageReponse::new(
-                        reply_q, COMMANDE_CERT_MAITREDESCLES);
-                    let message_reponse = middleware.formatter_reponse(&reponse, None)?;
-                    middleware.repondre(routage, message_reponse).await?;
-                },
-                None => {
-                    debug!("Mauvais message recu pour emettre_certificat (pas de reply_q)");
-                }
-            }
-        },
-        None => {
-            let routage = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_CERT_MAITREDESCLES)
-                .exchanges(vec![Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure])
-                .correlation_id(COMMANDE_CERT_MAITREDESCLES)
-                .build();
-            middleware.emettre_evenement(routage, &reponse).await?;
-        }
-    }
-
-    Ok(())
-}
+// pub async fn emettre_certificat_maitredescles<M>(middleware: &M, m: Option<MessageValideAction>)
+//     -> Result<(), Box<dyn Error>>
+//     where M: GenerateurMessages + MongoDao
+// {
+//     debug!("emettre_certificat_maitredescles");
+//
+//     let reponse = json!({});
+//
+//     match m {
+//         Some(demande) => {
+//             match demande.reply_q.as_ref() {
+//                 Some(reply_q) => {
+//                     // On utilise une correlation fixe pour permettre au demandeur de recevoir les
+//                     // reponses de plusieurs partitions de maitre des cles en meme temps.
+//                     let routage = RoutageMessageReponse::new(
+//                         reply_q, COMMANDE_CERT_MAITREDESCLES);
+//                     let message_reponse = middleware.formatter_reponse(&reponse, None)?;
+//                     middleware.repondre(routage, message_reponse).await?;
+//                 },
+//                 None => {
+//                     debug!("Mauvais message recu pour emettre_certificat (pas de reply_q)");
+//                 }
+//             }
+//         },
+//         None => {
+//             let routage = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_CERT_MAITREDESCLES)
+//                 .exchanges(vec![Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure])
+//                 .correlation_id(COMMANDE_CERT_MAITREDESCLES)
+//                 .build();
+//             middleware.emettre_evenement(routage, &reponse).await?;
+//         }
+//     }
+//
+//     Ok(())
+// }
 
 async fn consommer_transaction<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesPartition) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
 where
@@ -601,6 +621,7 @@ async fn consommer_evenement<M>(middleware: &M, gestionnaire: &GestionnaireMaitr
 
     match m.action.as_str() {
         EVENEMENT_CLES_MANQUANTES_PARTITION => evenement_cle_manquante(middleware, m, gestionnaire).await,
+        EVENEMENT_CLES_RECHIFFRAGE => evenement_cle_rechiffrage(middleware, m, gestionnaire).await,
         _ => Err(format!("consommer_evenement: Mauvais type d'action pour un evenement : {}", m.action))?,
     }
 }
@@ -1789,6 +1810,67 @@ async fn evenement_cle_manquante<M>(middleware: &M, m: MessageValideAction, gest
     }
 }
 
+async fn evenement_cle_rechiffrage<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesPartition)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: ValidateurX509 + GenerateurMessages + MongoDao + CleChiffrageHandler + ConfigMessages
+{
+    debug!("evenement_cle_rechiffrage Conserver cles de rechiffrage {:?}", &m.message);
+
+    let enveloppe_signature = middleware.get_enveloppe_signature();
+    let fingerprint_local = enveloppe_signature.fingerprint();
+
+    let (instance_id, fingerprint) = match m.message.certificat {
+        Some(inner) => (inner.get_common_name()?, inner.fingerprint.to_owned()),
+        None => Err(format!("evenement_cle_rechiffrage Certificat absent"))?
+    };
+
+    if fingerprint_local.as_str() == fingerprint.as_str() {
+        debug!("evenement_cle_rechiffrage Evenement pour cle locale (fingerprint {}), skip", fingerprint);
+        return Ok(None);
+    }
+
+    // Mapper evenement
+    let evenement: EvenementClesRechiffrage = m.message.parsed.map_contenu()?;
+
+    let collection = middleware.get_collection(NOM_COLLECTION_CONFIGURATION)?;
+    let doc_ca = doc! {
+        "type": "CA",
+        "instance_id": &instance_id,
+        "cle": evenement.cle_ca,
+    };
+    if let Err(e) = collection.insert_one(doc_ca, None).await {
+        if ! verifier_erreur_duplication_mongo(&e.kind) {
+            // L'erreur n'est pas une duplication, relancer
+            Err(e)?
+        }
+    }
+
+    // Dechiffrer cle du tiers, rechiffrer en symmetrique local
+    if let Some(cle_tierce) = evenement.cles_dechiffrage.get(fingerprint_local) {
+
+        let cle_tierce_vec = multibase::decode(cle_tierce)?;
+        let cle_dechiffree = dechiffrer_asymmetrique_ed25519(
+            &cle_tierce_vec.1[..], enveloppe_signature.cle_privee())?;
+        let cle_chiffree = gestionnaire.handler_rechiffrage.chiffrer_cle_secrete(&cle_dechiffree.0[..])?;
+
+        let doc_ca = doc! {
+            "type": "tiers",
+            "instance_id": &instance_id,
+            "fingerprint": fingerprint,
+            "cle_symmetrique": cle_chiffree.cle,
+            "nonce_symmetrique": cle_chiffree.nonce,
+        };
+        if let Err(e) = collection.insert_one(doc_ca, None).await {
+            if ! verifier_erreur_duplication_mongo(&e.kind) {
+                // L'erreur n'est pas une duplication, relancer
+                Err(e)?
+            }
+        }
+    }
+
+    Ok(None)
+}
+
 pub async fn preparer_rechiffreur_mongo<M>(middleware: &M, handler_rechiffrage: &HandlerCleRechiffrage)
     -> Result<(), Box<dyn Error>>
     where M: GenerateurMessages + ValidateurX509 + MongoDao
@@ -1805,7 +1887,7 @@ pub async fn preparer_rechiffreur_mongo<M>(middleware: &M, handler_rechiffrage: 
             info!("preparer_rechiffreur_mongo Cle de rechiffrage CA est presente");
 
             let filtre = doc!{
-                "type": "dechiffrage",
+                "type": "local",
                 "instance_id": instance_id.as_str(),
                 "fingerprint": enveloppe_privee.fingerprint(),
             };
@@ -1841,7 +1923,7 @@ pub async fn preparer_rechiffreur_mongo<M>(middleware: &M, handler_rechiffrage: 
             collection.insert_one(cle_ca, None).await?;
 
             let cle_locale = doc! {
-                "type": "dechiffrage",
+                "type": "local",
                 "instance_id": instance_id.as_str(),
                 "fingerprint": enveloppe_privee.fingerprint(),
                 "cle": cle_secrete_chiffree_local,

@@ -4,11 +4,11 @@ use std::sync::{Arc, Mutex};
 
 use log::{debug, error, info};
 use millegrilles_common_rust::certificats::{EnveloppeCertificat, EnveloppePrivee, ValidateurX509, VerificateurPermissions};
-use millegrilles_common_rust::chiffrage::{chiffrer_asymetrique_multibase, CleSecrete, FormatChiffrage, rechiffrer_asymetrique_multibase};
+use millegrilles_common_rust::chiffrage::{chiffrer_asymetrique_multibase, CleChiffrageHandler, CleSecrete, FormatChiffrage, rechiffrer_asymetrique_multibase};
 use millegrilles_common_rust::chiffrage_cle::{CommandeSauvegarderCle, IdentiteCle};
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::formatteur_messages::MessageMilleGrille;
-use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
+use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
 use millegrilles_common_rust::messages_generiques::MessageCedule;
 use millegrilles_common_rust::middleware::Middleware;
 use millegrilles_common_rust::mongo_dao::{ChampIndex, IndexOptions, MongoDao};
@@ -22,6 +22,7 @@ use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::hachages::hacher_bytes;
 use millegrilles_common_rust::multibase::Base::Base58Btc;
 use millegrilles_common_rust::multihash::Code;
+use millegrilles_common_rust::serde_json::json;
 use crate::domaines_maitredescles::TypeGestionnaire;
 use crate::maitredescles_sqlite::GestionnaireMaitreDesClesSQLite;
 use crate::maitredescles_volatil::{CleInterneChiffree, HandlerCleRechiffrage};
@@ -148,6 +149,81 @@ pub async fn entretien<M>(middleware: Arc<M>)
         debug!("Cycle entretien {}", DOMAINE_NOM);
         middleware.entretien_validateur().await;
     }
+}
+
+/// Emet le certificat de maitre des cles
+/// Le message n'a aucun contenu, c'est l'enveloppe qui permet de livrer le certificat
+/// Si message est None, emet sur evenement.MaitreDesCles.certMaitreDesCles
+pub async fn emettre_certificat_maitredescles<M>(middleware: &M, m: Option<MessageValideAction>)
+    -> Result<(), Box<dyn Error>>
+    where M: GenerateurMessages
+{
+    debug!("emettre_certificat_maitredescles");
+
+    let reponse = json!({});
+
+    match m {
+        Some(demande) => {
+            match demande.reply_q.as_ref() {
+                Some(reply_q) => {
+                    // On utilise une correlation fixe pour permettre au demandeur de recevoir les
+                    // reponses de plusieurs partitions de maitre des cles en meme temps.
+                    let routage = RoutageMessageReponse::new(
+                        reply_q, COMMANDE_CERT_MAITREDESCLES);
+                    let message_reponse = middleware.formatter_reponse(&reponse, None)?;
+                    middleware.repondre(routage, message_reponse).await?;
+                },
+                None => {
+                    debug!("Mauvais message recu pour emettre_certificat (pas de reply_q)");
+                }
+            }
+        },
+        None => {
+            let routage = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_CERT_MAITREDESCLES)
+                .exchanges(vec![Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure])
+                .correlation_id(COMMANDE_CERT_MAITREDESCLES)
+                .build();
+            middleware.emettre_evenement(routage, &reponse).await?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Emettre les cles de l'instance locale pour s'assurer que tous les maitre des cles en ont une copie
+pub async fn emettre_cles_symmetriques<M>(middleware: &M, rechiffreur: &HandlerCleRechiffrage)
+    -> Result<(), Box<dyn Error>>
+    where M: GenerateurMessages + CleChiffrageHandler
+{
+    debug!("emettre_cles_symmetriques");
+
+    let enveloppe_privee = middleware.get_enveloppe_signature();
+    let enveloppes_publiques = middleware.get_publickeys_chiffrage();
+
+    // Recuperer cles symmetriques chiffrees pour CA et tous les maitre des cles connus
+    let cle_secrete_chiffree_ca = rechiffreur.get_cle_symmetrique_chiffree(&enveloppe_privee.enveloppe_ca.cle_publique)?;
+    let mut cles = HashMap::new();
+    for cle in enveloppes_publiques.into_iter() {
+        let cle_rechiffree = rechiffreur.get_cle_symmetrique_chiffree(&cle.public_key)?;
+        cles.insert(cle.fingerprint, cle_rechiffree);
+    }
+
+    let evenement = EvenementClesRechiffrage {
+        cle_ca: cle_secrete_chiffree_ca,
+        cles_dechiffrage: cles,
+    };
+    // let evenement = json!({
+    //     "cle_ca": cle_secrete_chiffree_ca,
+    //     "cles_dechiffrage": cles,
+    // });
+
+    let routage = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_CLES_RECHIFFRAGE)
+        .exchanges(vec![Securite::L4Secure])
+        .build();
+
+    middleware.emettre_evenement(routage, &evenement).await?;
+
+    Ok(())
 }
 
 // pub async fn entretien_rechiffreur<M>(middleware: Arc<M>, handler_rechiffrage: Arc<HandlerCleRechiffrage>)
@@ -672,4 +748,10 @@ pub struct DocumentCleRechiffrage {
     pub instance_id: String,
     pub fingerprint: Option<String>,
     pub cle: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EvenementClesRechiffrage {
+    pub cle_ca: String,
+    pub cles_dechiffrage: HashMap<String, String>,
 }

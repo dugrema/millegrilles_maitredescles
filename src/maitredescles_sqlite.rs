@@ -403,6 +403,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesSQLite {
                     fingerprint TEXT NOT NULL,
                     instance_id TEXT NOT NULL,
                     cle TEXT NOT NULL,
+                    nonce TEXT,
                     CONSTRAINT configuration_pk PRIMARY KEY (type_cle, fingerprint, instance_id)
                     );
 
@@ -523,6 +524,7 @@ impl GestionnaireMaitreDesClesSQLite {
                 rk_volatils.push(ConfigRoutingExchange { routing_key: format!("evenement.{}.{}", DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION), exchange: sec.clone() });
                 rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION), exchange: sec.clone() });
             }
+            rk_volatils.push(ConfigRoutingExchange { routing_key: format!("evenement.{}.{}", DOMAINE_NOM, EVENEMENT_CLES_RECHIFFRAGE), exchange: Securite::L4Secure });
 
             let commandes_protegees = vec![
                 COMMANDE_RECHIFFRER_BATCH,
@@ -665,44 +667,44 @@ async fn requete_certificat_maitredescles<M>(middleware: &M, m: MessageValideAct
     Ok(Some(message_reponse))
 }
 
-/// Emet le certificat de maitre des cles
-/// Le message n'a aucun contenu, c'est l'enveloppe qui permet de livrer le certificat
-/// Si message est None, emet sur evenement.MaitreDesCles.certMaitreDesCles
-pub async fn emettre_certificat_maitredescles<M>(middleware: &M, m: Option<MessageValideAction>)
-    -> Result<(), Box<dyn Error>>
-    where M: GenerateurMessages
-{
-    debug!("emettre_certificat_maitredescles");
-
-    let reponse = json!({});
-
-    match m {
-        Some(demande) => {
-            match demande.reply_q.as_ref() {
-                Some(reply_q) => {
-                    // On utilise une correlation fixe pour permettre au demandeur de recevoir les
-                    // reponses de plusieurs partitions de maitre des cles en meme temps.
-                    let routage = RoutageMessageReponse::new(
-                        reply_q, COMMANDE_CERT_MAITREDESCLES);
-                    let message_reponse = middleware.formatter_reponse(&reponse, None)?;
-                    middleware.repondre(routage, message_reponse).await?;
-                },
-                None => {
-                    debug!("Mauvais message recu pour emettre_certificat (pas de reply_q)");
-                }
-            }
-        },
-        None => {
-            let routage = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_CERT_MAITREDESCLES)
-                .exchanges(vec![Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure])
-                .correlation_id(COMMANDE_CERT_MAITREDESCLES)
-                .build();
-            middleware.emettre_evenement(routage, &reponse).await?;
-        }
-    }
-
-    Ok(())
-}
+// /// Emet le certificat de maitre des cles
+// /// Le message n'a aucun contenu, c'est l'enveloppe qui permet de livrer le certificat
+// /// Si message est None, emet sur evenement.MaitreDesCles.certMaitreDesCles
+// pub async fn emettre_certificat_maitredescles<M>(middleware: &M, m: Option<MessageValideAction>)
+//     -> Result<(), Box<dyn Error>>
+//     where M: GenerateurMessages
+// {
+//     debug!("emettre_certificat_maitredescles");
+//
+//     let reponse = json!({});
+//
+//     match m {
+//         Some(demande) => {
+//             match demande.reply_q.as_ref() {
+//                 Some(reply_q) => {
+//                     // On utilise une correlation fixe pour permettre au demandeur de recevoir les
+//                     // reponses de plusieurs partitions de maitre des cles en meme temps.
+//                     let routage = RoutageMessageReponse::new(
+//                         reply_q, COMMANDE_CERT_MAITREDESCLES);
+//                     let message_reponse = middleware.formatter_reponse(&reponse, None)?;
+//                     middleware.repondre(routage, message_reponse).await?;
+//                 },
+//                 None => {
+//                     debug!("Mauvais message recu pour emettre_certificat (pas de reply_q)");
+//                 }
+//             }
+//         },
+//         None => {
+//             let routage = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_CERT_MAITREDESCLES)
+//                 .exchanges(vec![Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure])
+//                 .correlation_id(COMMANDE_CERT_MAITREDESCLES)
+//                 .build();
+//             middleware.emettre_evenement(routage, &reponse).await?;
+//         }
+//     }
+//
+//     Ok(())
+// }
 
 async fn consommer_transaction<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesSQLite) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
 where
@@ -778,6 +780,7 @@ async fn consommer_evenement<M>(middleware: &M, gestionnaire: &GestionnaireMaitr
 
     match m.action.as_str() {
         EVENEMENT_CLES_MANQUANTES_PARTITION => evenement_cle_manquante(middleware, gestionnaire, &m).await,
+        EVENEMENT_CLES_RECHIFFRAGE => evenement_cle_rechiffrage(middleware, m, gestionnaire).await,
         _ => Err(format!("consommer_transaction: Mauvais type d'action pour une transaction : {}", m.action))?,
     }
 }
@@ -1051,6 +1054,7 @@ pub async fn preparer_rechiffreur_sqlite<M>(middleware: &M, gestionnaire: &Gesti
 {
     let enveloppe_privee = middleware.get_enveloppe_signature();
     let instance_id = enveloppe_privee.enveloppe.get_common_name()?;
+    let fingerprint = enveloppe_privee.fingerprint();
     let handler_rechiffrage = &gestionnaire.handler_rechiffrage;
 
     {
@@ -1059,7 +1063,7 @@ pub async fn preparer_rechiffreur_sqlite<M>(middleware: &M, gestionnaire: &Gesti
         match cle_ca {
             Some(inner) => {
                 info!("preparer_rechiffreur_sqlite Cle CA existe");
-                match charger_cle_configuration(middleware, &connexion, "dechiffrage")? {
+                match charger_cle_configuration(middleware, &connexion, "local")? {
                     Some(cle_locale) => {
                         handler_rechiffrage.set_cle_symmetrique(cle_locale)?;
                         info!("preparer_rechiffreur_sqlite Cle de rechiffrage locale est chargee");
@@ -1078,8 +1082,12 @@ pub async fn preparer_rechiffreur_sqlite<M>(middleware: &M, gestionnaire: &Gesti
                 debug!("Cle secrete chiffree pour instance {} :\nCA = {}\n local = {}", instance_id, cle_secrete_chiffree_ca, cle_secrete_chiffree_local);
 
                 // Sauvegarder la cle symmetrique
-                sauvegarder_cle_configuration(middleware, &connexion, "CA", cle_secrete_chiffree_ca)?;
-                sauvegarder_cle_configuration(middleware, &connexion, "dechiffrage", cle_secrete_chiffree_local)?;
+                sauvegarder_cle_configuration(
+                    middleware, &connexion, "CA",
+                    instance_id.as_str(), "CA", cle_secrete_chiffree_ca, None)?;
+                sauvegarder_cle_configuration(
+                    middleware, &connexion, "local",
+                    instance_id.as_str(), fingerprint, cle_secrete_chiffree_local, None)?;
             }
         }
     };
@@ -1864,6 +1872,66 @@ async fn traiter_cles_manquantes_ca<M>(
     Ok(())
 }
 
+async fn evenement_cle_rechiffrage<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesSQLite)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: ValidateurX509 + GenerateurMessages + CleChiffrageHandler + ConfigMessages
+{
+    debug!("evenement_cle_rechiffrage Conserver cles de rechiffrage {:?}", &m.message);
+
+    let enveloppe_signature = middleware.get_enveloppe_signature();
+    let fingerprint_local = enveloppe_signature.fingerprint();
+
+    let (instance_id, fingerprint) = match m.message.certificat {
+        Some(inner) => (inner.get_common_name()?, inner.fingerprint.to_owned()),
+        None => Err(format!("evenement_cle_rechiffrage Certificat absent"))?
+    };
+
+    if fingerprint_local.as_str() == fingerprint.as_str() {
+        debug!("evenement_cle_rechiffrage Evenement pour cle locale (fingerprint {}), skip", fingerprint);
+        return Ok(None);
+    }
+
+    let connexion = gestionnaire.ouvrir_connection(middleware, false);
+
+    // Mapper evenement
+    let evenement: EvenementClesRechiffrage = m.message.parsed.map_contenu()?;
+
+    sauvegarder_cle_configuration(
+        middleware, &connexion,
+        "CA", instance_id.as_str(), "CA", evenement.cle_ca, None)?;
+
+    // Dechiffrer cle du tiers, rechiffrer en symmetrique local
+    if let Some(cle_tierce) = evenement.cles_dechiffrage.get(fingerprint_local) {
+
+        let cle_tierce_vec = multibase::decode(cle_tierce)?;
+        let cle_dechiffree = dechiffrer_asymmetrique_ed25519(
+            &cle_tierce_vec.1[..], enveloppe_signature.cle_privee())?;
+        let cle_chiffree = gestionnaire.handler_rechiffrage.chiffrer_cle_secrete(&cle_dechiffree.0[..])?;
+
+        // let doc_ca = doc! {
+        //     "type": "tiers",
+        //     "instance_id": &instance_id,
+        //     "fingerprint": fingerprint,
+        //     "cle_symmetrique": cle_chiffree.cle,
+        //     "nonce_symmetrique": cle_chiffree.nonce,
+        // };
+        // if let Err(e) = collection.insert_one(doc_ca, None).await {
+        //     if ! verifier_erreur_duplication_mongo(&e.kind) {
+        //         // L'erreur n'est pas une duplication, relancer
+        //         Err(e)?
+        //     }
+        // }
+
+        sauvegarder_cle_configuration(
+            middleware, &connexion,
+            "tiers", instance_id, fingerprint, cle_chiffree.cle, Some(cle_chiffree.nonce.as_str()))?;
+
+    }
+
+    Ok(None)
+}
+
+
 async fn evenement_cle_manquante<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesSQLite, m: &MessageValideAction)
                                     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: ValidateurX509 + GenerateurMessages + IsConfigNoeud + CleChiffrageHandler + ConfigMessages
@@ -2166,36 +2234,55 @@ fn charger_cle_configuration<M,S>(middleware: &M, connexion: &Connection, type_c
     Ok(Some(cle_chiffree))
 }
 
-fn sauvegarder_cle_configuration<M,S,T>(middleware: &M, connection: &Connection, type_cle: S, cle: T)
+fn sauvegarder_cle_configuration<M,S,I,T,F>(middleware: &M, connection: &Connection, type_cle: S, instance_id: I, fingerprint: F, cle: T, nonce: Option<&str>)
     -> Result<(), Box<dyn Error>>
-    where M: FormatteurMessage, S: AsRef<str>, T: AsRef<str>
+    where M: FormatteurMessage, S: AsRef<str>, I: AsRef<str>, T: AsRef<str>, F: AsRef<str>
 {
+    let instance_id = instance_id.as_ref();
+    let fingerprint = fingerprint.as_ref();
     let type_cle = type_cle.as_ref();
     let cle = cle.as_ref();
 
     let cle_privee = middleware.get_enveloppe_signature();
-    let instance_id = cle_privee.enveloppe.get_common_name()?;
+    // let instance_id = cle_privee.enveloppe.get_common_name()?;
     // let fingerprint = cle_privee.fingerprint().as_str();
 
     let fingerprint = match type_cle {
         "CA" => "CA",
-        _ => cle_privee.fingerprint().as_str()
+        _ => fingerprint
     };
 
     // Sauvegarde cle dans sqlite
     let mut prepared_statement_configuration = connection
         .prepare("
             INSERT INTO configuration
-            VALUES(?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?)
         ")?;
 
     prepared_statement_configuration.bind(1, type_cle)?;
     prepared_statement_configuration.bind(2, fingerprint)?;
-    prepared_statement_configuration.bind(3, instance_id.as_str())?;
+    prepared_statement_configuration.bind(3, instance_id)?;
     prepared_statement_configuration.bind(4, cle)?;
+    prepared_statement_configuration.bind(5, nonce)?;
 
     debug!("Conserver config cle dans sqlite : {}", fingerprint);
-    let resultat = prepared_statement_configuration.next()?;
+    let resultat = match prepared_statement_configuration.next() {
+        Ok(inner) => inner,
+        Err(e) => {
+            match e.code.as_ref() {
+                Some(inner) => {
+                    if *inner == 19 {
+                        // Ok, duplication
+                        debug!("Cle configuration {}:{} dupliquee (OK)", instance_id, fingerprint);
+                        return Ok(())
+                    } else {
+                        Err(e)?  // Re-throw
+                    }
+                },
+                None => Err(e)?  // Re-throw
+            }
+        }
+    };
     debug!("Resultat ajout cle dans sqlite : {:?}", resultat);
 
     if State::Done != resultat {

@@ -24,8 +24,8 @@ use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::transactions::resoumettre_transactions;
 
 use crate::maitredescles_ca::GestionnaireMaitreDesClesCa;
-use crate::maitredescles_commun::GestionnaireRessources;
-use crate::maitredescles_partition::{emettre_certificat_maitredescles, GestionnaireMaitreDesClesPartition};
+use crate::maitredescles_commun::{emettre_cles_symmetriques, GestionnaireRessources};
+use crate::maitredescles_partition::GestionnaireMaitreDesClesPartition;
 use crate::maitredescles_sqlite::{GestionnaireMaitreDesClesSQLite};
 use crate::maitredescles_volatil::HandlerCleRechiffrage;
 
@@ -310,8 +310,13 @@ async fn entretien<M>(middleware: Arc<M>)
                 if prochaine_confirmation_ca < maintenant {
                     // Emettre certificat local (pas vraiment a la bonne place)
                     match g.emettre_certificat_maitredescles(middleware.as_ref(), None).await {
-                        Ok(_) => (),
+                        Ok(()) => (),
                         Err(e) => error!("entretien Partition Erreur emission certificat de maitre des cles : {:?}", e)
+                    }
+
+                    match emettre_cles_symmetriques(middleware.as_ref(), g.handler_rechiffrage.as_ref()).await {
+                        Ok(()) => (),
+                        Err(e) => error!("entretien Partition Erreur emission evenement cles rechiffrage : {:?}", e)
                     }
 
                     debug!("entretien Pousser les cles locales vers le CA");
@@ -347,6 +352,11 @@ async fn entretien<M>(middleware: Arc<M>)
                     match g.emettre_certificat_maitredescles(middleware.as_ref(), None).await {
                         Ok(_) => (),
                         Err(e) => error!("entretien SQLite Erreur emission certificat de maitre des cles : {:?}", e)
+                    }
+
+                    match emettre_cles_symmetriques(middleware.as_ref(), &g.handler_rechiffrage).await {
+                        Ok(()) => (),
+                        Err(e) => error!("entretien Partition Erreur emission evenement cles rechiffrage : {:?}", e)
                     }
 
                     debug!("entretien Pousser les cles locales vers le CA");
