@@ -83,12 +83,6 @@ impl Clone for GestionnaireMaitreDesClesSQLite {
 impl Debug for GestionnaireMaitreDesClesSQLite {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str(format!("GestionnaireMaitreDesClesSQLite fingerprint {}", self.handler_rechiffrage.fingerprint()).as_str())
-        // match self.handler_rechiffrage.fingerprint() {
-        //     Some(fingerprint) => {
-        //         f.write_str(format!("GestionnaireMaitreDesClesSQLite fingerprint {}", fingerprint).as_str())
-        //     },
-        //     None => f.write_str(format!("GestionnaireMaitreDesClesSQLite sans rechiffreur").as_str())
-        // }
     }
 }
 
@@ -101,7 +95,6 @@ fn nom_collection_transactions<S>(_fingerprint: S) -> String
 impl GestionnaireMaitreDesClesSQLite {
     pub fn new(handler_rechiffrage: HandlerCleRechiffrage) -> Self {
         Self {
-            // fingerprint: String::from(fingerprint),
             handler_rechiffrage,
             connexion_read_only: Mutex::new(None),
             connexion_sauvegarder_cle: Mutex::new(None),
@@ -109,10 +102,6 @@ impl GestionnaireMaitreDesClesSQLite {
     }
 
     fn ouvrir_connection<M>(&self, middleware: &M, read_only: bool) -> Connection where M: IsConfigNoeud {
-        // let fingerprint = match self.handler_rechiffrage.fingerprint() {
-        //     Some(f) => f,
-        //     None => panic!("maitredescles_sqlite.ouvrir_connection Erreur aucun handler_rechiffrage")
-        // };
         let fingerprint = self.handler_rechiffrage.fingerprint();
 
         let sqlite_path = middleware.get_configuration_noeud().sqlite_path.as_ref().expect("preparer_database sqlite");
@@ -153,24 +142,11 @@ impl GestionnaireMaitreDesClesSQLite {
     pub fn get_partition_tronquee(&self) -> Option<String> {
         let fingerprint = self.handler_rechiffrage.fingerprint();
         Some(String::from(&fingerprint[35..]))
-        // match self.handler_rechiffrage.fingerprint() {
-        //     Some(f) => {
-        //         // On utilise les 12 derniers chars du fingerprint (35..48)
-        //         Some(String::from(&f[35..]))
-        //     },
-        //     None => None
-        // }
     }
 
     fn get_q_sauvegarder_cle(&self) -> Option<String> {
         let fingerprint = self.handler_rechiffrage.fingerprint();
         Some(format!("MaitreDesCles/{}/sauvegarder", fingerprint))
-        // match self.handler_rechiffrage.fingerprint() {
-        //     Some(f) => {
-        //         Some(format!("MaitreDesCles/{}/sauvegarder", f))
-        //     },
-        //     None => None
-        // }
     }
 
     fn get_collection_cles(&self) -> Option<String> {
@@ -216,10 +192,6 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesSQLite {
 
     fn get_partition(&self) -> Option<String> {
         Some(self.handler_rechiffrage.fingerprint().to_owned())
-        // match self.handler_rechiffrage.fingerprint() {
-        //     Some(f) => Some(f),
-        //     None => None
-        // }
     }
 
     fn get_collection_transactions(&self) -> Option<String> {
@@ -233,34 +205,16 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesSQLite {
     fn get_q_transactions(&self) -> Option<String> {
         let fingerprint = self.handler_rechiffrage.fingerprint();
         Some(format!("MaitreDesCles/{}/transactions", fingerprint))
-        // match self.handler_rechiffrage.fingerprint() {
-        //     Some(f) => {
-        //         Some(format!("MaitreDesCles/{}/transactions", f))
-        //     },
-        //     None => None
-        // }
     }
 
     fn get_q_volatils(&self) -> Option<String> {
         let fingerprint = self.handler_rechiffrage.fingerprint();
         Some(format!("MaitreDesCles/{}/volatils", fingerprint))
-        // match self.handler_rechiffrage.fingerprint() {
-        //     Some(f) => {
-        //         Some(format!("MaitreDesCles/{}/volatils", f))
-        //     },
-        //     None => None
-        // }
     }
 
     fn get_q_triggers(&self) -> Option<String> {
         let fingerprint = self.handler_rechiffrage.fingerprint();
         Some(format!("MaitreDesCles/{}/triggers", fingerprint))
-        // match self.handler_rechiffrage.fingerprint() {
-        //     Some(f) => {
-        //         Some(format!("MaitreDesCles/{}/triggers", f))
-        //     },
-        //     None => None
-        // }
     }
 
     fn preparer_queues(&self) -> Vec<QueueType> {
@@ -272,121 +226,6 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesSQLite {
         // Aucunes Q a l'initialisation, ajoutees
 
         queues
-
-        // let mut rk_dechiffrage = Vec::new();
-        // let mut rk_commande_cle = Vec::new();
-        // let mut rk_volatils = Vec::new();
-        //
-        // let dechiffrer = if let Ok(v) = std::env::var("DESACTIVER_DECHIFFRAGE") {
-        //     info!("Desactiver rechiffrage public/prive/protege");
-        //     false
-        // } else {
-        //     true
-        // };
-        //
-        // let commandes: Vec<&str> = vec![
-        //     COMMANDE_SAUVEGARDER_CLE,
-        // ];
-        // let fingerprint = self.handler_rechiffrage.fingerprint();
-        // // let fingerprint_option = match self.handler_rechiffrage.fingerprint() {
-        // //     Some(f) => Some(f),
-        // //     None => None
-        // // };
-        //
-        // //if let Some(fingerprint) = fingerprint_option {
-        //     let nom_partition = fingerprint;//.as_str();
-        //
-        //     for sec in [Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure] {
-        //
-        //         if dechiffrer {
-        //             rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE), exchange: sec.clone() });
-        //             rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_VERIFIER_PREUVE), exchange: sec.clone() });
-        //             // rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}.{}", DOMAINE_NOM, nom_partition, REQUETE_VERIFIER_PREUVE), exchange: sec.clone() });
-        //         }
-        //
-        //         rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_CERTIFICAT_MAITREDESCLES), exchange: sec.clone() });
-        //
-        //         // Commande volatile
-        //         rk_volatils.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_CERT_MAITREDESCLES), exchange: sec.clone() });
-        //
-        //         // Commande sauvegarder cles
-        //         for commande in &commandes {
-        //             rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.*.{}", DOMAINE_NOM, commande), exchange: sec.clone() });
-        //         }
-        //     }
-        //
-        //     // Commande sauvegarder cle 4.secure pour redistribution des cles
-        //     rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE), exchange: Securite::L4Secure });
-        //     rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.*.{}", DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE), exchange: Securite::L4Secure });
-        //
-        //     // Requetes de dechiffrage/preuve re-emise sur le bus 4.secure lorsque la cle est inconnue
-        //     rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE), exchange: Securite::L4Secure });
-        //     rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_VERIFIER_PREUVE), exchange: Securite::L4Secure });
-        //
-        //     for sec in [Securite::L3Protege, Securite::L4Secure] {
-        //         rk_volatils.push(ConfigRoutingExchange { routing_key: format!("evenement.{}.{}", DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION), exchange: sec.clone() });
-        //         rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION), exchange: sec.clone() });
-        //     }
-        //
-        //     let commandes_protegees = vec![
-        //         COMMANDE_RECHIFFRER_BATCH,
-        //     ];
-        //     for commande in commandes_protegees {
-        //         rk_volatils.push(ConfigRoutingExchange {
-        //             routing_key: format!("commande.{}.{}", DOMAINE_NOM, commande),
-        //             exchange: Securite::L3Protege
-        //         });
-        //     }
-        // //}
-        //
-        // let mut queues = Vec::new();
-        //
-        // // Queue de messages dechiffrage - taches partagees entre toutes les partitions
-        // if dechiffrer {
-        //     queues.push(QueueType::ExchangeQueue(
-        //         ConfigQueue {
-        //             nom_queue: NOM_Q_DECHIFFRAGE.into(),
-        //             routing_keys: rk_dechiffrage,
-        //             ttl: DEFAULT_Q_TTL.into(),
-        //             durable: false,
-        //             autodelete: false,
-        //         }
-        //     ));
-        // }
-        //
-        // // Queue commande de sauvegarde de cle
-        // if let Some(nom_queue) = self.get_q_sauvegarder_cle() {
-        //     queues.push(QueueType::ExchangeQueue(
-        //         ConfigQueue {
-        //             nom_queue,
-        //             routing_keys: rk_commande_cle,
-        //             ttl: None,
-        //             durable: false,
-        //             autodelete: false,
-        //         }
-        //     ));
-        // }
-        //
-        // // Queue volatils
-        // if let Some(nom_queue) = self.get_q_volatils() {
-        //     queues.push(QueueType::ExchangeQueue(
-        //         ConfigQueue {
-        //             nom_queue,
-        //             routing_keys: rk_volatils,
-        //             ttl: DEFAULT_Q_TTL.into(),
-        //             durable: false,
-        //             autodelete: false,
-        //         }
-        //     ));
-        // }
-        //
-        // // Queue de triggers
-        // let fingerprint = self.handler_rechiffrage.fingerprint();
-        // //if let Some(f) = self.handler_rechiffrage.fingerprint() {
-        //     queues.push(QueueType::Triggers(format!("MaitreDesCles.{}", fingerprint), Securite::L3Protege));
-        // //}
-        //
-        // queues
     }
 
     fn chiffrer_backup(&self) -> bool {
@@ -485,60 +324,53 @@ impl GestionnaireMaitreDesClesSQLite {
             COMMANDE_SAUVEGARDER_CLE,
         ];
         let fingerprint = self.handler_rechiffrage.fingerprint();
-        // let fingerprint_option = match self.handler_rechiffrage.fingerprint() {
-        //     Some(f) => Some(f),
-        //     None => None
-        // };
+        let nom_partition = fingerprint;//.as_str();
 
-        //if let Some(fingerprint) = fingerprint_option {
-            let nom_partition = fingerprint;//.as_str();
+        for sec in [Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure] {
 
-            for sec in [Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure] {
-
-                if dechiffrer {
-                    rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE), exchange: sec.clone() });
-                    rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_VERIFIER_PREUVE), exchange: sec.clone() });
-                    // rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}.{}", DOMAINE_NOM, nom_partition, REQUETE_VERIFIER_PREUVE), exchange: sec.clone() });
-                }
-
-                rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_CERTIFICAT_MAITREDESCLES), exchange: sec.clone() });
-
-                // Commande volatile
-                rk_volatils.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_CERT_MAITREDESCLES), exchange: sec.clone() });
-
-                // Commande sauvegarder cles
-                for commande in &commandes {
-                    rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.*.{}", DOMAINE_NOM, commande), exchange: sec.clone() });
-                }
+            if dechiffrer {
+                rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE), exchange: sec.clone() });
+                rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_VERIFIER_PREUVE), exchange: sec.clone() });
+                // rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}.{}", DOMAINE_NOM, nom_partition, REQUETE_VERIFIER_PREUVE), exchange: sec.clone() });
             }
 
-            // Commande sauvegarder cle 4.secure pour redistribution des cles
-            rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE), exchange: Securite::L4Secure });
-            rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.*.{}", DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE), exchange: Securite::L4Secure });
+            rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_CERTIFICAT_MAITREDESCLES), exchange: sec.clone() });
 
-            // Rotation des cles
-            rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, COMMANDE_ROTATION_CERTIFICAT), exchange: Securite::L3Protege });
+            // Commande volatile
+            rk_volatils.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_CERT_MAITREDESCLES), exchange: sec.clone() });
 
-            // Requetes de dechiffrage/preuve re-emise sur le bus 4.secure lorsque la cle est inconnue
-            rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE), exchange: Securite::L4Secure });
-            rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_VERIFIER_PREUVE), exchange: Securite::L4Secure });
-
-            for sec in [Securite::L3Protege, Securite::L4Secure] {
-                rk_volatils.push(ConfigRoutingExchange { routing_key: format!("evenement.{}.{}", DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION), exchange: sec.clone() });
-                rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION), exchange: sec.clone() });
+            // Commande sauvegarder cles
+            for commande in &commandes {
+                rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.*.{}", DOMAINE_NOM, commande), exchange: sec.clone() });
             }
-            rk_volatils.push(ConfigRoutingExchange { routing_key: format!("evenement.{}.{}", DOMAINE_NOM, EVENEMENT_CLES_RECHIFFRAGE), exchange: Securite::L4Secure });
+        }
 
-            let commandes_protegees = vec![
-                COMMANDE_RECHIFFRER_BATCH,
-            ];
-            for commande in commandes_protegees {
-                rk_volatils.push(ConfigRoutingExchange {
-                    routing_key: format!("commande.{}.{}", DOMAINE_NOM, commande),
-                    exchange: Securite::L3Protege
-                });
-            }
-        //}
+        // Commande sauvegarder cle 4.secure pour redistribution des cles
+        rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE), exchange: Securite::L4Secure });
+        rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.*.{}", DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE), exchange: Securite::L4Secure });
+
+        // Rotation des cles
+        rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, COMMANDE_ROTATION_CERTIFICAT), exchange: Securite::L3Protege });
+
+        // Requetes de dechiffrage/preuve re-emise sur le bus 4.secure lorsque la cle est inconnue
+        rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE), exchange: Securite::L4Secure });
+        rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_VERIFIER_PREUVE), exchange: Securite::L4Secure });
+
+        for sec in [Securite::L3Protege, Securite::L4Secure] {
+            rk_volatils.push(ConfigRoutingExchange { routing_key: format!("evenement.{}.{}", DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION), exchange: sec.clone() });
+            rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION), exchange: sec.clone() });
+        }
+        rk_volatils.push(ConfigRoutingExchange { routing_key: format!("evenement.{}.{}", DOMAINE_NOM, EVENEMENT_CLES_RECHIFFRAGE), exchange: Securite::L4Secure });
+
+        let commandes_protegees = vec![
+            COMMANDE_RECHIFFRER_BATCH,
+        ];
+        for commande in commandes_protegees {
+            rk_volatils.push(ConfigRoutingExchange {
+                routing_key: format!("commande.{}.{}", DOMAINE_NOM, commande),
+                exchange: Securite::L3Protege
+            });
+        }
 
         let mut queues = Vec::new();
 
@@ -583,9 +415,7 @@ impl GestionnaireMaitreDesClesSQLite {
 
         // Queue de triggers
         let fingerprint = self.handler_rechiffrage.fingerprint();
-        //if let Some(f) = self.handler_rechiffrage.fingerprint() {
-            queues.push(QueueType::Triggers(format!("MaitreDesCles.{}", fingerprint), Securite::L3Protege));
-        //}
+        queues.push(QueueType::Triggers(format!("MaitreDesCles.{}", fingerprint), Securite::L3Protege));
 
         queues
     }
@@ -670,45 +500,6 @@ async fn requete_certificat_maitredescles<M>(middleware: &M, m: MessageValideAct
     Ok(Some(message_reponse))
 }
 
-// /// Emet le certificat de maitre des cles
-// /// Le message n'a aucun contenu, c'est l'enveloppe qui permet de livrer le certificat
-// /// Si message est None, emet sur evenement.MaitreDesCles.certMaitreDesCles
-// pub async fn emettre_certificat_maitredescles<M>(middleware: &M, m: Option<MessageValideAction>)
-//     -> Result<(), Box<dyn Error>>
-//     where M: GenerateurMessages
-// {
-//     debug!("emettre_certificat_maitredescles");
-//
-//     let reponse = json!({});
-//
-//     match m {
-//         Some(demande) => {
-//             match demande.reply_q.as_ref() {
-//                 Some(reply_q) => {
-//                     // On utilise une correlation fixe pour permettre au demandeur de recevoir les
-//                     // reponses de plusieurs partitions de maitre des cles en meme temps.
-//                     let routage = RoutageMessageReponse::new(
-//                         reply_q, COMMANDE_CERT_MAITREDESCLES);
-//                     let message_reponse = middleware.formatter_reponse(&reponse, None)?;
-//                     middleware.repondre(routage, message_reponse).await?;
-//                 },
-//                 None => {
-//                     debug!("Mauvais message recu pour emettre_certificat (pas de reply_q)");
-//                 }
-//             }
-//         },
-//         None => {
-//             let routage = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_CERT_MAITREDESCLES)
-//                 .exchanges(vec![Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure])
-//                 .correlation_id(COMMANDE_CERT_MAITREDESCLES)
-//                 .build();
-//             middleware.emettre_evenement(routage, &reponse).await?;
-//         }
-//     }
-//
-//     Ok(())
-// }
-
 async fn consommer_transaction<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesSQLite) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
 where
     M: ValidateurX509 + GenerateurMessages
@@ -722,10 +513,6 @@ where
     }?;
 
     match m.action.as_str() {
-        // TRANSACTION_CLE  => {
-        //     sauvegarder_transaction_recue(middleware, m, gestionnaire.get_collection_transactions().as_str()).await?;
-        //     Ok(None)
-        // },
         _ => Err(format!("maitredescles_ca.consommer_transaction: Mauvais type d'action pour une transaction : {}", m.action))?,
     }
 }
@@ -794,10 +581,6 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
     where M: GenerateurMessages + IsConfigNoeud + CleChiffrageHandler
 {
     debug!("commande_sauvegarder_cle Consommer commande : {:?}", & m.message);
-    // let fingerprint = match gestionnaire.handler_rechiffrage.fingerprint() {
-    //     Some(f) => f,
-    //     None => Err(format!("maitredescles_volatil.commande_sauvegarder_cle Erreur aucun handler_rechiffrage"))?
-    // };
     let fingerprint = gestionnaire.handler_rechiffrage.fingerprint();
 
     let commande: CommandeSauvegarderCle = m.message.get_msg().map_contenu()?;
@@ -832,23 +615,6 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
         calculer_cle_ref(&commande, &cle_secrete)?
     };
 
-    // Valider identite, calculer cle_ref
-    // let (cle_ref, cle_chiffree) = {
-    //     let cle_secrete = extraire_cle_secrete(middleware.get_enveloppe_signature().cle_privee(), cle)?;
-    //     if commande.verifier_identite(&cle_secrete)? != true {
-    //         Err(format!("maitredescles_partition.commande_sauvegarder_cle Erreur verifier identite commande, signature invalide"))?
-    //     }
-    //
-    //     // Chiffrer avec cle symmetrique locale
-    //     let handler_rechiffrage = &gestionnaire.handler_rechiffrage;
-    //     let cle_chiffree = handler_rechiffrage.chiffrer_cle_secrete(&cle_secrete.0[..])?;
-    //
-    //     let cle_ref = calculer_cle_ref(&commande, &cle_secrete)?;
-    //
-    //     (cle_ref, cle_chiffree)
-    // };
-
-
     {
         let connexion_guard = gestionnaire.ouvrir_connection_sauvegardercle(middleware)
             .lock().expect("requete_dechiffrage connection lock");
@@ -872,12 +638,6 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
             let pk_chiffrage = middleware.get_publickeys_chiffrage();
             if pk_chiffrage.len() > commande.cles.len() {
                 debug!("commande_sauvegarder_cle Nouvelle cle sur exchange != 4.secure, re-emettre a l'interne");
-                // let cle_str = match commande.cles.get(fingerprint) {
-                //     Some(c) => c.to_owned(),
-                //     None => Err(format!("maitredescles_partition.commande_sauvegarder_cle Erreur cle partition {} introuvable", fingerprint))?
-                // };
-                //cle_transfert.cle = cle_str;  // Injecter la cle de cette partition
-
                 let mut cle_transfert = DocumentClePartition::from(commande);
 
                 let commande_cle_rechiffree = rechiffrer_pour_maitredescles(middleware, cle_transfert)?;
@@ -904,10 +664,6 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
     where M: GenerateurMessages + IsConfigNoeud + CleChiffrageHandler
 {
     debug!("commande_rechiffrer_batch Consommer commande : {:?}", & m.message);
-    // let fingerprint = match gestionnaire.handler_rechiffrage.fingerprint() {
-    //     Some(f) => f,
-    //     None => Err(format!("maitredescles_volatil.commande_rechiffrer_batch Erreur aucun handler_rechiffrage"))?
-    // };
     let fingerprint = gestionnaire.handler_rechiffrage.fingerprint();
 
     let commande: CommandeRechiffrerBatch = m.message.get_msg().map_contenu()?;
@@ -919,24 +675,11 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
     let fingerprint_ca = enveloppe_privee.enveloppe_ca.fingerprint.clone();
     let fingerprint = enveloppe_privee.enveloppe.fingerprint.as_str();
 
-    // // Determiner si on doit rechiffrer pour d'autres maitre des cles
-    // let cles_chiffrage = {
-    //     let mut cles_chiffrage = Vec::new();
-    //     for fingerprint_cert_cle in middleware.get_publickeys_chiffrage() {
-    //         let fingerprint_cle = fingerprint_cert_cle.fingerprint;
-    //         if fingerprint_cle != fingerprint && fingerprint_cle != fingerprint_ca {
-    //             cles_chiffrage.push(fingerprint_cert_cle.public_key);
-    //         }
-    //     }
-    //     cles_chiffrage
-    // };
-
     let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
         .exchanges(vec![Securite::L4Secure])
         .build();
 
     // Traiter chaque cle individuellement
-    // let mut redis_connexion = redis_dao.get_async_connection().await?;
     let liste_hachage_bytes: Vec<String> = commande.cles.iter().map(|c| c.hachage_bytes.to_owned()).collect();
     let mut liste_cle_ref: Vec<String> = Vec::new();
     connexion.execute("BEGIN TRANSACTION;")?;
@@ -964,12 +707,6 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
         sauvegarder_cle(middleware, &gestionnaire, &connexion, fingerprint, cle_chiffree_str, &info_cle)?;
 
         liste_cle_ref.push(cle_ref);
-
-        // // Rechiffrer pour tous les autres maitre des cles
-        // if cles_chiffrage.len() > 0 {
-        //     let commande_rechiffree = rechiffrer_pour_maitredescles(middleware, info_cle)?;
-        //     middleware.transmettre_commande(routage_commande.clone(), &commande_rechiffree, false).await?;
-        // }
     }
     connexion.execute("COMMIT;")?;
 
@@ -1398,83 +1135,9 @@ async fn verifier_autorisation_dechiffrage_global<M>(middleware: &M, m: &Message
     // On verifie la presence et validite d'une permission
 
     let mut permission: Option<EnveloppePermission> = None;
-    // if let Some(p) = &requete.permission {
-    //     debug!("verifier_autorisation_dechiffrage_global On a une permission, valider le message {:?}", p);
-    //     let mut ms = match MessageSerialise::from_parsed(p.to_owned()) {
-    //         Ok(mut ms) => Ok(ms),
-    //         Err(e) => Err(format!("verifier_autorisation_dechiffrage_global Erreur verification permission (2), refuse: {:?}", e))
-    //     }?;
-    //
-    //     // Charger le certificat dans ms
-    //     let resultat = ms.valider(middleware, None).await?;
-    //     if ! resultat.valide() {
-    //         Err(format!("verifier_autorisation_dechiffrage_global Erreur verification certificat permission (1), refuse: certificat invalide"))?
-    //     }
-    //
-    //     match ms.parsed.map_contenu::<PermissionDechiffrage>(None) {
-    //         Ok(contenu_permission) => {
-    //             // Verifier la date d'expiration de la permission
-    //             let estampille = &ms.get_entete().estampille.get_datetime().timestamp();
-    //             let duree_validite = contenu_permission.permission_duree as i64;
-    //             let ts_courant = Utc::now().timestamp();
-    //             if estampille + duree_validite > ts_courant {
-    //                 debug!("Permission encore valide (duree {}), on va l'utiliser", duree_validite);
-    //                 // Note : conserver permission "localement" pour return false global
-    //                 permission = Some(EnveloppePermission {
-    //                     enveloppe: ms.certificat.clone().expect("cert"),
-    //                     permission: contenu_permission
-    //                 });
-    //             }
-    //         },
-    //         Err(e) => info!("verifier_autorisation_dechiffrage_global Erreur verification permission (1), refuse: {:?}", e)
-    //     }
-    // }
-
-    // match permission {
-    //     Some(p) => {
-    //         // Verifier si le certificat de permission est une delegation globale
-    //         if p.enveloppe.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
-    //             debug!("verifier_autorisation_dechiffrage Certificat delegation globale proprietaire - toujours autorise");
-    //             return Ok((true, Some(p)))
-    //         }
-    //         // Utiliser regles de la permission
-    //         Ok((false, Some(p)))
-    //     },
-    //     None => Ok((false, None))
-    // }
 
     Ok((false, None))
 }
-
-// /// Rechiffre une cle secrete
-// fn rechiffrer_cle(cle: &mut DocumentClePartition, privee: &EnveloppePrivee, certificat_destination: &EnveloppeCertificat)
-//     -> Result<(), Box<dyn Error>>
-// {
-//     if certificat_destination.verifier_exchanges(vec![Securite::L4Secure]) {
-//         // Ok, acces global
-//     } else if certificat_destination.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
-//         // Ok, acces global,
-//     } else if certificat_destination.verifier_roles(vec![RolesCertificats::ComptePrive]) {
-//         // Compte prive, certificats sont verifies par le domaine (relai de permission)
-//     } else if certificat_destination.verifier_roles(vec![RolesCertificats::Stream]) &&
-//         certificat_destination.verifier_exchanges(vec![Securite::L2Prive]) {
-//         // Certificat de streaming - on doit se fier a l'autorisation pour garantir que c'est un fichier video/audio
-//     } else {
-//         Err(format!("maitredescles_partition.rechiffrer_cle Certificat sans user_id ni L4Secure, acces refuse"))?
-//     }
-//
-//     let cle_originale = cle.cle.as_str();
-//     let cle_privee = privee.cle_privee();
-//     let cle_publique = certificat_destination.certificat().public_key()?;
-//
-//     let cle_rechiffree = rechiffrer_asymetrique_multibase(
-//         cle_privee, &cle_publique, cle_originale)?;
-//
-//     // Remplacer cle dans message reponse
-//     cle.cle = cle_rechiffree;
-//
-//     Ok(())
-// }
 
 /// Genere une commande de sauvegarde de cles pour tous les certificats maitre des cles connus
 /// incluant le certificat de millegrille
@@ -1531,10 +1194,6 @@ struct MessageListeCles {
 async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesSQLite) -> Result<(), Box<dyn Error>>
     where M: GenerateurMessages + VerificateurMessage + IsConfigNoeud
 {
-    // let fingerprint = match gestionnaire.handler_rechiffrage.fingerprint() {
-    //     Some(f) => f,
-    //     None => Err(format!("maitredescles_volatil.synchroniser_cles Erreur aucun handler_rechiffrage"))?
-    // };
     let fingerprint = gestionnaire.handler_rechiffrage.fingerprint();
 
     // Requete vers CA pour obtenir la liste des cles connues
@@ -1689,93 +1348,6 @@ async fn confirmer_cles_ca<M>(middleware: Arc<M>, gestionnaire: &'static Gestion
     Ok(())
 }
 
-// /// S'assurer que le CA a toutes les cles de la partition. Permet aussi de resetter le flag non-dechiffrable.
-// async fn confirmer_cles_ca<M>(middleware: Arc<M>, gestionnaire: &'static GestionnaireMaitreDesClesSQLite, reset_flag: Option<bool>)
-//     -> Result<(), Box<dyn Error>>
-//     where M: Middleware + 'static
-// {
-//     let batch_size = 1;
-//
-//     debug!("confirmer_cles_ca Debut confirmation cles locales avec confirmation_ca=0");
-//
-//     let (tx_batch, rx_batch) = mpsc::channel(1);
-//     let middleware_1 = middleware.clone();
-//     let task_lecture = tokio::task::spawn_blocking(move || curseur_lire_cles(middleware_1, gestionnaire, tx_batch, batch_size));
-//     let task_emission = tokio::task::spawn(emettre_batch_cles_versca(middleware, gestionnaire, rx_batch));
-//
-//     let mut futures = FuturesUnordered::new();
-//     futures.push(task_lecture);
-//     futures.push(task_emission);
-//
-//     let resultat = futures.next().await;
-//     debug!("confirmer_cles_ca Fin confirmation cles locales, resultat : {:?}", resultat);
-//
-//     Ok(())
-// }
-//
-// async fn emettre_batch_cles_versca<M>(middleware: Arc<M>, gestionnaire: &GestionnaireMaitreDesClesSQLite, mut rx_batch: mpsc::Receiver<Vec<String>>)
-//     where M: Middleware + 'static
-// {
-//     while let Some(hachage_bytes) = rx_batch.recv().await {
-//         match emettre_cles_vers_ca(middleware.as_ref(), gestionnaire, &hachage_bytes).await {
-//             Ok(()) => (),
-//             Err(e) => error!("emettre_batch_cles_versca Erreur traitement batch cles : {:?}", e)
-//         }
-//     }
-// }
-//
-// fn curseur_lire_cles<M>(middleware: Arc<M>, gestionnaire: &GestionnaireMaitreDesClesSQLite, tx_batch: mpsc::Sender<Vec<String>>, batch_size: usize)
-//     where M: Middleware + 'static
-// {
-//     if let Err(e) = __curseur_lire_cles(middleware, gestionnaire, tx_batch, batch_size) {
-//         error!("curseur_lire_cles Erreur traitement cles : {:?}", e)
-//     }
-// }
-//
-// fn __curseur_lire_cles<M>(middleware: Arc<M>, gestionnaire: &GestionnaireMaitreDesClesSQLite, tx_batch: mpsc::Sender<Vec<String>>, batch_size: usize)
-//     -> Result<(), Box<dyn Error>>
-//     where M: Middleware + 'static
-// {
-//     // Ouvrir une nouvelle connexion read-only - va etre conservee pour la duree de lecture du statement
-//     let connexion = gestionnaire.ouvrir_connection(middleware.as_ref(), false);
-//
-//     // Isolation level READ UNCOMMITTED. Permet d'operer sur une longue periode de temps sans
-//     // bloquer les autres processus.
-//     // connexion.execute("PRAGMA read_uncommitted = boolean;")?;
-//
-//     // let mut prepared_statement = connexion.prepare("SELECT hachage_bytes FROM cles WHERE confirmation_ca = 0")?;
-//     let mut prepared_statement = connexion.prepare("UPDATE cles SET confirmation_ca = 1 WHERE confirmation_ca = 0 RETURNING hachage_bytes")?;
-//
-//     let mut batch_cles = Vec::new();
-//     let mut cursor = prepared_statement.into_cursor();
-//     while let Some(row) = cursor.next()? {
-//         let hachage_bytes: String = row[0].as_string().expect("__curseur_lire_cles hachage_bytes").to_owned();
-//         batch_cles.push(hachage_bytes);
-//         if batch_cles.len() >= batch_size {
-//             debug!("__curseur_lire_cles Emettre batch cles");
-//             tx_batch.blocking_send(batch_cles)?;
-//             batch_cles = Vec::new();
-//         }
-//     }
-//
-//     // while State::Done != prepared_statement.next()? {
-//     //     let hachage_bytes: String = prepared_statement.read(0)?;
-//     //     batch_cles.push(hachage_bytes);
-//     //     if batch_cles.len() >= batch_size {
-//     //         debug!("__curseur_lire_cles Emettre batch cles");
-//     //         tx_batch.blocking_send(batch_cles)?;
-//     //         batch_cles = Vec::new();
-//     //     }
-//     // }
-//
-//     if batch_cles.len() > 0 {
-//         debug!("__curseur_lire_cles Emetre derniere batch de {} cles", batch_cles.len());
-//         tx_batch.blocking_send(batch_cles)?;
-//     }
-//
-//     Ok(())
-// }
-
 /// Emet un message vers CA pour verifier quels cles sont manquantes (sur le CA)
 /// Marque les cles presentes sur la partition et CA comme confirmation_ca=true
 /// Rechiffre et emet vers le CA les cles manquantes
@@ -1784,7 +1356,6 @@ async fn emettre_cles_vers_ca<M>(
     -> Result<(), Box<dyn Error>>
     where M: GenerateurMessages + IsConfigNoeud + VerificateurMessage + CleChiffrageHandler
 {
-    // let hachage_bytes: Vec<String> = cles.keys().into_iter().map(|h| h.to_owned()).collect();
     debug!("emettre_cles_vers_ca Batch cles {:?}", hachage_bytes);
 
     let commande = ReponseSynchroniserCles {liste_hachage_bytes: hachage_bytes.clone()};
@@ -1912,20 +1483,6 @@ async fn evenement_cle_rechiffrage<M>(middleware: &M, m: MessageValideAction, ge
             &cle_tierce_vec.1[..], enveloppe_signature.cle_privee())?;
         let cle_chiffree = gestionnaire.handler_rechiffrage.chiffrer_cle_secrete(&cle_dechiffree.0[..])?;
 
-        // let doc_ca = doc! {
-        //     "type": "tiers",
-        //     "instance_id": &instance_id,
-        //     "fingerprint": fingerprint,
-        //     "cle_symmetrique": cle_chiffree.cle,
-        //     "nonce_symmetrique": cle_chiffree.nonce,
-        // };
-        // if let Err(e) = collection.insert_one(doc_ca, None).await {
-        //     if ! verifier_erreur_duplication_mongo(&e.kind) {
-        //         // L'erreur n'est pas une duplication, relancer
-        //         Err(e)?
-        //     }
-        // }
-
         sauvegarder_cle_configuration(
             middleware, &connexion,
             "tiers", instance_id, "tiers", cle_chiffree.cle, Some(cle_chiffree.nonce.as_str()))?;
@@ -2031,15 +1588,6 @@ fn sauvegarder_cle<M,S,T>(
     let cle = cle_.as_ref();
     let fingerprint = fingerprint_.as_ref();
     let hachage_bytes = commande.hachage_bytes.as_str();
-
-    // Valider identite, calculer cle_ref
-    // let cle_ref = {
-    //     let cle_secrete = extraire_cle_secrete(middleware.get_enveloppe_signature().cle_privee(), cle)?;
-    //     if commande.verifier_identite(&cle_secrete)? != true {
-    //         Err(format!("maitredescles_partition.commande_sauvegarder_cle Erreur verifier identite commande, signature invalide"))?
-    //     }
-    //     calculer_cle_ref(&commande, &cle_secrete)?
-    // };
 
     let (cle_ref, cle_chiffree) = {
         let cle_secrete = extraire_cle_secrete(middleware.get_enveloppe_signature().cle_privee(), cle)?;
@@ -2247,15 +1795,6 @@ fn sauvegarder_cle_configuration<M,S,I,T,F>(middleware: &M, connection: &Connect
     let cle = cle.as_ref();
 
     let cle_privee = middleware.get_enveloppe_signature();
-    // let instance_id = cle_privee.enveloppe.get_common_name()?;
-    // let fingerprint = cle_privee.fingerprint().as_str();
-
-    // let fingerprint = match type_cle {
-    //     "CA" => "CA",
-    //     "CA-tiers" => "CA-tiers",
-    //     "local" => "local",
-    //     _ => fingerprint
-    // };
 
     // Sauvegarde cle dans sqlite
     let mut prepared_statement_configuration = connection
@@ -2326,18 +1865,6 @@ async fn commande_rotation_certificat<M>(middleware: &M, m: MessageValideAction,
             middleware, &connexion, "local",
             instance_id.as_str(), public_key.fingerprint.as_str(),
             cle_secrete_chiffree_local, None)?;
-
-        // let cle_locale = doc! {
-        //     "type": "local",
-        //     "instance_id": certificat_instance_id.as_str(),
-        //     "fingerprint": &public_key.fingerprint,
-        //     "cle": cle_secrete_chiffree_local,
-        // };
-        //
-        // debug!("commande_rechiffrer_batch Inserer cle configuration locale {:?}", cle_locale);
-        //
-        // let collection = middleware.get_collection(NOM_COLLECTION_CONFIGURATION)?;
-        // collection.insert_one(cle_locale, None).await?;
 
         Ok(middleware.reponse_ok()?)
     } else {
