@@ -353,10 +353,28 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
     }
 
     fn preparer_queues(&self) -> Vec<QueueType> {
-        let queues = match self.handler_rechiffrage.is_ready() {
+        let mut queues = match self.handler_rechiffrage.is_ready() {
             true => self.preparer_queues_rechiffrage(),
             false => Vec::new()
         };
+
+        // Ajouter Q reception cle symmetriques rechiffrees
+        let fingerprint = self.handler_rechiffrage.fingerprint();
+        let nom_queue_cle_config = format!("MaitreDesCles/{}/config", fingerprint);
+
+        let mut rks = Vec::new();
+        rks.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, fingerprint, COMMANDE_CLE_SYMMETRIQUE), exchange: Securite::L3Protege });
+
+        // Queue volatils
+        queues.push(QueueType::ExchangeQueue(
+            ConfigQueue {
+                nom_queue: nom_queue_cle_config.into(),
+                routing_keys: rks,
+                ttl: DEFAULT_Q_TTL.into(),
+                durable: false,
+                autodelete: true,
+            }
+        ));
 
         // Aucunes Q a l'initialisation, ajoutees
 
@@ -645,8 +663,9 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionna
             COMMANDE_CERT_MAITREDESCLES => {emettre_certificat_maitredescles(middleware, Some(m)).await?; Ok(None)},
 
             COMMANDE_RECHIFFRER_BATCH => commande_rechiffrer_batch(middleware, m, gestionnaire).await,
+            COMMANDE_CLE_SYMMETRIQUE => commande_cle_symmetrique(middleware, m, gestionnaire).await,
             // Commandes inconnues
-            _ => Err(format!("core_backup.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
+            _ => Err(format!("maitredescles_partition.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
         }
     } else if role_prive == true && user_id.is_some() {
         match m.action.as_str() {
@@ -654,7 +673,7 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionna
             COMMANDE_SAUVEGARDER_CLE => commande_sauvegarder_cle(middleware, m, gestionnaire).await,
             COMMANDE_CERT_MAITREDESCLES => {emettre_certificat_maitredescles(middleware, Some(m)).await?; Ok(None)},
             // Commandes inconnues
-            _ => Err(format!("core_backup.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
+            _ => Err(format!("maitredescles_partition.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
         }
     } else if m.verifier_exchanges(vec![Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure]) {
         match m.action.as_str() {
@@ -662,8 +681,9 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionna
             COMMANDE_SAUVEGARDER_CLE => commande_sauvegarder_cle(middleware, m, gestionnaire).await,
             COMMANDE_CERT_MAITREDESCLES => {emettre_certificat_maitredescles(middleware, Some(m)).await?; Ok(None)},
             COMMANDE_ROTATION_CERTIFICAT => commande_rotation_certificat(middleware, m, gestionnaire).await,
+            COMMANDE_CLE_SYMMETRIQUE => commande_cle_symmetrique(middleware, m, gestionnaire).await,
             // Commandes inconnues
-            _ => Err(format!("core_backup.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
+            _ => Err(format!("maitredescles_partition.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
         }
     } else {
         Err(format!("Autorisation commande invalide, acces refuse"))?
@@ -852,6 +872,41 @@ async fn commande_rotation_certificat<M>(middleware: &M, m: MessageValideAction,
         debug!("commande_rotation_certificat Recu commande de rotation de certificat MaitreDesCles tiers - skip");
         Ok(None)
     }
+}
+
+async fn commande_cle_symmetrique<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesPartition)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
+{
+    debug!("commande_cle_symmetrique Consommer commande : {:?}", & m.message);
+    let commande: CommandeCleSymmetrique = m.message.parsed.map_contenu()?;
+
+    // Verifier que le certificat est pour l'instance locale
+    // (note : pas garanti - confusion entre plusieurs certificats locaux possible, e.g. mongo et sqlite)
+    let enveloppe_secrete = middleware.get_enveloppe_signature();
+    let fingerprint = enveloppe_secrete.fingerprint();
+    let instance_id = enveloppe_secrete.enveloppe.get_common_name()?;
+
+    if commande.fingerprint.as_str() != fingerprint.as_str() {
+        Err(format!("commande_cle_symmetrique Mauvais fingerprint, skip"))?
+    }
+
+    // Dechiffrage de la cle, mise en memoire - si echec, on ne peut pas dechiffrer la cle
+    gestionnaire.handler_rechiffrage.set_cle_symmetrique(commande.cle.as_str())?;
+
+    let cle_locale = doc! {
+        "type": "local",
+        "instance_id": instance_id,
+        "fingerprint": fingerprint.as_str(),
+        "cle": commande.cle.as_str(),
+    };
+
+    debug!("commande_cle_symmetrique Inserer cle configuration locale {:?}", commande.cle);
+
+    let collection = middleware.get_collection(NOM_COLLECTION_CONFIGURATION)?;
+    collection.insert_one(cle_locale, None).await?;
+
+    Ok(middleware.reponse_ok()?)
 }
 
 async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesPartition)
@@ -1979,7 +2034,11 @@ pub async fn preparer_rechiffreur_mongo<M>(middleware: &M, handler_rechiffrage: 
                     info!("preparer_rechiffreur_mongo Cle de rechiffrage locale est chargee");
                 },
                 None => {
-                    todo!("demander rechiffrage cle locale");
+                    let cle_ca: DocumentCleRechiffrage = convertir_bson_deserializable(doc_cle_ca)?;
+
+                    info!("preparer_rechiffreur_mongo Demander la cle de rechiffrage");
+                    emettre_demande_cle_symmetrique(middleware, cle_ca.cle).await?;
+                    Err(format!("preparer_rechiffreur_mongo Attente cle de rechiffrage"))?;
                 }
             }
 

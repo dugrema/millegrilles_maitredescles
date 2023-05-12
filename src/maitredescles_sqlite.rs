@@ -798,10 +798,12 @@ pub async fn preparer_rechiffreur_sqlite<M>(middleware: &M, gestionnaire: &Gesti
     let fingerprint = enveloppe_privee.fingerprint();
     let handler_rechiffrage = &gestionnaire.handler_rechiffrage;
 
+    let mut cle_ca = None;
+
     {
         let connexion = gestionnaire.ouvrir_connection(middleware, false);
-        let cle_ca = charger_cle_configuration(middleware, &connexion, "CA")?;
-        match cle_ca {
+        let cle_ca_trouvee = charger_cle_configuration(middleware, &connexion, "CA")?;
+        match cle_ca_trouvee {
             Some(inner) => {
                 info!("preparer_rechiffreur_sqlite Cle CA existe");
                 match charger_cle_configuration(middleware, &connexion, "local")? {
@@ -810,7 +812,8 @@ pub async fn preparer_rechiffreur_sqlite<M>(middleware: &M, gestionnaire: &Gesti
                         info!("preparer_rechiffreur_sqlite Cle de rechiffrage locale est chargee");
                     },
                     None => {
-                        todo!("demander rechiffrage cle locale");
+                        info!("demander rechiffrage cle locale");
+                        cle_ca = Some(inner)
                     }
                 }
             },
@@ -832,6 +835,10 @@ pub async fn preparer_rechiffreur_sqlite<M>(middleware: &M, gestionnaire: &Gesti
             }
         }
     };
+
+    if let Some(cle_ca) = cle_ca {
+        emettre_demande_cle_symmetrique(middleware, cle_ca).await?;
+    }
 
     Ok(())
 }

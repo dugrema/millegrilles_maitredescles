@@ -44,12 +44,14 @@ pub const REQUETE_VERIFIER_PREUVE: &str = "verifierPreuve";
 
 // pub const COMMANDE_SAUVEGARDER_CLE: &str = "sauvegarderCle";
 pub const COMMANDE_CONFIRMER_CLES_SUR_CA: &str = "confirmerClesSurCa";
+pub const COMMANDE_CLE_SYMMETRIQUE: &str = "cleSymmetrique";
 
 pub const TRANSACTION_CLE: &str = "cle";
 
 // pub const EVENEMENT_RESET_CLES_NON_DECHIFFRABLES: &str = "resetClesNonDechiffrables";
 pub const EVENEMENT_CLES_MANQUANTES_PARTITION: &str = "clesManquantesPartition";
 pub const EVENEMENT_CLE_RECUE_PARTITION: &str = "cleRecuePartition";
+pub const EVENEMENT_DEMANDE_CLE_SYMMETRIQUE: &str = "demandeCleSymmetrique";
 
 pub const CHAMP_HACHAGE_BYTES: &str = "hachage_bytes";
 pub const CHAMP_LISTE_HACHAGE_BYTES: &str = "liste_hachage_bytes";
@@ -759,4 +761,34 @@ pub struct EvenementClesRechiffrage {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CommandeRotationCertificat {
     pub certificat: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CommandeCleSymmetrique {
+    pub cle: String,
+    pub fingerprint: String,
+}
+
+/// Emettre une demande de rechiffrage de cle symmetrique par un tiers
+pub async fn emettre_demande_cle_symmetrique<M,S>(middleware: &M, cle_ca: S) -> Result<(), Box<dyn Error>>
+    where M: GenerateurMessages, S: AsRef<str>
+{
+    let cle_privee = middleware.get_enveloppe_signature();
+    let instance_id = cle_privee.enveloppe.get_common_name()?;
+
+    debug!("emettre_demande_cle_symmetrique Demander la cle symmetrique pour instance_id : {}", instance_id);
+
+    let evenement = json!({
+        "cle_symmetrique_ca": cle_ca.as_ref(),
+    });
+
+    let routage = RoutageMessageAction::builder(
+        DOMAINE_NOM, EVENEMENT_DEMANDE_CLE_SYMMETRIQUE)
+        .exchanges(vec![Securite::L3Protege])
+        .correlation_id(EVENEMENT_DEMANDE_CLE_SYMMETRIQUE)
+        .build();
+
+    middleware.emettre_evenement(routage, &evenement).await?;
+
+    Ok(())
 }
