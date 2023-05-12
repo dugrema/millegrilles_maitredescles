@@ -23,6 +23,7 @@ use millegrilles_common_rust::hachages::hacher_bytes;
 use millegrilles_common_rust::multibase::Base::Base58Btc;
 use millegrilles_common_rust::multihash::Code;
 use crate::domaines_maitredescles::TypeGestionnaire;
+use crate::maitredescles_sqlite::GestionnaireMaitreDesClesSQLite;
 use crate::maitredescles_volatil::HandlerCleRechiffrage;
 
 pub const DOMAINE_NOM: &str = "MaitreDesCles";

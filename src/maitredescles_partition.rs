@@ -392,20 +392,9 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
 
     async fn entretien<M>(self: &'static Self, middleware: Arc<M>) where M: Middleware + 'static {
         let handler_rechiffrage = self.handler_rechiffrage.clone();
-
         loop {
             if !self.handler_rechiffrage.is_ready() {
                 info!("entretien_rechiffreur Aucun certificat configure, on demande de generer un certificat volatil");
-                // let resultat = match generer_certificat_volatil(middleware.as_ref(), handler_rechiffrage.as_ref()).await {
-                //     Ok(()) => {
-                //         debug!("entretien.Certificat pret, activer Qs et synchroniser cles");
-                //         true
-                //     },
-                //     Err(e) => {
-                //         error!("entretien_rechiffreur Erreur generation certificat volatil : {:?}", e);
-                //         false
-                //     }
-                // };
                 let resultat = match preparer_rechiffreur_mongo(middleware.as_ref(), handler_rechiffrage.as_ref()).await {
                     Ok(()) => {
                         debug!("entretien.Certificat pret, activer Qs et synchroniser cles");
@@ -438,26 +427,16 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
                         // Ajouter nouvelle queue
                         let named_queue = NamedQueue::new(queue, tx, Some(1), Some(futures_consumer));
                         middleware.ajouter_named_queue(queue_name, named_queue);
-
-                        // // Switch le certificat de signature
-                        // match handler_rechiffrage.get_enveloppe_privee() {
-                        //     Some(e) => middleware.set_enveloppe_signature(e),
-                        //     None => panic!("maitredescles_partition.entretien Erreur recuperation cle volatile")
-                        // }
                     }
                 }
             }
 
+            debug!("Cycle entretien {}", DOMAINE_NOM);
+            middleware.entretien_validateur().await;
+
             // Sleep cycle
             sleep(Duration_tokio::new(30, 0)).await;
         }
-
-        // let mut futures = FuturesUnordered::new();
-        // futures.push(spawn(entretien(middleware.clone())));
-        // futures.push(spawn(entretien_rechiffreur(middleware.clone(), handler_rechiffrage)));
-        //
-        // let arret = futures.next().await;
-        // info!("entretien Arret resultat : {:?}", arret);
     }
 
     async fn traiter_cedule<M>(self: &'static Self, middleware: &M, trigger: &MessageCedule) -> Result<(), Box<dyn Error>> where M: Middleware + 'static {
@@ -1135,7 +1114,10 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
                 continue
             }
         };
-        let cle_mongo_dechiffree = extraire_cle_secrete(cle_privee, cle_mongo_chiffree.cle.as_str())?;
+
+        let cle_interne_chiffree = CleInterneChiffree::try_from(cle_mongo_chiffree.clone())?;
+        let cle_mongo_dechiffree = gestionnaire.handler_rechiffrage.dechiffer_cle_secrete(cle_interne_chiffree)?;
+        // let cle_mongo_dechiffree = extraire_cle_secrete(cle_privee, cle_mongo_chiffree.cle.as_str())?;
         let hachage_bytes_mongo = cle_mongo_chiffree.hachage_bytes.as_str();
 
         debug!("requete_verifier_preuve Resultat mongo hachage_bytes {}", hachage_bytes_mongo);
@@ -1364,22 +1346,25 @@ fn rechiffrer_cle(cle: &mut DocumentClePartition, rechiffreur: &HandlerCleRechif
 
     let hachage_bytes = cle.hachage_bytes.as_str();
 
-    let cle_secrete = match cle.cle_symmetrique.as_ref() {
-        Some(cle_symmetrique) => {
-            match cle.nonce_symmetrique.as_ref() {
-                Some(nonce) => {
-                    let cle_interne = CleInterneChiffree { cle: cle_symmetrique.to_owned(), nonce: nonce.to_owned() };
-                    rechiffreur.dechiffer_cle_secrete(cle_interne)?
-                },
-                None => {
-                    Err(format!("rechiffrer_cles Nonce manquant pour {}", hachage_bytes))?
-                }
-            }
-        },
-        None => {
-            Err(format!("rechiffrer_cles Cle symmetrique manquant pour {}", hachage_bytes))?
-        }
-    };
+    let cle_interne = CleInterneChiffree::try_from(cle.clone())?;
+    let cle_secrete = rechiffreur.dechiffer_cle_secrete(cle_interne)?;
+
+    // let cle_secrete = match cle.cle_symmetrique.as_ref() {
+    //     Some(cle_symmetrique) => {
+    //         match cle.nonce_symmetrique.as_ref() {
+    //             Some(nonce) => {
+    //                 let cle_interne = CleInterneChiffree { cle: cle_symmetrique.to_owned(), nonce: nonce.to_owned() };
+    //                 rechiffreur.dechiffer_cle_secrete(cle_interne)?
+    //             },
+    //             None => {
+    //                 Err(format!("rechiffrer_cles Nonce manquant pour {}", hachage_bytes))?
+    //             }
+    //         }
+    //     },
+    //     None => {
+    //         Err(format!("rechiffrer_cles Cle symmetrique manquant pour {}", hachage_bytes))?
+    //     }
+    // };
 
     // let cle_originale = cle.cle.as_str();
     // let cle_privee = privee.cle_privee();

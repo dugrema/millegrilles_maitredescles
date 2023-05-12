@@ -19,10 +19,27 @@ use millegrilles_common_rust::chacha20poly1305::{
     aead::{Aead, AeadCore, KeyInit, OsRng},
     XChaCha20Poly1305, XNonce
 };
+use crate::maitredescles_commun::DocumentClePartition;
 
 pub struct CleInterneChiffree {
     pub cle: String,
     pub nonce: String,
+}
+
+impl TryFrom<DocumentClePartition> for CleInterneChiffree {
+    type Error = String;
+
+    fn try_from(value: DocumentClePartition) -> Result<Self, Self::Error> {
+        match value.cle_symmetrique {
+            Some(cle) => {
+                match value.nonce_symmetrique {
+                    Some(nonce) => Ok(Self { cle, nonce }),
+                    None => Err(format!("nonce manquant"))
+                }
+            },
+            None => Err(format!("Cle manquante"))
+        }
+    }
 }
 
 pub struct HandlerCleRechiffrage {
