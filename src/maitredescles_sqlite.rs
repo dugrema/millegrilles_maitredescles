@@ -516,6 +516,9 @@ impl GestionnaireMaitreDesClesSQLite {
             rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE), exchange: Securite::L4Secure });
             rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.*.{}", DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE), exchange: Securite::L4Secure });
 
+            // Rotation des cles
+            rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, COMMANDE_ROTATION_CERTIFICAT), exchange: Securite::L3Protege });
+
             // Requetes de dechiffrage/preuve re-emise sur le bus 4.secure lorsque la cle est inconnue
             rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE), exchange: Securite::L4Secure });
             rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_VERIFIER_PREUVE), exchange: Securite::L4Secure });
@@ -729,7 +732,7 @@ where
 
 async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesSQLite)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + IsConfigNoeud + CleChiffrageHandler
+    where M: GenerateurMessages + IsConfigNoeud + CleChiffrageHandler + ValidateurX509
 {
     debug!("consommer_commande : {:?}", &m.message);
 
@@ -759,6 +762,7 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionna
             // Commandes standard
             COMMANDE_SAUVEGARDER_CLE => commande_sauvegarder_cle(middleware, m, gestionnaire).await,
             COMMANDE_CERT_MAITREDESCLES => {emettre_certificat_maitredescles(middleware, Some(m)).await?; Ok(None)},
+            COMMANDE_ROTATION_CERTIFICAT => commande_rotation_certificat(middleware, m, gestionnaire).await,
             // Commandes inconnues
             _ => Err(format!("core_backup.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
         }
@@ -1931,7 +1935,6 @@ async fn evenement_cle_rechiffrage<M>(middleware: &M, m: MessageValideAction, ge
     Ok(None)
 }
 
-
 async fn evenement_cle_manquante<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesSQLite, m: &MessageValideAction)
                                     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: ValidateurX509 + GenerateurMessages + IsConfigNoeud + CleChiffrageHandler + ConfigMessages
@@ -2292,4 +2295,53 @@ fn sauvegarder_cle_configuration<M,S,I,T,F>(middleware: &M, connection: &Connect
     }
 
     Ok(())
+}
+
+async fn commande_rotation_certificat<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesSQLite)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + ValidateurX509 + IsConfigNoeud
+{
+    debug!("commande_rotation_certificat Consommer commande : {:?}", & m.message);
+    let commande: CommandeRotationCertificat = m.message.parsed.map_contenu()?;
+
+    // Verifier que le certificat est pour l'instance locale
+    // (note : pas garanti - confusion entre plusieurs certificats locaux possible, e.g. mongo et sqlite)
+    let enveloppe_privee = middleware.get_enveloppe_signature();
+    let instance_id = enveloppe_privee.enveloppe.get_common_name()?;
+    let certificat = middleware.charger_enveloppe(
+        &commande.certificat, None, None).await?;
+    let certificat_instance_id = certificat.get_common_name()?;
+
+    if certificat_instance_id.as_str() == instance_id {
+        debug!("commande_rotation_certificat Recu commande de rotation de certificat MaitreDesCles local");
+        let public_keys = certificat.fingerprint_cert_publickeys()?;
+        let public_key = &public_keys[0];
+
+        let cle_secrete_chiffree_local = gestionnaire.handler_rechiffrage.get_cle_symmetrique_chiffree(&public_key.public_key)?;
+        debug!("Cle secrete chiffree pour instance {}:\n local = {}", instance_id, cle_secrete_chiffree_local);
+
+        // Sauvegarder la cle symmetrique
+        let connexion = gestionnaire.ouvrir_connection(middleware, false);
+        sauvegarder_cle_configuration(
+            middleware, &connexion, "local",
+            instance_id.as_str(), public_key.fingerprint.as_str(),
+            cle_secrete_chiffree_local, None)?;
+
+        // let cle_locale = doc! {
+        //     "type": "local",
+        //     "instance_id": certificat_instance_id.as_str(),
+        //     "fingerprint": &public_key.fingerprint,
+        //     "cle": cle_secrete_chiffree_local,
+        // };
+        //
+        // debug!("commande_rechiffrer_batch Inserer cle configuration locale {:?}", cle_locale);
+        //
+        // let collection = middleware.get_collection(NOM_COLLECTION_CONFIGURATION)?;
+        // collection.insert_one(cle_locale, None).await?;
+
+        Ok(middleware.reponse_ok()?)
+    } else {
+        debug!("commande_rotation_certificat Recu commande de rotation de certificat MaitreDesCles tiers - skip");
+        Ok(None)
+    }
 }
