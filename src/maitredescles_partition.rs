@@ -1833,17 +1833,32 @@ async fn evenement_cle_rechiffrage<M>(middleware: &M, m: MessageValideAction, ge
     let evenement: EvenementClesRechiffrage = m.message.parsed.map_contenu()?;
 
     let collection = middleware.get_collection(NOM_COLLECTION_CONFIGURATION)?;
-    let doc_ca = doc! {
-        "type": "CA",
-        "instance_id": &instance_id,
-        "cle": evenement.cle_ca,
+    // let doc_ca = doc! {
+    //     "type": "CA-tiers",
+    //     "instance_id": &instance_id,
+    //     "cle": evenement.cle_ca,
+    // };
+    let filtre_ca = doc! { "type": "CA-tiers", "instance_id": &instance_id };
+    let ops_ca = doc! {
+        "$set": {
+            "cle": evenement.cle_ca,
+        },
+        "$setOnInsert": {
+            CHAMP_CREATION: Utc::now(),
+            "type": "CA-tiers",
+            "instance_id": &instance_id,
+        },
+        "$currentDate": {CHAMP_MODIFICATION: true}
     };
-    if let Err(e) = collection.insert_one(doc_ca, None).await {
-        if ! verifier_erreur_duplication_mongo(&e.kind) {
-            // L'erreur n'est pas une duplication, relancer
-            Err(e)?
-        }
-    }
+    let options_ca = UpdateOptions::builder().upsert(true).build();
+    collection.update_one(filtre_ca, ops_ca, Some(options_ca)).await?;
+
+    // if let Err(e) = collection.insert_one(doc_ca, None).await {
+    //     if ! verifier_erreur_duplication_mongo(&e.kind) {
+    //         // L'erreur n'est pas une duplication, relancer
+    //         Err(e)?
+    //     }
+    // }
 
     // Dechiffrer cle du tiers, rechiffrer en symmetrique local
     if let Some(cle_tierce) = evenement.cles_dechiffrage.get(fingerprint_local) {
@@ -1853,19 +1868,40 @@ async fn evenement_cle_rechiffrage<M>(middleware: &M, m: MessageValideAction, ge
             &cle_tierce_vec.1[..], enveloppe_signature.cle_privee())?;
         let cle_chiffree = gestionnaire.handler_rechiffrage.chiffrer_cle_secrete(&cle_dechiffree.0[..])?;
 
-        let doc_ca = doc! {
+        // let doc_cle = doc! {
+        //     "type": "tiers",
+        //     "instance_id": &instance_id,
+        //     "fingerprint": &fingerprint,
+        //     "cle_symmetrique": cle_chiffree.cle,
+        //     "nonce_symmetrique": cle_chiffree.nonce,
+        // };
+        // if let Err(e) = collection.insert_one(doc_cle, None).await {
+        //     if ! verifier_erreur_duplication_mongo(&e.kind) {
+        //         // L'erreur n'est pas une duplication, relancer
+        //         Err(e)?
+        //     }
+        // }
+
+        let filtre_cle = doc! {
             "type": "tiers",
             "instance_id": &instance_id,
-            "fingerprint": fingerprint,
-            "cle_symmetrique": cle_chiffree.cle,
-            "nonce_symmetrique": cle_chiffree.nonce,
+            // "fingerprint": "tiers"
         };
-        if let Err(e) = collection.insert_one(doc_ca, None).await {
-            if ! verifier_erreur_duplication_mongo(&e.kind) {
-                // L'erreur n'est pas une duplication, relancer
-                Err(e)?
-            }
-        }
+        let ops_cle = doc! {
+            "$set": {
+                "cle_symmetrique": cle_chiffree.cle,
+                "nonce_symmetrique": cle_chiffree.nonce,
+            },
+            "$setOnInsert": {
+                CHAMP_CREATION: Utc::now(),
+                "type": "tiers",
+                "instance_id": &instance_id,
+                // "fingerprint": "tiers",
+            },
+            "$currentDate": {CHAMP_MODIFICATION: true}
+        };
+        let options_cle = UpdateOptions::builder().upsert(true).build();
+        collection.update_one(filtre_cle, ops_cle, Some(options_cle)).await?;
     }
 
     Ok(None)

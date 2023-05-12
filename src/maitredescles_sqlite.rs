@@ -1898,7 +1898,7 @@ async fn evenement_cle_rechiffrage<M>(middleware: &M, m: MessageValideAction, ge
 
     sauvegarder_cle_configuration(
         middleware, &connexion,
-        "CA", instance_id.as_str(), "CA", evenement.cle_ca, None)?;
+        "CA", instance_id.as_str(), "CA-tiers", evenement.cle_ca, None)?;
 
     // Dechiffrer cle du tiers, rechiffrer en symmetrique local
     if let Some(cle_tierce) = evenement.cles_dechiffrage.get(fingerprint_local) {
@@ -1924,7 +1924,7 @@ async fn evenement_cle_rechiffrage<M>(middleware: &M, m: MessageValideAction, ge
 
         sauvegarder_cle_configuration(
             middleware, &connexion,
-            "tiers", instance_id, fingerprint, cle_chiffree.cle, Some(cle_chiffree.nonce.as_str()))?;
+            "tiers", instance_id, "tiers", cle_chiffree.cle, Some(cle_chiffree.nonce.as_str()))?;
 
     }
 
@@ -2247,15 +2247,17 @@ fn sauvegarder_cle_configuration<M,S,I,T,F>(middleware: &M, connection: &Connect
     // let instance_id = cle_privee.enveloppe.get_common_name()?;
     // let fingerprint = cle_privee.fingerprint().as_str();
 
-    let fingerprint = match type_cle {
-        "CA" => "CA",
-        _ => fingerprint
-    };
+    // let fingerprint = match type_cle {
+    //     "CA" => "CA",
+    //     "CA-tiers" => "CA-tiers",
+    //     "local" => "local",
+    //     _ => fingerprint
+    // };
 
     // Sauvegarde cle dans sqlite
     let mut prepared_statement_configuration = connection
         .prepare("
-            INSERT INTO configuration
+            INSERT OR REPLACE INTO configuration
             VALUES(?, ?, ?, ?, ?)
         ")?;
 
