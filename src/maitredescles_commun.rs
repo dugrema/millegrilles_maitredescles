@@ -755,3 +755,8 @@ pub struct EvenementClesRechiffrage {
     pub cle_ca: String,
     pub cles_dechiffrage: HashMap<String, String>,
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CommandeRotationCertificat {
+    pub certificat: Vec<String>,
+}
