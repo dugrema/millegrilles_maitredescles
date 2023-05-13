@@ -11,14 +11,16 @@ use millegrilles_common_rust::multibase::Base;
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{doc, Document};
 use millegrilles_common_rust::certificats::{EnveloppeCertificat, EnveloppePrivee, ValidateurX509, VerificateurPermissions};
-use millegrilles_common_rust::chiffrage::{chiffrer_asymetrique_multibase, Chiffreur, CleChiffrageHandler, extraire_cle_secrete, rechiffrer_asymetrique_multibase};
-use millegrilles_common_rust::chiffrage_cle::CommandeSauvegarderCle;
+use millegrilles_common_rust::chiffrage::{chiffrer_asymetrique_multibase, Chiffreur, CleChiffrageHandler, extraire_cle_secrete, FormatChiffrage, rechiffrer_asymetrique_multibase};
+use millegrilles_common_rust::chiffrage_cle::{CleDechiffree, CommandeSauvegarderCle};
 use millegrilles_common_rust::chiffrage_ed25519::dechiffrer_asymmetrique_ed25519;
+use millegrilles_common_rust::chiffrage_streamxchacha20poly1305::DecipherMgs4;
 use millegrilles_common_rust::chrono::{Duration, Utc};
 use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::constantes::Securite::L3Protege;
-use millegrilles_common_rust::common_messages::RequeteVerifierPreuve;
+use millegrilles_common_rust::common_messages::{DataChiffre, RequeteVerifierPreuve};
+use millegrilles_common_rust::dechiffrage::dechiffrer_data;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille, MessageSerialise};
 use millegrilles_common_rust::futures_util::stream::FuturesUnordered;
@@ -909,6 +911,8 @@ async fn commande_cle_symmetrique<M>(middleware: &M, m: MessageValideAction, ges
     Ok(middleware.reponse_ok()?)
 }
 
+/// Commande recue d'un client (e.g. Coup D'Oeil) avec une batch de cles secretes dechiffrees.
+/// La commande est chiffree pour tous les MaitreDesComptes (kind:8)
 async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesPartition)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + CleChiffrageHandler
@@ -918,6 +922,56 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
         Some(c) => c,
         None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Gestionnaire sans partition/certificat"))?
     };
+
+    // Dechiffrer la cle asymmetrique pour certificat local
+    let (header, cle_secrete) = match m.message.parsed.dechiffrage.as_ref() {
+        Some(inner) => {
+            let enveloppe_privee = middleware.get_enveloppe_signature();
+            let fingerprint_local = enveloppe_privee.fingerprint().as_str();
+            let header = match inner.header.as_ref() {
+                Some(inner) => inner.as_str(),
+                None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Erreur format message, header absent"))?
+            };
+            match inner.cles.as_ref() {
+                Some(inner) => {
+                    match inner.get(fingerprint_local) {
+                        Some(inner) => {
+                            // Cle chiffree, on dechiffre
+                            let cle_bytes = multibase::decode(inner)?;
+                            let cle_secrete = dechiffrer_asymmetrique_ed25519(&cle_bytes.1[..], enveloppe_privee.cle_privee())?;
+                            (header, cle_secrete)
+                        },
+                        None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Erreur format message, dechiffrage absent"))?
+                    }
+                },
+                None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Erreur format message, dechiffrage absent"))?
+            }
+        },
+        None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Erreur format message, dechiffrage absent"))?
+    };
+
+    // Dechiffrer le contenu
+    let data_chiffre = DataChiffre {
+        ref_hachage_bytes: None,
+        data_chiffre: m.message.parsed.contenu,
+        format: FormatChiffrage::mgs4,
+        header: Some(header.to_owned()),
+        tag: None,
+    };
+    let cle_dechiffre = CleDechiffree {
+        cle: "".to_string(),
+        cle_secrete,
+        domaine: "MaitreDesCles".to_string(),
+        format: "mgs4".to_string(),
+        hachage_bytes: "".to_string(),
+        identificateurs_document: None,
+        iv: None,
+        tag: None,
+        header: Some(header.to_owned()),
+        signature_identite: "".to_string(),
+    };
+    let data_dechiffre = dechiffrer_data(cle_dechiffre, data_chiffre)?;
+
 
     let commande: CommandeRechiffrerBatch = m.message.get_msg().map_contenu()?;
     debug!("commande_rechiffrer_batch Commande parsed : {:?}", commande);
