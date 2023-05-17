@@ -895,45 +895,38 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
         let cles_connues = cles.keys().map(|s|s.to_owned()).collect();
         // emettre_cles_inconnues(middleware, requete, cles_connues).await?;
         match requete_cles_inconnues(middleware, &requete, cles_connues).await {
-            Ok(reponse) => {
+            Ok(mut reponse) => {
                 debug!("Reponse cle manquantes recue : {:?}", reponse.cles);
-                todo!("fix me");
-                // if let Some(liste_cles) = reponse.cles.as_ref() {
-                //     let connexion = gestionnaire.ouvrir_connection(middleware, false);
-                //     for cle in liste_cles {
-                //         let cle_interne = CleInterneChiffree::try_from(cle)?;
-                //         let cle_secrete = gestionnaire.handler_rechiffrage.dechiffer_cle_secrete(cle_interne)?;
-                //         let cle_info = CleSecreteRechiffrage {}
-                //         sauvegarder_cle(middleware, gestionnaire, &connexion, cle_secrete)
-                //
-                //         // let commande: CommandeSauvegarderCle = cle.clone().into();
-                //         todo!("fixme rechiffrage client avec cles manquantes")
-                //         // if let Some(cle_str) = cle.cles.get(fingerprint) {
-                //         //     let cle_tierce_vec: Vec<u8> = multibase::decode(cle_str)?.1;
-                //         //     let cle_dechiffree = dechiffrer_asymmetrique_ed25519(
-                //         //         &cle_tierce_vec[..], enveloppe_privee.cle_privee())?;
-                //         //     let cle_rechiffrage = CleSecreteRechiffrage::from_commande(&cle_dechiffree, commande)?;
-                //         //
-                //         //     let cle_ref = cle_rechiffrage.get_cle_ref()?;
-                //         //
-                //         //     sauvegarder_cle(middleware, &gestionnaire, &connexion, cle_rechiffrage)?;
-                //         //     let doc_cle = DocumentClePartition::try_into_document_cle_partition(cle, fingerprint, cle_ref)?;
-                //         //     cles.insert(fingerprint.to_string(), doc_cle);
-                //         // }
-                //     }
-                // }
+                let connexion = gestionnaire.ouvrir_connection(middleware, false);
+                for cle in reponse.cles.into_iter() {
+                    let hachage_bytes = cle.hachage_bytes.clone();
+
+                    let cle_secrete = cle.get_cle_secrete()?;
+                    let (_, cle_rechiffree) = cle.rechiffrer_cle(&gestionnaire.handler_rechiffrage)?;
+
+                    let mut doc_cle: DocumentClePartition = cle.try_into()?;
+                    doc_cle.cle_symmetrique = Some(cle_rechiffree.cle);
+                    doc_cle.nonce_symmetrique = Some(cle_rechiffree.nonce);
+
+                    let cle_interne = CleSecreteRechiffrage::from_doc_cle(cle_secrete, doc_cle.clone())?;
+                    sauvegarder_cle(middleware, &gestionnaire, &connexion, cle_interne)?;
+
+                    match rechiffrer_cle(&mut doc_cle, &gestionnaire.handler_rechiffrage, certificat.as_ref()) {
+                        Ok(()) => {
+                            cles.insert(hachage_bytes, doc_cle);
+                        },
+                        Err(e) => {
+                            error!("rechiffrer_cles Erreur rechiffrage cle {:?}", e);
+                            continue;  // Skip cette cle
+                        }
+                    }
+                }
             },
             Err(e) => {
                 error!("requete_dechiffrage Erreur requete_cles_inconnues, skip : {:?}", e)
             }
         }
     }
-
-    // if cles.len() < requete.liste_hachage_bytes.len() {
-    //     debug!("Emettre un evenement de requete de rechiffrage pour les cles qui sont encore inconnues");
-    //     let cles_connues = cles.keys().map(|s| s.to_owned()).collect();
-    //     emettre_cles_inconnues(middleware, &requete, cles_connues).await?;
-    // }
 
     // Preparer la reponse
     // Verifier si on a au moins une cle dans la reponse

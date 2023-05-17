@@ -1124,37 +1124,8 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
                     continue;  // Skip cette cle
                 }
             }
-
-            // let commande: CommandeSauvegarderCle = cle.clone().into();
-            // if let Some(cle_str) = cle.cles.get(fingerprint) {
-            //
-            //     // let cle_chiffree = CleInterneChiffree { cle: cle_str.to_owned(), nonce: "aaa".into() };
-            //     // let cle_secrete = gestionnaire.handler_rechiffrage.dechiffer_cle_secrete(CleInterneChiffree {})?;
-            //
-            //     let cle_secrete = extraire_cle_secrete(
-            //         middleware.get_enveloppe_signature().cle_privee(), cle_str.as_str())?;
-            //
-            //     let cle_info = CleRefData::from(&commande);
-            //     let cle_ref = calculer_cle_ref(cle_info, &cle_secrete)?;
-            //     debug!("requete_dechiffrage.requete_cles_inconnues Sauvegarder cle_ref {} / hachage_bytes {}", cle_ref, cle.hachage_bytes);
-            //
-            //     if let Err(e) = sauvegarder_cle(
-            //         middleware, gestionnaire, &commande, nom_collection.as_str()).await
-            //     {
-            //         warn!("Erreur sauvegarde cle inconnue {} : {:?}", fingerprint, e);
-            //     }
-            //
-            //     let doc_cle = DocumentClePartition::try_into_document_cle_partition(cle, fingerprint, cle_ref)?;
-            //     cles.insert(fingerprint.to_string(), doc_cle);
-            // }
         }
     }
-
-    // if cles.len() < requete.liste_hachage_bytes.len() {
-    //     debug!("Emettre un evenement de requete de rechiffrage pour les cles qui sont encore inconnues");
-    //     let cles_connues = cles.keys().map(|s| s.to_owned()).collect();
-    //     emettre_cles_inconnues(middleware, &requete, cles_connues).await?;
-    // }
 
     // Preparer la reponse
     // Verifier si on a au moins une cle dans la reponse
