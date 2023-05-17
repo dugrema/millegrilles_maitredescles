@@ -7,7 +7,7 @@ use millegrilles_common_rust::certificats::{EnveloppeCertificat, EnveloppePrivee
 use millegrilles_common_rust::chiffrage::{chiffrer_asymetrique_multibase, CleChiffrageHandler, CleSecrete, FormatChiffrage, rechiffrer_asymetrique_multibase};
 use millegrilles_common_rust::chiffrage_cle::{CleDechiffree, CommandeSauvegarderCle, IdentiteCle};
 use millegrilles_common_rust::constantes::*;
-use millegrilles_common_rust::formatteur_messages::MessageMilleGrille;
+use millegrilles_common_rust::formatteur_messages::{MessageMilleGrille, MessageReponseChiffree};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
 use millegrilles_common_rust::messages_generiques::MessageCedule;
 use millegrilles_common_rust::middleware::Middleware;
@@ -317,33 +317,33 @@ where M: Middleware + 'static {
 
 /// Emettre evenement de cles inconnues suite a une requete. Permet de faire la difference entre
 /// les cles de la requete et les cles connues.
-pub async fn emettre_cles_inconnues<M>(middleware: &M, requete: &RequeteDechiffrage, cles_connues: Vec<String>)
-    -> Result<(), Box<dyn Error>>
-    where M: GenerateurMessages
-{
-    // Faire une demande interne de sync pour voir si les cles inconnues existent (async)
-    let routage_evenement_manquant = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION)
-        .exchanges(vec![Securite::L4Secure])
-        .build();
-
-    let mut set_cles = HashSet::new();
-    set_cles.extend(requete.liste_hachage_bytes.iter());
-    let mut set_cles_trouvees = HashSet::new();
-    set_cles_trouvees.extend(&cles_connues);
-    let set_diff = set_cles.difference(&set_cles_trouvees);
-    let liste_cles: Vec<String> = set_diff.into_iter().map(|m| m.to_string()).collect();
-    debug!("emettre_cles_inconnues Requete de cles inconnues : {:?}", liste_cles);
-
-    let evenement_cles_manquantes = ReponseSynchroniserCles { liste_hachage_bytes: liste_cles };
-
-    Ok(middleware.emettre_evenement(routage_evenement_manquant.clone(), &evenement_cles_manquantes).await?)
-}
+// pub async fn emettre_cles_inconnues<M>(middleware: &M, requete: &RequeteDechiffrage, cles_connues: Vec<String>)
+//     -> Result<(), Box<dyn Error>>
+//     where M: GenerateurMessages
+// {
+//     // Faire une demande interne de sync pour voir si les cles inconnues existent (async)
+//     let routage_evenement_manquant = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION)
+//         .exchanges(vec![Securite::L4Secure])
+//         .build();
+//
+//     let mut set_cles = HashSet::new();
+//     set_cles.extend(requete.liste_hachage_bytes.iter());
+//     let mut set_cles_trouvees = HashSet::new();
+//     set_cles_trouvees.extend(&cles_connues);
+//     let set_diff = set_cles.difference(&set_cles_trouvees);
+//     let liste_cles: Vec<String> = set_diff.into_iter().map(|m| m.to_string()).collect();
+//     debug!("emettre_cles_inconnues Requete de cles inconnues : {:?}", liste_cles);
+//
+//     let evenement_cles_manquantes = ReponseSynchroniserCles { liste_hachage_bytes: liste_cles };
+//
+//     Ok(middleware.emettre_evenement(routage_evenement_manquant.clone(), &evenement_cles_manquantes).await?)
+// }
 
 /// Emettre evenement de cles inconnues suite a une requete. Permet de faire la difference entre
 /// les cles de la requete et les cles connues.
 pub async fn requete_cles_inconnues<M>(middleware: &M, requete: &RequeteDechiffrage, cles_connues: Vec<String>)
-    -> Result<ReponseCleManquantes, Box<dyn Error>>
-    where M: GenerateurMessages
+    -> Result<MessageListeCles, Box<dyn Error>>
+    where M: GenerateurMessages + CleChiffrageHandler
 {
     // Faire une demande interne de sync pour voir si les cles inconnues existent (async)
     let routage_evenement_manquant = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION)
@@ -357,16 +357,25 @@ pub async fn requete_cles_inconnues<M>(middleware: &M, requete: &RequeteDechiffr
     set_cles_trouvees.extend(&cles_connues);
     let set_diff = set_cles.difference(&set_cles_trouvees);
     let liste_cles: Vec<String> = set_diff.into_iter().map(|m| m.to_string()).collect();
-    debug!("emettre_cles_inconnues Requete de cles inconnues : {:?}", liste_cles);
+    debug!("maitredescles_commun.requete_cles_inconnues Requete de cles inconnues : {:?}", liste_cles);
 
     let evenement_cles_manquantes = ReponseSynchroniserCles { liste_hachage_bytes: liste_cles };
 
     let reponse = match middleware.transmettre_requete(routage_evenement_manquant.clone(), &evenement_cles_manquantes).await? {
         TypeMessage::Valide(m) => {
-            debug!("requete_cles_inconnues Reponse recue {:?}", m);
-            m.message.parsed.map_contenu::<ReponseCleManquantes>()?
+            debug!("maitredescles_commun.requete_cles_inconnues Reponse recue {:?}", m);
+            match MessageReponseChiffree::try_from(m.message.parsed) {
+                Ok(inner) => {
+                    let message_dechiffre = inner.dechiffrer(middleware)?;
+                    let reponse: MessageListeCles = serde_json::from_slice(&message_dechiffre.data_dechiffre[..])?;
+                    reponse
+                },
+                Err(e) => {
+                    Err(format!("maitredescles_commun.requete_cles_inconnues synchroniser_cles Erreur dechiffrage reponse : {:?}", e))?
+                }
+            }
         },
-        _ => Err(format!("Erreur reponse pour requete cle manquante, mauvais type de reponse"))?
+        _ => Err(format!("maitredescles_commun.requete_cles_inconnues Erreur reponse pour requete cle manquante, mauvais type de reponse"))?
     };
 
     Ok(reponse)
@@ -427,6 +436,27 @@ impl Into<IdentiteCle> for CleSecreteRechiffrage {
             identificateurs_document: self.identificateurs_document.clone(),
             signature_identite: self.signature_identite.clone(),
         }
+    }
+}
+
+impl TryInto<DocumentClePartition> for CleSecreteRechiffrage {
+    type Error = String;
+
+    fn try_into(self) -> Result<DocumentClePartition, Self::Error> {
+        Ok(DocumentClePartition {
+            cle_ref: self.hachage_bytes.clone(),
+            hachage_bytes: self.hachage_bytes,
+            domaine: self.domaine,
+            identificateurs_document: self.identificateurs_document,
+            signature_identite: self.signature_identite,
+            cle: "".to_string(),
+            cle_symmetrique: None,
+            nonce_symmetrique: None,
+            format: self.format.as_str().try_into()?,
+            iv: None,
+            tag: None,
+            header: Some(self.header),
+        })
     }
 }
 
@@ -741,8 +771,8 @@ pub struct DocCleSymmetrique {
     // Cles chiffrees
     //#[serde(serialize_with = "ordered_map")]
     // pub cles: HashMap<String, String>,
-    cle_symmetrique: Option<String>,
-    nonce_symmetrique: Option<String>,
+    pub cle_symmetrique: Option<String>,
+    pub nonce_symmetrique: Option<String>,
 
     // Information de dechiffrage
     pub format: FormatChiffrage,

@@ -1013,7 +1013,7 @@ async fn aiguillage_transaction<M, T>(middleware: &M, transaction: T, gestionnai
 
 async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesPartition)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage + ValidateurX509
+    where M: GenerateurMessages + MongoDao + VerificateurMessage + ValidateurX509 + CleChiffrageHandler
 {
     debug!("requete_dechiffrage Consommer requete : {:?}", & m.message);
     let requete: RequeteDechiffrage = m.message.get_msg().map_contenu()?;
@@ -1086,52 +1086,75 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
 
         let cles_connues = cles.keys().map(|s|s.to_owned()).collect();
         // emettre_cles_inconnues(middleware, requete, cles_connues).await?;
-        let reponse = match requete_cles_inconnues(middleware, &requete, cles_connues).await {
-            Ok(reponse) => match reponse.cles {
-                Some(cles) => Some(cles),
-                None => None
+        let cles_recues = match requete_cles_inconnues(middleware, &requete, cles_connues).await {
+            Ok(reponse) => {
+                debug!("Reponse cles manquantes : {:?}", reponse.cles);
+                reponse.cles
             },
             Err(e) => {
                 error!("requete_dechiffrage Erreur requete_cles_inconnues, skip : {:?}", e);
-                None
+                Vec::new()
             }
         };
 
-        debug!("Reponse cle manquantes recue : {:?}", reponse);
-        if let Some(liste_cles) = reponse.as_ref() {
-            for cle in liste_cles {
-                todo!("Fix me - requete cle inconnue");
-                // let commande: CommandeSauvegarderCle = cle.clone().into();
-                // if let Some(cle_str) = cle.cles.get(fingerprint) {
-                //
-                //     // let cle_chiffree = CleInterneChiffree { cle: cle_str.to_owned(), nonce: "aaa".into() };
-                //     // let cle_secrete = gestionnaire.handler_rechiffrage.dechiffer_cle_secrete(CleInterneChiffree {})?;
-                //
-                //     let cle_secrete = extraire_cle_secrete(
-                //         middleware.get_enveloppe_signature().cle_privee(), cle_str.as_str())?;
-                //
-                //     let cle_info = CleRefData::from(&commande);
-                //     let cle_ref = calculer_cle_ref(cle_info, &cle_secrete)?;
-                //     debug!("requete_dechiffrage.requete_cles_inconnues Sauvegarder cle_ref {} / hachage_bytes {}", cle_ref, cle.hachage_bytes);
-                //
-                //     if let Err(e) = sauvegarder_cle(
-                //         middleware, gestionnaire, &commande, nom_collection.as_str()).await
-                //     {
-                //         warn!("Erreur sauvegarde cle inconnue {} : {:?}", fingerprint, e);
-                //     }
-                //
-                //     let doc_cle = DocumentClePartition::try_into_document_cle_partition(cle, fingerprint, cle_ref)?;
-                //     cles.insert(fingerprint.to_string(), doc_cle);
-                // }
+        debug!("Reponse cle manquantes recue : {:?}", cles_recues);
+        for cle in cles_recues.into_iter() {
+
+            let hachage_bytes = cle.hachage_bytes.clone();
+
+            let cle_secrete = cle.get_cle_secrete()?;
+            let (_, cle_rechiffree) = cle.rechiffrer_cle(&gestionnaire.handler_rechiffrage)?;
+
+            let mut doc_cle: DocumentClePartition = cle.try_into()?;
+            doc_cle.cle_symmetrique = Some(cle_rechiffree.cle);
+            doc_cle.nonce_symmetrique = Some(cle_rechiffree.nonce);
+
+            let cle_interne = CleSecreteRechiffrage::from_doc_cle(cle_secrete, doc_cle.clone())?;
+
+            sauvegarder_cle_rechiffrage(middleware, &gestionnaire,
+                nom_collection.as_str(),
+                cle_interne).await?;
+
+            match rechiffrer_cle(&mut doc_cle, &gestionnaire.handler_rechiffrage, certificat.as_ref()) {
+                Ok(()) => {
+                    cles.insert(hachage_bytes, doc_cle);
+                },
+                Err(e) => {
+                    error!("rechiffrer_cles Erreur rechiffrage cle {:?}", e);
+                    continue;  // Skip cette cle
+                }
             }
+
+            // let commande: CommandeSauvegarderCle = cle.clone().into();
+            // if let Some(cle_str) = cle.cles.get(fingerprint) {
+            //
+            //     // let cle_chiffree = CleInterneChiffree { cle: cle_str.to_owned(), nonce: "aaa".into() };
+            //     // let cle_secrete = gestionnaire.handler_rechiffrage.dechiffer_cle_secrete(CleInterneChiffree {})?;
+            //
+            //     let cle_secrete = extraire_cle_secrete(
+            //         middleware.get_enveloppe_signature().cle_privee(), cle_str.as_str())?;
+            //
+            //     let cle_info = CleRefData::from(&commande);
+            //     let cle_ref = calculer_cle_ref(cle_info, &cle_secrete)?;
+            //     debug!("requete_dechiffrage.requete_cles_inconnues Sauvegarder cle_ref {} / hachage_bytes {}", cle_ref, cle.hachage_bytes);
+            //
+            //     if let Err(e) = sauvegarder_cle(
+            //         middleware, gestionnaire, &commande, nom_collection.as_str()).await
+            //     {
+            //         warn!("Erreur sauvegarde cle inconnue {} : {:?}", fingerprint, e);
+            //     }
+            //
+            //     let doc_cle = DocumentClePartition::try_into_document_cle_partition(cle, fingerprint, cle_ref)?;
+            //     cles.insert(fingerprint.to_string(), doc_cle);
+            // }
         }
     }
 
-    if cles.len() < requete.liste_hachage_bytes.len() {
-        debug!("Emettre un evenement de requete de rechiffrage pour les cles qui sont encore inconnues");
-        let cles_connues = cles.keys().map(|s| s.to_owned()).collect();
-        emettre_cles_inconnues(middleware, &requete, cles_connues).await?;
-    }
+    // if cles.len() < requete.liste_hachage_bytes.len() {
+    //     debug!("Emettre un evenement de requete de rechiffrage pour les cles qui sont encore inconnues");
+    //     let cles_connues = cles.keys().map(|s| s.to_owned()).collect();
+    //     emettre_cles_inconnues(middleware, &requete, cles_connues).await?;
+    // }
 
     // Preparer la reponse
     // Verifier si on a au moins une cle dans la reponse
@@ -1864,7 +1887,7 @@ async fn evenement_cle_manquante<M>(middleware: &M, m: MessageValideAction, gest
 
         if est_evenement {
             // Batir une commande de rechiffrage
-            todo!("fix me");
+            todo!("obsolete");
         } else {
             // Repondre normalement
             let reponse = json!({
