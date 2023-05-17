@@ -1083,28 +1083,29 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
         debug!("Reponse cle manquantes recue : {:?}", reponse);
         if let Some(liste_cles) = reponse.as_ref() {
             for cle in liste_cles {
-                let commande: CommandeSauvegarderCle = cle.clone().into();
-                if let Some(cle_str) = cle.cles.get(fingerprint) {
-
-                    // let cle_chiffree = CleInterneChiffree { cle: cle_str.to_owned(), nonce: "aaa".into() };
-                    // let cle_secrete = gestionnaire.handler_rechiffrage.dechiffer_cle_secrete(CleInterneChiffree {})?;
-
-                    let cle_secrete = extraire_cle_secrete(
-                        middleware.get_enveloppe_signature().cle_privee(), cle_str.as_str())?;
-
-                    let cle_info = CleRefData::from(&commande);
-                    let cle_ref = calculer_cle_ref(cle_info, &cle_secrete)?;
-                    debug!("requete_dechiffrage.requete_cles_inconnues Sauvegarder cle_ref {} / hachage_bytes {}", cle_ref, cle.hachage_bytes);
-
-                    if let Err(e) = sauvegarder_cle(
-                        middleware, gestionnaire, &commande, nom_collection.as_str()).await
-                    {
-                        warn!("Erreur sauvegarde cle inconnue {} : {:?}", fingerprint, e);
-                    }
-
-                    let doc_cle = DocumentClePartition::try_into_document_cle_partition(cle, fingerprint, cle_ref)?;
-                    cles.insert(fingerprint.to_string(), doc_cle);
-                }
+                todo!("Fix me - requete cle inconnue");
+                // let commande: CommandeSauvegarderCle = cle.clone().into();
+                // if let Some(cle_str) = cle.cles.get(fingerprint) {
+                //
+                //     // let cle_chiffree = CleInterneChiffree { cle: cle_str.to_owned(), nonce: "aaa".into() };
+                //     // let cle_secrete = gestionnaire.handler_rechiffrage.dechiffer_cle_secrete(CleInterneChiffree {})?;
+                //
+                //     let cle_secrete = extraire_cle_secrete(
+                //         middleware.get_enveloppe_signature().cle_privee(), cle_str.as_str())?;
+                //
+                //     let cle_info = CleRefData::from(&commande);
+                //     let cle_ref = calculer_cle_ref(cle_info, &cle_secrete)?;
+                //     debug!("requete_dechiffrage.requete_cles_inconnues Sauvegarder cle_ref {} / hachage_bytes {}", cle_ref, cle.hachage_bytes);
+                //
+                //     if let Err(e) = sauvegarder_cle(
+                //         middleware, gestionnaire, &commande, nom_collection.as_str()).await
+                //     {
+                //         warn!("Erreur sauvegarde cle inconnue {} : {:?}", fingerprint, e);
+                //     }
+                //
+                //     let doc_cle = DocumentClePartition::try_into_document_cle_partition(cle, fingerprint, cle_ref)?;
+                //     cles.insert(fingerprint.to_string(), doc_cle);
+                // }
             }
         }
     }
@@ -1498,7 +1499,7 @@ async fn verifier_autorisation_dechiffrage_global<M>(middleware: &M, m: &Message
 /// Genere une commande de sauvegarde de cles pour tous les certificats maitre des cles connus
 /// incluant le certificat de millegrille
 fn rechiffrer_pour_maitredescles<M>(middleware: &M, cle: DocumentClePartition)
-    -> Result<CommandeCleTransfert, Box<dyn Error>>
+    -> Result<DocCleSymmetrique, Box<dyn Error>>
     where M: GenerateurMessages + CleChiffrageHandler
 {
     let enveloppe_privee = middleware.get_enveloppe_signature();
@@ -1507,40 +1508,41 @@ fn rechiffrer_pour_maitredescles<M>(middleware: &M, cle: DocumentClePartition)
     let cle_locale = cle.cle.to_owned();
     let cle_privee = enveloppe_privee.cle_privee();
 
-    let mut fingerprint_partitions = Vec::new();
-    // let mut map_cles = HashMap::new();
-
-    // Convertir la commande
-    let mut commande_transfert = CommandeCleTransfert::from(cle);
-
-    // Preparer les cles a transferer
-    let map_cles = &mut commande_transfert.cles;
-    map_cles.insert(fingerprint_local.to_owned(), cle_locale.clone());  // Cle locale
-
-    // Cles rechiffrees
-    for pk_item in pk_chiffrage {
-        let fp = pk_item.fingerprint;
-        let pk = pk_item.public_key;
-
-        // Conserver liste des partitions
-        if ! pk_item.est_cle_millegrille {
-            fingerprint_partitions.push(fp.clone());
-        }
-
-        // Rechiffrer cle
-        if fp.as_str() != fingerprint_local {
-            // match chiffrer_asymetrique(&pk, &cle_secrete) {
-            match rechiffrer_asymetrique_multibase(cle_privee, &pk, cle_locale.as_str()) {
-                Ok(cle_rechiffree) => {
-                    // let cle_mb = multibase::encode(Base::Base64, cle_rechiffree);
-                    map_cles.insert(fp, cle_rechiffree);
-                },
-                Err(e) => error!("Erreur rechiffrage cle : {:?}", e)
-            }
-        }
-    }
-
-    Ok(commande_transfert)
+    todo!("fix me");
+    // let mut fingerprint_partitions = Vec::new();
+    // // let mut map_cles = HashMap::new();
+    //
+    // // Convertir la commande
+    // let mut commande_transfert = DocCleSymmetrique::from(cle);
+    //
+    // // Preparer les cles a transferer
+    // let map_cles = &mut commande_transfert.cles;
+    // map_cles.insert(fingerprint_local.to_owned(), cle_locale.clone());  // Cle locale
+    //
+    // // Cles rechiffrees
+    // for pk_item in pk_chiffrage {
+    //     let fp = pk_item.fingerprint;
+    //     let pk = pk_item.public_key;
+    //
+    //     // Conserver liste des partitions
+    //     if ! pk_item.est_cle_millegrille {
+    //         fingerprint_partitions.push(fp.clone());
+    //     }
+    //
+    //     // Rechiffrer cle
+    //     if fp.as_str() != fingerprint_local {
+    //         // match chiffrer_asymetrique(&pk, &cle_secrete) {
+    //         match rechiffrer_asymetrique_multibase(cle_privee, &pk, cle_locale.as_str()) {
+    //             Ok(cle_rechiffree) => {
+    //                 // let cle_mb = multibase::encode(Base::Base64, cle_rechiffree);
+    //                 map_cles.insert(fp, cle_rechiffree);
+    //             },
+    //             Err(e) => error!("Erreur rechiffrage cle : {:?}", e)
+    //         }
+    //     }
+    // }
+    //
+    // Ok(commande_transfert)
 }
 
 async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition) -> Result<(), Box<dyn Error>>
@@ -1788,6 +1790,11 @@ async fn evenement_cle_manquante<M>(middleware: &M, m: MessageValideAction, gest
 {
     debug!("evenement_cle_manquante Verifier si on peut transmettre la cle manquante {:?}", &m.message);
 
+    // Conserver flag pour indiquer methode de reponse
+    // est_evenement true : commande rechiffrage
+    //              false : reponse
+    let est_evenement = m.routing_key.starts_with("evenement.");
+
     let enveloppe = match m.message.certificat.clone() {
         Some(e) => {
             if e.verifier_roles(vec![RolesCertificats::MaitreDesCles]) {
@@ -1835,14 +1842,17 @@ async fn evenement_cle_manquante<M>(middleware: &M, m: MessageValideAction, gest
         let commande = match d {
             Ok(cle) => {
                 match convertir_bson_deserializable::<DocumentClePartition>(cle) {
-                    Ok(c) => {
-                        match rechiffrer_pour_maitredescles(middleware, c) {
-                            Ok(c) => c,
-                            Err(e) => {
-                                error!("traiter_cles_manquantes_ca Erreur traitement rechiffrage cle : {:?}", e);
-                                continue
-                            }
-                        }
+                    Ok(doc_cle) => {
+                        let cle_interne = CleInterneChiffree::try_from(doc_cle.clone())?;
+                        let cle_secrete = gestionnaire.handler_rechiffrage.dechiffer_cle_secrete(cle_interne)?;
+                        CleSecreteRechiffrage::from_doc_cle(cle_secrete, doc_cle)?
+                        // match rechiffrer_pour_maitredescles(middleware, c) {
+                        //     Ok(c) => c,
+                        //     Err(e) => {
+                        //         error!("traiter_cles_manquantes_ca Erreur traitement rechiffrage cle : {:?}", e);
+                        //         continue
+                        //     }
+                        // }
                     },
                     Err(e) => {
                         warn!("traiter_cles_manquantes_ca Erreur conversion document en cle : {:?}", e);
@@ -1853,24 +1863,31 @@ async fn evenement_cle_manquante<M>(middleware: &M, m: MessageValideAction, gest
             Err(e) => Err(format!("maitredescles_partition.traiter_cles_manquantes_ca Erreur lecture curseur : {:?}", e))?
         };
 
-        if m.routing_key.starts_with("evenement.") {
-            debug!("evenement_cle_manquante Emettre cles rechiffrees : {:?}", commande);
-            middleware.transmettre_commande(routage_commande.clone(), &commande, false).await?;
-        } else if commande.cles.len() > 0 {
+        // if m.routing_key.starts_with("evenement.") {
+        //     debug!("evenement_cle_manquante Emettre cles rechiffrees : {:?}", commande);
+        //     middleware.transmettre_commande(routage_commande.clone(), &commande, false).await?;
+        // } else if commande.cles.len() > 0 {
             // debug!("evenement_cle_manquante Emettre cles rechiffrees pour partition : {:?}", partition);
             cles.push(commande);
-        }
+        // }
     }
 
     if cles.len() > 0 {
-        // Repondre
-        let reponse = json!({
-            "ok": true,
-            "cles": cles,
-        });
 
-        debug!("evenement_cle_manquante Emettre reponse avec {} cles", cles.len());
-        Ok(Some(middleware.formatter_reponse(reponse, None)?))
+        if est_evenement {
+            // Batir une commande de rechiffrage
+            todo!("fix me");
+        } else {
+            // Repondre normalement
+            let reponse = json!({
+                "ok": true,
+                "cles": cles,
+            });
+
+            debug!("evenement_cle_manquante Emettre reponse avec {} cles", cles.len());
+            todo!("fix me");
+            //Ok(Some(middleware.formatter_reponse_chiffree(middleware, reponse, enveloppe.as_ref())?))
+        }
     } else {
         // Si on n'a aucune cle, ne pas repondre. Un autre maitre des cles pourrait le faire
         debug!("evenement_cle_manquante On n'a aucune des cles demandees");

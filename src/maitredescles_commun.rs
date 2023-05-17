@@ -473,6 +473,24 @@ impl CleSecreteRechiffrage {
         })
     }
 
+    pub fn from_doc_cle(cle_secrete: CleSecrete, value: DocumentClePartition) -> Result<Self, Box<dyn Error>> {
+        let header = match value.header {
+            Some(inner) => inner,
+            None => Err(format!("TryFrom<CommandeSauvegarderCle> Header manquant"))?
+        };
+        let cle_secrete_string: String = multibase::encode(Base::Base64, &cle_secrete.0);
+        let format: &str = value.format.into();
+        Ok(Self {
+            cle_secrete: cle_secrete_string,
+            domaine: value.domaine,
+            format: format.to_string(),
+            hachage_bytes: value.hachage_bytes,
+            header,
+            identificateurs_document: value.identificateurs_document,
+            signature_identite: value.signature_identite,
+        })
+    }
+
     pub fn get_cle_secrete(&self) -> Result<CleSecrete, Box<dyn Error>> {
         let cle_secrete: Vec<u8> = multibase::decode(&self.cle_secrete)?.1;
         let mut cle_secrete_dechiffree = CleSecrete([0u8; 32]);
@@ -679,40 +697,40 @@ impl DocumentClePartition {
         }
     }
 
-    pub fn try_into_document_cle_partition<S,T>(value: &CommandeCleTransfert, fingerprint: S, cle_ref: T) -> Result<DocumentClePartition, String>
+    pub fn try_into_document_cle_partition<S,T>(value: &DocCleSymmetrique, fingerprint: S, cle_ref: T) -> Result<DocumentClePartition, String>
         where S: Into<String>,
               T: Into<String>
     {
         let fingerprint = fingerprint.into();
         let cle_ref = cle_ref.into();
 
-        let cle = match value.cles.get(&fingerprint) {
-            Some(c) => c.as_str(),
-            None => Err(format!("DocumentClePartition.try_into_document_cle_partition Erreur cle introuvable {}", fingerprint))?
-        };
-
         todo!("Chiffrer en cle symmetrique");
 
-        Ok(DocumentClePartition {
-            cle_ref,
-            hachage_bytes: value.hachage_bytes.clone(),
-            domaine: value.domaine.clone(),
-            identificateurs_document: value.identificateurs_document.clone(),
-            signature_identite: value.signature_identite.clone(),
-            cle: cle.to_string(),
-            cle_symmetrique: None,
-            nonce_symmetrique: None,
-            format: value.format.clone(),
-            iv: value.iv.clone(),
-            tag: value.tag.clone(),
-            header: value.header.clone()
-        })
+        // let cle = match value.cles.get(&fingerprint) {
+        //     Some(c) => c.as_str(),
+        //     None => Err(format!("DocumentClePartition.try_into_document_cle_partition Erreur cle introuvable {}", fingerprint))?
+        // };
+        //
+        // Ok(DocumentClePartition {
+        //     cle_ref,
+        //     hachage_bytes: value.hachage_bytes.clone(),
+        //     domaine: value.domaine.clone(),
+        //     identificateurs_document: value.identificateurs_document.clone(),
+        //     signature_identite: value.signature_identite.clone(),
+        //     cle: cle.to_string(),
+        //     cle_symmetrique: None,
+        //     nonce_symmetrique: None,
+        //     format: value.format.clone(),
+        //     iv: value.iv.clone(),
+        //     tag: value.tag.clone(),
+        //     header: value.header.clone()
+        // })
     }
 
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CommandeCleTransfert {
+pub struct DocCleSymmetrique {
     // Identite de la cle
     pub hachage_bytes: String,
     pub domaine: String,
@@ -721,8 +739,10 @@ pub struct CommandeCleTransfert {
     pub signature_identite: String,
 
     // Cles chiffrees
-    #[serde(serialize_with = "ordered_map")]
-    pub cles: HashMap<String, String>,
+    //#[serde(serialize_with = "ordered_map")]
+    // pub cles: HashMap<String, String>,
+    cle_symmetrique: Option<String>,
+    nonce_symmetrique: Option<String>,
 
     // Information de dechiffrage
     pub format: FormatChiffrage,
@@ -734,17 +754,18 @@ pub struct CommandeCleTransfert {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReponseCleManquantes {
     pub ok: Option<bool>,
-    pub cles: Option<Vec<CommandeCleTransfert>>,
+    pub cles: Option<Vec<DocCleSymmetrique>>,
 }
 
-impl Into<CommandeSauvegarderCle> for CommandeCleTransfert {
+impl Into<CommandeSauvegarderCle> for DocCleSymmetrique {
     fn into(self) -> CommandeSauvegarderCle {
         CommandeSauvegarderCle {
             hachage_bytes: self.hachage_bytes.clone(),
             domaine: self.domaine.clone(),
             identificateurs_document: self.identificateurs_document.clone(),
             signature_identite: self.signature_identite.clone(),
-            cles: self.cles.clone(),
+            // cles: self.cles.clone(),
+            cles: HashMap::new(),
             format: self.format.clone(),
             iv: self.iv.clone(),
             tag: self.tag.clone(),
@@ -755,14 +776,16 @@ impl Into<CommandeSauvegarderCle> for CommandeCleTransfert {
     }
 }
 
-impl From<DocumentClePartition> for CommandeCleTransfert {
+impl From<DocumentClePartition> for DocCleSymmetrique {
     fn from(value: DocumentClePartition) -> Self {
         Self {
             hachage_bytes: value.hachage_bytes,
             domaine: value.domaine,
             identificateurs_document: value.identificateurs_document,
             signature_identite: value.signature_identite,
-            cles: HashMap::new(),
+            // cles: HashMap::new(),
+            cle_symmetrique: value.cle_symmetrique,
+            nonce_symmetrique: value.nonce_symmetrique,
             format: value.format,
             iv: value.iv,
             tag: value.tag,

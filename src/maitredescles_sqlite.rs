@@ -693,44 +693,6 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
     let correlation_id = m.correlation_id.clone();
     let commande = dechiffrer_batch(middleware, m)?;
 
-    // let nom_collection_cles = match gestionnaire.get_collection_cles() {
-    //     Some(c) => c,
-    //     None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Gestionnaire sans partition/certificat"))?
-    // };
-    //
-    // // Dechiffrer la cle asymmetrique pour certificat local
-    // let (header, cle_secrete) = match m.message.parsed.dechiffrage.as_ref() {
-    //     Some(inner) => {
-    //         let enveloppe_privee = middleware.get_enveloppe_signature();
-    //         let fingerprint_local = enveloppe_privee.fingerprint().as_str();
-    //         let header = match inner.header.as_ref() {
-    //             Some(inner) => inner.as_str(),
-    //             None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Erreur format message, header absent"))?
-    //         };
-    //         match inner.cles.as_ref() {
-    //             Some(inner) => {
-    //                 match inner.get(fingerprint_local) {
-    //                     Some(inner) => {
-    //                         // Cle chiffree, on dechiffre
-    //                         let cle_bytes = multibase::decode(inner)?;
-    //                         let cle_secrete = dechiffrer_asymmetrique_ed25519(&cle_bytes.1[..], enveloppe_privee.cle_privee())?;
-    //                         (header, cle_secrete)
-    //                     },
-    //                     None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Erreur format message, dechiffrage absent"))?
-    //                 }
-    //             },
-    //             None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Erreur format message, dechiffrage absent"))?
-    //         }
-    //     },
-    //     None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Erreur format message, dechiffrage absent"))?
-    // };
-    //
-    // debug!("commande_rechiffrer_batch Consommer commande : {:?}", & m.message);
-    // let fingerprint = gestionnaire.handler_rechiffrage.fingerprint();
-    //
-    // let commande: CommandeRechiffrerBatch = m.message.get_msg().map_contenu()?;
-    // debug!("commande_rechiffrer_batch Commande parsed : {:?}", commande);
-
     let connexion = gestionnaire.ouvrir_connection(middleware, false);
 
     let enveloppe_privee = middleware.get_enveloppe_signature();
@@ -748,24 +710,6 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
 
     for info_cle in commande.cles {
         debug!("commande_rechiffrer_batch Cle {:?}", info_cle);
-        // let commande: CommandeSauvegarderCle = info_cle.clone().into_commande(fingerprint.as_str());
-
-        // let cle_chiffree_str = match info_cle.cles.get(fingerprint) {
-        //     Some(cle) => cle.as_str(),
-        //     None => {
-        //         debug!("maitredescles_sqlite.commande_rechiffrer_batch Commande rechiffrage sans fingerprint local pour cle {}", info_cle.hachage_bytes);
-        //         continue  // Skip
-        //     }
-        // };
-
-        // let cle_ref = {
-        //     let cle_secrete = extraire_cle_secrete(middleware.get_enveloppe_signature().cle_privee(), cle_chiffree_str)?;
-        //     if info_cle.verifier_identite(&cle_secrete)? != true {
-        //         warn!("maitredescles_sqlite.commande_sauvegarder_cle Erreur verifier identite commande, signature invalide pour cle {}", info_cle.hachage_bytes);
-        //         continue  // Skip
-        //     }
-        //     calculer_cle_ref(&info_cle, &cle_secrete)?
-        // };
 
         let cle_ref = info_cle.get_cle_ref()?;
         sauvegarder_cle(middleware, &gestionnaire, &connexion, info_cle)?;
@@ -985,23 +929,19 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
                     let connexion = gestionnaire.ouvrir_connection(middleware, false);
                     for cle in liste_cles {
                         let commande: CommandeSauvegarderCle = cle.clone().into();
-                        if let Some(cle_str) = cle.cles.get(fingerprint) {
-                            // let cle_secrete = extraire_cle_secrete(middleware.get_enveloppe_signature().cle_privee(), cle_str.as_str())?;
-                            // let cle_info = CleRefData::from(&commande);
-                            // let cle_ref = calculer_cle_ref(cle_info, &cle_secrete)?;
-                            // debug!("requete_dechiffrage.requete_cles_inconnues Sauvegarder cle_ref {} / hachage_bytes {}", cle_ref, cle.hachage_bytes);
-
-                            let cle_tierce_vec: Vec<u8> = multibase::decode(cle_str)?.1;
-                            let cle_dechiffree = dechiffrer_asymmetrique_ed25519(
-                                &cle_tierce_vec[..], enveloppe_privee.cle_privee())?;
-                            let cle_rechiffrage = CleSecreteRechiffrage::from_commande(&cle_dechiffree, commande)?;
-
-                            let cle_ref = cle_rechiffrage.get_cle_ref()?;
-
-                            sauvegarder_cle(middleware, &gestionnaire, &connexion, cle_rechiffrage)?;
-                            let doc_cle = DocumentClePartition::try_into_document_cle_partition(cle, fingerprint, cle_ref)?;
-                            cles.insert(fingerprint.to_string(), doc_cle);
-                        }
+                        todo!("fixme rechiffrage client avec cles manquantes")
+                        // if let Some(cle_str) = cle.cles.get(fingerprint) {
+                        //     let cle_tierce_vec: Vec<u8> = multibase::decode(cle_str)?.1;
+                        //     let cle_dechiffree = dechiffrer_asymmetrique_ed25519(
+                        //         &cle_tierce_vec[..], enveloppe_privee.cle_privee())?;
+                        //     let cle_rechiffrage = CleSecreteRechiffrage::from_commande(&cle_dechiffree, commande)?;
+                        //
+                        //     let cle_ref = cle_rechiffrage.get_cle_ref()?;
+                        //
+                        //     sauvegarder_cle(middleware, &gestionnaire, &connexion, cle_rechiffrage)?;
+                        //     let doc_cle = DocumentClePartition::try_into_document_cle_partition(cle, fingerprint, cle_ref)?;
+                        //     cles.insert(fingerprint.to_string(), doc_cle);
+                        // }
                     }
                 }
             },
@@ -1223,7 +1163,7 @@ async fn verifier_autorisation_dechiffrage_global<M>(middleware: &M, m: &Message
 /// Genere une commande de sauvegarde de cles pour tous les certificats maitre des cles connus
 /// incluant le certificat de millegrille
 fn rechiffrer_pour_maitredescles<M>(middleware: &M, cle: DocumentClePartition)
-    -> Result<CommandeCleTransfert, Box<dyn Error>>
+    -> Result<DocCleSymmetrique, Box<dyn Error>>
     where M: GenerateurMessages + CleChiffrageHandler
 {
     let enveloppe_privee = middleware.get_enveloppe_signature();
@@ -1232,39 +1172,41 @@ fn rechiffrer_pour_maitredescles<M>(middleware: &M, cle: DocumentClePartition)
     let cle_locale = cle.cle.to_owned();
     let cle_privee = enveloppe_privee.cle_privee();
 
-    let mut fingerprint_partitions = Vec::new();
-
-    // Convertir la commande
-    let mut commande_transfert = CommandeCleTransfert::from(cle);
-
-    // Preparer les cles a transferer
-    let map_cles = &mut commande_transfert.cles;
-    map_cles.insert(fingerprint_local.to_owned(), cle_locale.clone());  // Cle locale
-
-    // Cles rechiffrees
-    for pk_item in pk_chiffrage {
-        let fp = pk_item.fingerprint;
-        let pk = pk_item.public_key;
-
-        // Conserver liste des partitions
-        if ! pk_item.est_cle_millegrille {
-            fingerprint_partitions.push(fp.clone());
-        }
-
-        // Rechiffrer cle
-        if fp.as_str() != fingerprint_local {
-            // match chiffrer_asymetrique(&pk, &cle_secrete) {
-            match rechiffrer_asymetrique_multibase(cle_privee, &pk, cle_locale.as_str()) {
-                Ok(cle_rechiffree) => {
-                    // let cle_mb = multibase::encode(Base::Base64, cle_rechiffree);
-                    map_cles.insert(fp, cle_rechiffree);
-                },
-                Err(e) => error!("Erreur rechiffrage cle : {:?}", e)
-            }
-        }
-    }
-
-    Ok(commande_transfert)
+    todo!("fix me");
+    //
+    // let mut fingerprint_partitions = Vec::new();
+    //
+    // // Convertir la commande
+    // let mut commande_transfert = DocCleSymmetrique::from(cle);
+    //
+    // // Preparer les cles a transferer
+    // let map_cles = &mut commande_transfert.cles;
+    // map_cles.insert(fingerprint_local.to_owned(), cle_locale.clone());  // Cle locale
+    //
+    // // Cles rechiffrees
+    // for pk_item in pk_chiffrage {
+    //     let fp = pk_item.fingerprint;
+    //     let pk = pk_item.public_key;
+    //
+    //     // Conserver liste des partitions
+    //     if ! pk_item.est_cle_millegrille {
+    //         fingerprint_partitions.push(fp.clone());
+    //     }
+    //
+    //     // Rechiffrer cle
+    //     if fp.as_str() != fingerprint_local {
+    //         // match chiffrer_asymetrique(&pk, &cle_secrete) {
+    //         match rechiffrer_asymetrique_multibase(cle_privee, &pk, cle_locale.as_str()) {
+    //             Ok(cle_rechiffree) => {
+    //                 // let cle_mb = multibase::encode(Base::Base64, cle_rechiffree);
+    //                 map_cles.insert(fp, cle_rechiffree);
+    //             },
+    //             Err(e) => error!("Erreur rechiffrage cle : {:?}", e)
+    //         }
+    //     }
+    // }
+    //
+    // Ok(commande_transfert)
 }
 
 #[derive(Clone, Deserialize)]
@@ -1585,6 +1527,8 @@ async fn evenement_cle_manquante<M>(middleware: &M, gestionnaire: &GestionnaireM
     debug!("evenement_cle_manquante Verifier si on peut transmettre la cle manquante {:?}", &m.message);
     let event_non_dechiffrables: ReponseSynchroniserCles = m.message.get_msg().map_contenu()?;
 
+    let est_evenement = m.routing_key.starts_with("evenement.");
+
     let enveloppe = match m.message.certificat.clone() {
         Some(e) => {
             if e.verifier_roles(vec![RolesCertificats::MaitreDesCles]) {
@@ -1640,12 +1584,12 @@ async fn evenement_cle_manquante<M>(middleware: &M, gestionnaire: &GestionnaireM
             }
         };
 
-        if m.routing_key.starts_with("evenement.") {
-            debug!("evenement_cle_manquante Emettre cles rechiffrees : {:?}", commande);
-            middleware.transmettre_commande(routage_commande.clone(), &commande, false).await?;
-        } else if commande.cles.len() > 0 {
+        // if m.routing_key.starts_with("evenement.") {
+        //     debug!("evenement_cle_manquante Emettre cles rechiffrees : {:?}", commande);
+        //     middleware.transmettre_commande(routage_commande.clone(), &commande, false).await?;
+        // } else if commande.cles.len() > 0 {
             cles.push(commande);
-        }
+        // }
     }
 
     if cles.len() > 0 {
