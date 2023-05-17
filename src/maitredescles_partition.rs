@@ -29,7 +29,7 @@ use millegrilles_common_rust::hachages::hacher_bytes;
 use millegrilles_common_rust::messages_generiques::MessageCedule;
 use millegrilles_common_rust::middleware::{ChiffrageFactoryTrait, Middleware, sauvegarder_transaction};
 use millegrilles_common_rust::mongo_dao::{ChampIndex, convertir_bson_deserializable, convertir_to_bson, IndexOptions, MongoDao, verifier_erreur_duplication_mongo};
-use millegrilles_common_rust::mongodb::Cursor;
+use millegrilles_common_rust::mongodb::{Collection, Cursor};
 use millegrilles_common_rust::mongodb::options::{FindOptions, InsertOneOptions, UpdateOptions};
 use millegrilles_common_rust::{multibase, serde_json};
 use millegrilles_common_rust::multihash::Code;
@@ -940,31 +940,8 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, mut m: MessageValideAction
     let liste_hachage_bytes: Vec<String> = commande.cles.iter().map(|c| c.hachage_bytes.to_owned()).collect();
     let mut liste_cle_ref: Vec<String> = Vec::new();
     for cle in commande.cles {
-        let (cle_ref, cle_rechiffree) = cle.rechiffrer_cle(&gestionnaire.handler_rechiffrage)?;
-
-        let mut doc_cle = convertir_to_bson(cle.clone())?;
-        doc_cle.remove("cleSecrete");
-        doc_cle.insert("dirty", true);
-        doc_cle.insert("confirmation_ca", false);
-        doc_cle.insert(CHAMP_CREATION, Utc::now());
-        doc_cle.insert(CHAMP_MODIFICATION, Utc::now());
-        doc_cle.insert(CHAMP_CLE_REF, cle_ref.as_str());
-
-        // Retirer le champ cles
-        doc_cle.remove(CHAMP_LISTE_CLES);
-
-        // Inserer la cle pour cette partition
-        // doc_cle.insert(TRANSACTION_CLE, cle_chiffree_str);
-        doc_cle.insert(TRANSACTION_CLE, "");
-
-        doc_cle.insert(CHAMP_CLE_SYMMETRIQUE, cle_rechiffree.cle);
-        doc_cle.insert(CHAMP_NONCE_SYMMETRIQUE, cle_rechiffree.nonce);
-
-        let filtre = doc! { CHAMP_CLE_REF: cle_ref.as_str() };
-        let ops = doc! { "$setOnInsert": doc_cle };
-        let opts = UpdateOptions::builder().upsert(true).build();
-        let resultat = collection.update_one(filtre, ops, opts).await?;
-
+        let cle_ref = sauvegarder_cle_rechiffrage(
+            middleware, &gestionnaire, nom_collection_cles.as_str(), cle).await?;
         liste_cle_ref.push(cle_ref);
     }
 
@@ -979,6 +956,43 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, mut m: MessageValideAction
     middleware.emettre_evenement(routage_event, &event_contenu).await?;
 
     Ok(middleware.reponse_ok()?)
+}
+
+async fn sauvegarder_cle_rechiffrage<M>(middleware: &M,
+                                        gestionnaire: &GestionnaireMaitreDesClesPartition,
+                                        nom_collection_cles: &str,
+                                        cle: CleSecreteRechiffrage)
+    -> Result<String, Box<dyn Error>>
+    where M: MongoDao
+{
+    let collection = middleware.get_collection(nom_collection_cles)?;
+
+    let (cle_ref, cle_rechiffree) = cle.rechiffrer_cle(&gestionnaire.handler_rechiffrage)?;
+
+    let mut doc_cle = convertir_to_bson(cle.clone())?;
+    doc_cle.remove("cleSecrete");
+    doc_cle.insert("dirty", true);
+    doc_cle.insert("confirmation_ca", false);
+    doc_cle.insert(CHAMP_CREATION, Utc::now());
+    doc_cle.insert(CHAMP_MODIFICATION, Utc::now());
+    doc_cle.insert(CHAMP_CLE_REF, cle_ref.as_str());
+
+    // Retirer le champ cles
+    doc_cle.remove(CHAMP_LISTE_CLES);
+
+    // Inserer la cle pour cette partition
+    // doc_cle.insert(TRANSACTION_CLE, cle_chiffree_str);
+    doc_cle.insert(TRANSACTION_CLE, "");
+
+    doc_cle.insert(CHAMP_CLE_SYMMETRIQUE, cle_rechiffree.cle);
+    doc_cle.insert(CHAMP_NONCE_SYMMETRIQUE, cle_rechiffree.nonce);
+
+    let filtre = doc! { CHAMP_CLE_REF: cle_ref.as_str() };
+    let ops = doc! { "$setOnInsert": doc_cle };
+    let opts = UpdateOptions::builder().upsert(true).build();
+    collection.update_one(filtre, ops, opts).await?;
+
+    Ok(cle_ref)
 }
 
 async fn aiguillage_transaction<M, T>(middleware: &M, transaction: T, gestionnaire: &GestionnaireMaitreDesClesPartition) -> Result<Option<MessageMilleGrille>, String>
@@ -1499,57 +1513,8 @@ async fn verifier_autorisation_dechiffrage_global<M>(middleware: &M, m: &Message
 //     Ok(())
 // }
 
-/// Genere une commande de sauvegarde de cles pour tous les certificats maitre des cles connus
-/// incluant le certificat de millegrille
-fn rechiffrer_pour_maitredescles<M>(middleware: &M, cle: DocumentClePartition)
-    -> Result<DocCleSymmetrique, Box<dyn Error>>
-    where M: GenerateurMessages + CleChiffrageHandler
-{
-    let enveloppe_privee = middleware.get_enveloppe_signature();
-    let fingerprint_local = enveloppe_privee.fingerprint().as_str();
-    let pk_chiffrage = middleware.get_publickeys_chiffrage();
-    let cle_locale = cle.cle.to_owned();
-    let cle_privee = enveloppe_privee.cle_privee();
-
-    todo!("fix me");
-    // let mut fingerprint_partitions = Vec::new();
-    // // let mut map_cles = HashMap::new();
-    //
-    // // Convertir la commande
-    // let mut commande_transfert = DocCleSymmetrique::from(cle);
-    //
-    // // Preparer les cles a transferer
-    // let map_cles = &mut commande_transfert.cles;
-    // map_cles.insert(fingerprint_local.to_owned(), cle_locale.clone());  // Cle locale
-    //
-    // // Cles rechiffrees
-    // for pk_item in pk_chiffrage {
-    //     let fp = pk_item.fingerprint;
-    //     let pk = pk_item.public_key;
-    //
-    //     // Conserver liste des partitions
-    //     if ! pk_item.est_cle_millegrille {
-    //         fingerprint_partitions.push(fp.clone());
-    //     }
-    //
-    //     // Rechiffrer cle
-    //     if fp.as_str() != fingerprint_local {
-    //         // match chiffrer_asymetrique(&pk, &cle_secrete) {
-    //         match rechiffrer_asymetrique_multibase(cle_privee, &pk, cle_locale.as_str()) {
-    //             Ok(cle_rechiffree) => {
-    //                 // let cle_mb = multibase::encode(Base::Base64, cle_rechiffree);
-    //                 map_cles.insert(fp, cle_rechiffree);
-    //             },
-    //             Err(e) => error!("Erreur rechiffrage cle : {:?}", e)
-    //         }
-    //     }
-    // }
-    //
-    // Ok(commande_transfert)
-}
-
 async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition) -> Result<(), Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage
+    where M: GenerateurMessages + MongoDao + VerificateurMessage + CleChiffrageHandler
 {
     debug!("synchroniser_cles Debut");
     if ! gestionnaire.handler_rechiffrage.is_ready() {
@@ -1617,11 +1582,43 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
         }
 
         if cles_hashset.len() > 0 {
-            debug!("Cles absentes localement : {} cles", cles_hashset.len());
-            // Emettre evenement pour indiquer que ces cles sont manquantes dans la partition
+            debug!("synchroniser_cles Cles absentes localement : {} cles", cles_hashset.len());
+
+            // Emettre requete pour indiquer que ces cles sont manquantes dans la partition
             let liste_cles: Vec<String> = cles_hashset.iter().map(|m| String::from(m.as_str())).collect();
             let evenement_cles_manquantes = ReponseSynchroniserCles { liste_hachage_bytes: liste_cles };
-            middleware.emettre_evenement(routage_evenement_manquant.clone(), &evenement_cles_manquantes).await?;
+            let reponse = middleware.transmettre_requete(
+                routage_evenement_manquant.clone(), &evenement_cles_manquantes).await?;
+
+            let data_reponse = match reponse {
+                TypeMessage::Valide(mut inner) => {
+                    debug!("synchroniser_cles Reponse demande cles manquantes : {:?}", inner);
+                    match MessageReponseChiffree::try_from(inner.message.parsed) {
+                        Ok(inner) => inner.dechiffrer(middleware)?,
+                        Err(e) => {
+                            warn!("synchroniser_cles Erreur dechiffrage reponse : {:?}", e);
+                            continue;
+                        }
+                    }
+                },
+                _ => {
+                    warn!("synchroniser_cles Erreur reception reponse cles manquantes, mauvais type reponse.");
+                    continue;
+                }
+            };
+
+            let reponse: MessageListeCles = serde_json::from_slice(&data_reponse.data_dechiffre[..])?;
+            debug!("Reponse {:?}", reponse.cles);
+
+            for cle_rechiffree in reponse.cles.into_iter() {
+                sauvegarder_cle_rechiffrage(middleware, &gestionnaire,
+                                            nom_collection.as_str(),
+                                            cle_rechiffree).await?;
+            }
+
+            // let liste_cles: Vec<String> = cles_hashset.iter().map(|m| String::from(m.as_str())).collect();
+            // let evenement_cles_manquantes = ReponseSynchroniserCles { liste_hachage_bytes: liste_cles };
+            // middleware.emettre_evenement(routage_evenement_manquant.clone(), &evenement_cles_manquantes).await?;
         }
     }
 
@@ -1762,7 +1759,7 @@ async fn traiter_cles_manquantes_ca<M>(
                 Ok(cle) => {
                     match convertir_bson_deserializable::<DocumentClePartition>(cle) {
                         Ok(c) => {
-                            match rechiffrer_pour_maitredescles(middleware, c) {
+                            match rechiffrer_pour_maitredescles_ca(middleware, c) {
                                 Ok(c) => c,
                                 Err(e) => {
                                     error!("traiter_cles_manquantes_ca Erreur traitement rechiffrage cle : {:?}", e);
@@ -1849,13 +1846,6 @@ async fn evenement_cle_manquante<M>(middleware: &M, m: MessageValideAction, gest
                         let cle_interne = CleInterneChiffree::try_from(doc_cle.clone())?;
                         let cle_secrete = gestionnaire.handler_rechiffrage.dechiffer_cle_secrete(cle_interne)?;
                         CleSecreteRechiffrage::from_doc_cle(cle_secrete, doc_cle)?
-                        // match rechiffrer_pour_maitredescles(middleware, c) {
-                        //     Ok(c) => c,
-                        //     Err(e) => {
-                        //         error!("traiter_cles_manquantes_ca Erreur traitement rechiffrage cle : {:?}", e);
-                        //         continue
-                        //     }
-                        // }
                     },
                     Err(e) => {
                         warn!("traiter_cles_manquantes_ca Erreur conversion document en cle : {:?}", e);
@@ -1866,13 +1856,7 @@ async fn evenement_cle_manquante<M>(middleware: &M, m: MessageValideAction, gest
             Err(e) => Err(format!("maitredescles_partition.traiter_cles_manquantes_ca Erreur lecture curseur : {:?}", e))?
         };
 
-        // if m.routing_key.starts_with("evenement.") {
-        //     debug!("evenement_cle_manquante Emettre cles rechiffrees : {:?}", commande);
-        //     middleware.transmettre_commande(routage_commande.clone(), &commande, false).await?;
-        // } else if commande.cles.len() > 0 {
-            // debug!("evenement_cle_manquante Emettre cles rechiffrees pour partition : {:?}", partition);
-            cles.push(commande);
-        // }
+        cles.push(commande);
     }
 
     if cles.len() > 0 {

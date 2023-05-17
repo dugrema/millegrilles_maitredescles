@@ -961,6 +961,55 @@ pub async fn emettre_demande_cle_symmetrique<M,S>(middleware: &M, cle_ca: S) -> 
     Ok(())
 }
 
+#[derive(Clone, Deserialize)]
+pub struct MessageListeCles {
+    pub cles: Vec<CleSecreteRechiffrage>
+}
+
+/// Genere une commande de sauvegarde de cles pour tous les certificats maitre des cles connus
+/// incluant le certificat de millegrille
+pub fn rechiffrer_pour_maitredescles_ca<M>(middleware: &M, cle: DocumentClePartition)
+    -> Result<DocCleSymmetrique, Box<dyn Error>>
+    where M: GenerateurMessages + CleChiffrageHandler
+{
+    let enveloppe_privee = middleware.get_enveloppe_signature();
+    let fingerprint_local = enveloppe_privee.fingerprint().as_str();
+    let pk_chiffrage = middleware.get_publickeys_chiffrage();
+    let cle_locale = cle.cle.to_owned();
+    let cle_privee = enveloppe_privee.cle_privee();
+
+    let mut fingerprint_partitions = Vec::new();
+    let mut map_cles = HashMap::new();
+
+    // Convertir la commande
+    let mut commande_transfert = DocCleSymmetrique::from(cle);
+
+    // Cles rechiffrees
+    for pk_item in pk_chiffrage {
+        let fp = pk_item.fingerprint;
+        let pk = pk_item.public_key;
+
+        // Conserver liste des partitions
+        if ! pk_item.est_cle_millegrille {
+            fingerprint_partitions.push(fp.clone());
+        }
+
+        // Rechiffrer cle
+        if fp.as_str() != fingerprint_local {
+            // match chiffrer_asymetrique(&pk, &cle_secrete) {
+            match rechiffrer_asymetrique_multibase(cle_privee, &pk, cle_locale.as_str()) {
+                Ok(cle_rechiffree) => {
+                    // let cle_mb = multibase::encode(Base::Base64, cle_rechiffree);
+                    map_cles.insert(fp, cle_rechiffree);
+                },
+                Err(e) => error!("Erreur rechiffrage cle : {:?}", e)
+            }
+        }
+    }
+
+    Ok(commande_transfert)
+}
+
 // /// Dechiffre le message kind:8 d'une batch
 // pub fn dechiffrer_batch<M>(middleware: &M, m: MessageValideAction) -> Result<CommandeRechiffrerBatch, Box<dyn Error>>
 // pub fn dechiffrer_batch<M>(middleware: &M, m: MessageValideAction) -> Result<CommandeRechiffrerBatch, Box<dyn Error>>

@@ -23,7 +23,7 @@ use millegrilles_common_rust::futures::stream::FuturesUnordered;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
 use millegrilles_common_rust::hachages::hacher_bytes;
 use millegrilles_common_rust::messages_generiques::MessageCedule;
-use millegrilles_common_rust::middleware::{Middleware, sauvegarder_transaction};
+use millegrilles_common_rust::middleware::{ChiffrageFactoryTrait, Middleware, sauvegarder_transaction};
 use millegrilles_common_rust::middleware_db::MiddlewareDb;
 use millegrilles_common_rust::mongo_dao::MongoDao;
 use millegrilles_common_rust::multihash::Code;
@@ -465,7 +465,7 @@ impl DocumentRechiffrage {
 }
 
 async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesSQLite) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: ValidateurX509 + GenerateurMessages + VerificateurMessage + IsConfigNoeud + CleChiffrageHandler + ConfigMessages
+    where M: ValidateurX509 + GenerateurMessages + VerificateurMessage + IsConfigNoeud + CleChiffrageHandler + ConfigMessages + ChiffrageFactoryTrait
 {
     debug!("Consommer requete : {:?}", &message.message);
 
@@ -537,7 +537,7 @@ where
 
 async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesSQLite)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + IsConfigNoeud + CleChiffrageHandler + ValidateurX509
+    where M: GenerateurMessages + IsConfigNoeud + CleChiffrageHandler + ValidateurX509 + ChiffrageFactoryTrait
 {
     debug!("consommer_commande : {:?}", &m.message);
 
@@ -579,7 +579,7 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionna
 }
 
 async fn consommer_evenement<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesSQLite, m: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: ValidateurX509 + GenerateurMessages + IsConfigNoeud + CleChiffrageHandler + ConfigMessages
+    where M: ValidateurX509 + GenerateurMessages + IsConfigNoeud + CleChiffrageHandler + ConfigMessages + ChiffrageFactoryTrait
 {
     debug!("consommer_evenement Consommer evenement : {:?}", &m.message);
 
@@ -659,22 +659,25 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
     // Detecter si on doit rechiffrer et re-emettre la cles
     // Survient si on a recu une commande sur un exchange autre que 4.secure et qu'il a moins de
     // cles dans la commande que le nombre de cles de rechiffrage connues (incluant cert maitre des cles)
-    if let Some(exchange) = m.exchange.as_ref() {
-        if exchange != SECURITE_4_SECURE {
-            let pk_chiffrage = middleware.get_publickeys_chiffrage();
-            if pk_chiffrage.len() > commande.cles.len() {
-                debug!("commande_sauvegarder_cle Nouvelle cle sur exchange != 4.secure, re-emettre a l'interne");
-                let mut cle_transfert = DocumentClePartition::from(commande);
-
-                let commande_cle_rechiffree = rechiffrer_pour_maitredescles(middleware, cle_transfert)?;
-                let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
-                    .exchanges(vec![Securite::L4Secure])
-                    .build();
-                middleware.transmettre_commande(
-                    routage_commande.clone(), &commande_cle_rechiffree, false).await?;
-            }
-        }
-    }
+    // if let Some(exchange) = m.exchange.as_ref() {
+    //     if exchange != SECURITE_4_SECURE {
+    //         let pk_chiffrage = middleware.get_publickeys_chiffrage();
+    //         if pk_chiffrage.len() > commande.cles.len() {
+    //             debug!("commande_sauvegarder_cle Nouvelle cle sur exchange != 4.secure, re-emettre a l'interne");
+    //             let mut cle_transfert = DocumentClePartition::from(commande);
+    //             let cle_interne = CleInterneChiffree::try_from(cle_transfert.clone())?;
+    //             let cle_secrete = gestionnaire.handler_rechiffrage.dechiffer_cle_secrete(cle_interne)?;
+    //             let cle_rechiffrage = CleSecreteRechiffrage::from_doc_cle(cle_secrete, cle_transfert)?;
+    //             todo!("Fix me - transmettre et chiffrer");
+    //             // let commande_cle_rechiffree = rechiffrer_pour_maitredescles(middleware, cle_transfert)?;
+    //             // let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
+    //             //     .exchanges(vec![Securite::L4Secure])
+    //             //     .build();
+    //             // middleware.transmettre_commande(
+    //             //     routage_commande.clone(), &commande_cle_rechiffree, false).await?;
+    //         }
+    //     }
+    // }
 
     if Some(fingerprint) == partition_message {
         // Le message etait adresse a cette partition
@@ -1162,60 +1165,6 @@ async fn verifier_autorisation_dechiffrage_global<M>(middleware: &M, m: &Message
     Ok((false, None))
 }
 
-/// Genere une commande de sauvegarde de cles pour tous les certificats maitre des cles connus
-/// incluant le certificat de millegrille
-fn rechiffrer_pour_maitredescles<M>(middleware: &M, cle: DocumentClePartition)
-    -> Result<DocCleSymmetrique, Box<dyn Error>>
-    where M: GenerateurMessages + CleChiffrageHandler
-{
-    let enveloppe_privee = middleware.get_enveloppe_signature();
-    let fingerprint_local = enveloppe_privee.fingerprint().as_str();
-    let pk_chiffrage = middleware.get_publickeys_chiffrage();
-    let cle_locale = cle.cle.to_owned();
-    let cle_privee = enveloppe_privee.cle_privee();
-
-    todo!("fix me");
-    //
-    // let mut fingerprint_partitions = Vec::new();
-    //
-    // // Convertir la commande
-    // let mut commande_transfert = DocCleSymmetrique::from(cle);
-    //
-    // // Preparer les cles a transferer
-    // let map_cles = &mut commande_transfert.cles;
-    // map_cles.insert(fingerprint_local.to_owned(), cle_locale.clone());  // Cle locale
-    //
-    // // Cles rechiffrees
-    // for pk_item in pk_chiffrage {
-    //     let fp = pk_item.fingerprint;
-    //     let pk = pk_item.public_key;
-    //
-    //     // Conserver liste des partitions
-    //     if ! pk_item.est_cle_millegrille {
-    //         fingerprint_partitions.push(fp.clone());
-    //     }
-    //
-    //     // Rechiffrer cle
-    //     if fp.as_str() != fingerprint_local {
-    //         // match chiffrer_asymetrique(&pk, &cle_secrete) {
-    //         match rechiffrer_asymetrique_multibase(cle_privee, &pk, cle_locale.as_str()) {
-    //             Ok(cle_rechiffree) => {
-    //                 // let cle_mb = multibase::encode(Base::Base64, cle_rechiffree);
-    //                 map_cles.insert(fp, cle_rechiffree);
-    //             },
-    //             Err(e) => error!("Erreur rechiffrage cle : {:?}", e)
-    //         }
-    //     }
-    // }
-    //
-    // Ok(commande_transfert)
-}
-
-#[derive(Clone, Deserialize)]
-struct MessageListeCles {
-    cles: Vec<CleSecreteRechiffrage>
-}
-
 async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesSQLite) -> Result<(), Box<dyn Error>>
     where M: GenerateurMessages + VerificateurMessage + IsConfigNoeud + CleChiffrageHandler
 {
@@ -1300,22 +1249,6 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
             debug!("Reponse {:?}", reponse.cles);
             connexion.execute("BEGIN TRANSACTION;")?;
             for cle_rechiffree in reponse.cles.into_iter() {
-                // let hachage_bytes = commande.hachage_bytes.as_str();
-                //
-                // let cle = match commande.cles.get(fingerprint) {
-                //     Some(cle) => cle.as_str(),
-                //     None => {
-                //         let message = format!("maitredescles_ca.synchroniser_cles: Erreur validation - commande sauvegarder cles ne contient pas la cle locale ({}) : {:?}", fingerprint, commande);
-                //         warn!("{}", message);
-                //         continue
-                //     }
-                // };
-                //
-                // // Dechiffrer la cle
-                // let cle_tierce_vec: Vec<u8> = multibase::decode(cle)?.1;
-                // let cle_dechiffree = dechiffrer_asymmetrique_ed25519(
-                //     &cle_tierce_vec[..], enveloppe_privee.cle_privee())?;
-                // let cle_rechiffree = CleSecreteRechiffrage::from_commande(&cle_dechiffree, commande)?;
                 sauvegarder_cle(middleware, &gestionnaire, &connexion, cle_rechiffree)?;
             }
             connexion.execute("COMMIT;")?;
@@ -1495,7 +1428,7 @@ async fn traiter_cles_manquantes_ca<M>(
                 match charger_cle(connexion, hachage_bytes) {
                     Ok(c) => match c {
                         Some(cle) => {
-                            match rechiffrer_pour_maitredescles(middleware, cle) {
+                            match rechiffrer_pour_maitredescles_ca(middleware, cle) {
                                 Ok(c) => c,
                                 Err(e) => {
                                     error!("traiter_cles_manquantes_ca Erreur traitement rechiffrage cle : {:?}", e);
@@ -1567,7 +1500,7 @@ async fn evenement_cle_rechiffrage<M>(middleware: &M, m: MessageValideAction, ge
 
 async fn evenement_cle_manquante<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesSQLite, m: &MessageValideAction)
                                     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: ValidateurX509 + GenerateurMessages + IsConfigNoeud + CleChiffrageHandler + ConfigMessages
+    where M: ValidateurX509 + GenerateurMessages + IsConfigNoeud + CleChiffrageHandler + ConfigMessages + ChiffrageFactoryTrait
 {
     debug!("evenement_cle_manquante Verifier si on peut transmettre la cle manquante {:?}", &m.message);
     let event_non_dechiffrables: ReponseSynchroniserCles = m.message.get_msg().map_contenu()?;
@@ -1610,17 +1543,17 @@ async fn evenement_cle_manquante<M>(middleware: &M, gestionnaire: &GestionnaireM
     let mut cles = Vec::new();
     for hachage_bytes in hachages_bytes_list {
         let commande = match charger_cle(&connexion, hachage_bytes.as_str()) {
-            Ok(cle) => match cle {
-                Some(cle) => match rechiffrer_pour_maitredescles(middleware, cle) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        error!("evenement_cle_manquante Erreur traitement rechiffrage cle : {:?}", e);
+            Ok(cle) => {
+                match cle {
+                    Some(cle) => {
+                        let cle_interne = CleInterneChiffree::try_from(cle.clone())?;
+                        let cle_secrete = gestionnaire.handler_rechiffrage.dechiffer_cle_secrete(cle_interne)?;
+                        CleSecreteRechiffrage::from_doc_cle(cle_secrete, cle)?
+                    },
+                    None => {
+                        warn!("evenement_cle_manquante Cle inconnue : {:?}", hachage_bytes);
                         continue
                     }
-                },
-                None => {
-                    warn!("evenement_cle_manquante Cle inconnue : {:?}", hachage_bytes);
-                    continue
                 }
             },
             Err(e) => {
@@ -1629,23 +1562,25 @@ async fn evenement_cle_manquante<M>(middleware: &M, gestionnaire: &GestionnaireM
             }
         };
 
-        // if m.routing_key.starts_with("evenement.") {
-        //     debug!("evenement_cle_manquante Emettre cles rechiffrees : {:?}", commande);
-        //     middleware.transmettre_commande(routage_commande.clone(), &commande, false).await?;
-        // } else if commande.cles.len() > 0 {
-            cles.push(commande);
-        // }
+        cles.push(commande);
     }
 
     if cles.len() > 0 {
-        // Repondre
-        let reponse = json!({
-            "ok": true,
-            "cles": cles,
-        });
 
-        debug!("evenement_cle_manquante Emettre reponse avec {} cles", cles.len());
-        Ok(Some(middleware.formatter_reponse(reponse, None)?))
+        if est_evenement {
+            todo!("obsolete")
+        } else {
+            // Repondre
+            let reponse = json!({
+                "ok": true,
+                "cles": cles,
+            });
+
+            debug!("evenement_cle_manquante Emettre reponse avec {} cles", cles.len());
+            let reponse = middleware.formatter_reponse_chiffree(
+                middleware, reponse, enveloppe.as_ref())?;
+            Ok(Some(reponse))
+        }
     } else {
         // Si on n'a aucune cle, ne pas repondre. Un autre maitre des cles pourrait le faire
         debug!("evenement_cle_manquante On n'a aucune des cles demandees");
