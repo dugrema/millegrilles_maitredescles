@@ -841,7 +841,7 @@ async fn commande_rotation_certificat<M>(middleware: &M, m: MessageValideAction,
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    debug!("commande_rechiffrer_batch Consommer commande : {:?}", & m.message);
+    debug!("commande_rotation_certificat Consommer commande : {:?}", & m.message);
     let commande: CommandeRotationCertificat = m.message.parsed.map_contenu()?;
 
     // Verifier que le certificat est pour l'instance locale
@@ -865,7 +865,7 @@ async fn commande_rotation_certificat<M>(middleware: &M, m: MessageValideAction,
             "cle": cle_secrete_chiffree_local,
         };
 
-        debug!("commande_rechiffrer_batch Inserer cle configuration locale {:?}", cle_locale);
+        debug!("commande_rotation_certificat Inserer cle configuration locale {:?}", cle_locale);
 
         let collection = middleware.get_collection(NOM_COLLECTION_CONFIGURATION)?;
         collection.insert_one(cle_locale, None).await?;
@@ -918,109 +918,26 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + CleChiffrageHandler
 {
-    debug!("commande_rechiffrer_batch Consommer commande : {:?}", & m.message);
-    let nom_collection_cles = match gestionnaire.get_collection_cles() {
-        Some(c) => c,
-        None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Gestionnaire sans partition/certificat"))?
-    };
-
-    // Dechiffrer la cle asymmetrique pour certificat local
-    let (header, cle_secrete) = match m.message.parsed.dechiffrage.as_ref() {
-        Some(inner) => {
-            let enveloppe_privee = middleware.get_enveloppe_signature();
-            let fingerprint_local = enveloppe_privee.fingerprint().as_str();
-            let header = match inner.header.as_ref() {
-                Some(inner) => inner.as_str(),
-                None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Erreur format message, header absent"))?
-            };
-            match inner.cles.as_ref() {
-                Some(inner) => {
-                    match inner.get(fingerprint_local) {
-                        Some(inner) => {
-                            // Cle chiffree, on dechiffre
-                            let cle_bytes = multibase::decode(inner)?;
-                            let cle_secrete = dechiffrer_asymmetrique_ed25519(&cle_bytes.1[..], enveloppe_privee.cle_privee())?;
-                            (header, cle_secrete)
-                        },
-                        None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Erreur format message, dechiffrage absent"))?
-                    }
-                },
-                None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Erreur format message, dechiffrage absent"))?
-            }
-        },
-        None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Erreur format message, dechiffrage absent"))?
-    };
-
-    // Dechiffrer le contenu
-    let data_chiffre = DataChiffre {
-        ref_hachage_bytes: None,
-        data_chiffre: format!("m{}", m.message.parsed.contenu),
-        format: FormatChiffrage::mgs4,
-        header: Some(header.to_owned()),
-        tag: None,
-    };
-    debug!("commande_rechiffrer_batch Data chiffre contenu : {:?}", data_chiffre);
-
-    let cle_dechiffre = CleDechiffree {
-        cle: "m".to_string(),
-        cle_secrete,
-        domaine: "MaitreDesCles".to_string(),
-        format: "mgs4".to_string(),
-        hachage_bytes: "".to_string(),
-        identificateurs_document: None,
-        iv: None,
-        tag: None,
-        header: Some(header.to_owned()),
-        signature_identite: "".to_string(),
-    };
-
-    debug!("commande_rechiffrer_batch Dechiffrer data avec cle dechiffree");
-    let data_dechiffre = dechiffrer_data(cle_dechiffre, data_chiffre)?;
-    debug!("commande_rechiffrer_batch Data dechiffre len {}", data_dechiffre.data_dechiffre.len());
-    debug!("commande_rechiffrer_batch Data dechiffre {:?}", String::from_utf8(data_dechiffre.data_dechiffre.clone()));
-
-    let commande: CommandeRechiffrerBatch = serde_json::from_slice(&data_dechiffre.data_dechiffre[..])?;
+    let correlation_id = m.correlation_id.clone();
+    let commande = dechiffrer_batch(middleware, m)?;
     debug!("commande_rechiffrer_batch Commande parsed : {:?}", commande);
 
     let enveloppe_privee = middleware.get_enveloppe_signature();
     let fingerprint_ca = enveloppe_privee.enveloppe_ca.fingerprint.clone();
     let fingerprint = enveloppe_privee.enveloppe.fingerprint.as_str();
 
+    // debug!("commande_rechiffrer_batch Consommer commande : {:?}", &m.message);
+    let nom_collection_cles = match gestionnaire.get_collection_cles() {
+        Some(c) => c,
+        None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Gestionnaire sans partition/certificat"))?
+    };
     let collection = middleware.get_collection(nom_collection_cles.as_str())?;
 
     // Traiter chaque cle individuellement
     let liste_hachage_bytes: Vec<String> = commande.cles.iter().map(|c| c.hachage_bytes.to_owned()).collect();
     let mut liste_cle_ref: Vec<String> = Vec::new();
     for cle in commande.cles {
-
-        // let cle_chiffree_str = match cle.cles.get(fingerprint) {
-        //     Some(cle) => cle.as_str(),
-        //     None => {
-        //         debug!("maitredescles_partition.commande_rechiffrer_batch Commande rechiffrage sans fingerprint local pour cle {}", cle.hachage_bytes);
-        //         continue  // Skip
-        //     }
-        // };
-
-        let (cle_ref, cle_rechiffree) = {
-            let identite_cle: IdentiteCle = cle.clone().into();
-            let cle_info = CleRefData::from(&cle);
-
-            let cle_secrete: Vec<u8> = multibase::decode(&cle.cle_secrete)?.1;
-            let mut cle_secrete_dechiffree = CleSecrete([0u8; 32]);
-            cle_secrete_dechiffree.0.copy_from_slice(&cle_secrete[..]);
-            // let cle_secrete = extraire_cle_secrete(middleware.get_enveloppe_signature().cle_privee(), cle_chiffree_str)?;
-            let cle_ref = calculer_cle_ref(cle_info, &cle_secrete_dechiffree)?;
-
-            // if cle.verifier_identite(&cle_secrete_dechiffree)? != true {
-            if identite_cle.verifier(&cle_secrete_dechiffree)? != true {
-                warn!("maitredescles_partition.commande_sauvegarder_cle Erreur verifier identite commande, signature invalide pour cle {}", cle.hachage_bytes);
-                continue  // Skip
-            }
-
-            let cle_rechiffree = gestionnaire.handler_rechiffrage.chiffrer_cle_secrete(&cle_secrete_dechiffree.0[..])?;
-
-            (cle_ref, cle_rechiffree)
-        };
+        let (cle_ref, cle_rechiffree) = cle.rechiffrer_cle(&gestionnaire.handler_rechiffrage)?;
 
         let mut doc_cle = convertir_to_bson(cle.clone())?;
         doc_cle.remove("cleSecrete");
@@ -1046,19 +963,13 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
         let resultat = collection.update_one(filtre, ops, opts).await?;
 
         liste_cle_ref.push(cle_ref);
-
-        // // Rechiffrer pour tous les autres maitre des cles
-        // if cles_chiffrage.len() > 0 {
-        //     let commande_rechiffree = rechiffrer_pour_maitredescles(middleware, cle)?;
-        //     middleware.transmettre_commande(routage_commande.clone(), &commande_rechiffree, false).await?;
-        // }
     }
 
     // Emettre un evenement pour confirmer le traitement.
     // Utilise par le CA (confirme que les cles sont dechiffrables) et par le client (batch traitee)
     let routage_event = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_CLE_RECUE_PARTITION).build();
     let event_contenu = json!({
-        "correlation": &m.correlation_id,
+        "correlation": correlation_id,
         CHAMP_LISTE_HACHAGE_BYTES: liste_hachage_bytes,
         CHAMP_LISTE_CLE_REF: liste_cle_ref,
     });

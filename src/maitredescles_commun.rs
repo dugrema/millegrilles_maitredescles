@@ -2,10 +2,10 @@ use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use millegrilles_common_rust::certificats::{EnveloppeCertificat, EnveloppePrivee, ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chiffrage::{chiffrer_asymetrique_multibase, CleChiffrageHandler, CleSecrete, FormatChiffrage, rechiffrer_asymetrique_multibase};
-use millegrilles_common_rust::chiffrage_cle::{CommandeSauvegarderCle, IdentiteCle};
+use millegrilles_common_rust::chiffrage_cle::{CleDechiffree, CommandeSauvegarderCle, IdentiteCle};
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::formatteur_messages::MessageMilleGrille;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
@@ -16,14 +16,17 @@ use millegrilles_common_rust::recepteur_messages::{MessageValideAction, TypeMess
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::tokio::{sync::mpsc::Sender, time::{Duration, sleep}};
 use millegrilles_common_rust::certificats::ordered_map;
-use millegrilles_common_rust::common_messages::ReponseSignatureCertificat;
-use millegrilles_common_rust::{multibase, multibase::Base};
+use millegrilles_common_rust::common_messages::{DataChiffre, ReponseSignatureCertificat};
+use millegrilles_common_rust::{multibase, multibase::Base, serde_json};
+use millegrilles_common_rust::chiffrage_ed25519::dechiffrer_asymmetrique_ed25519;
 use millegrilles_common_rust::configuration::ConfigMessages;
+use millegrilles_common_rust::dechiffrage::dechiffrer_data;
 use millegrilles_common_rust::hachages::hacher_bytes;
 use millegrilles_common_rust::multibase::Base::Base58Btc;
 use millegrilles_common_rust::multihash::Code;
 use millegrilles_common_rust::serde_json::json;
 use crate::domaines_maitredescles::TypeGestionnaire;
+use crate::maitredescles_partition::GestionnaireMaitreDesClesPartition;
 use crate::maitredescles_sqlite::GestionnaireMaitreDesClesSQLite;
 use crate::maitredescles_volatil::{CleInterneChiffree, HandlerCleRechiffrage};
 
@@ -425,6 +428,90 @@ impl Into<IdentiteCle> for CleSecreteRechiffrage {
             signature_identite: self.signature_identite.clone(),
         }
     }
+}
+
+impl TryFrom<CommandeSauvegarderCle> for CleSecreteRechiffrage {
+    type Error = String;
+
+    fn try_from(value: CommandeSauvegarderCle) -> Result<Self, Self::Error> {
+        let header = match value.header {
+            Some(inner) => inner,
+            None => Err(format!("TryFrom<CommandeSauvegarderCle> Header manquant"))?
+        };
+        let format: &str = value.format.into();
+
+        Ok(Self {
+            cle_secrete: "".to_string(),
+            domaine: value.domaine,
+            format: format.to_string(),
+            hachage_bytes: value.hachage_bytes,
+            header,
+            identificateurs_document: value.identificateurs_document,
+            signature_identite: value.signature_identite,
+        })
+    }
+}
+
+impl CleSecreteRechiffrage {
+
+    // fn try_from(value: CommandeSauvegarderCle) -> Result<Self, Self::Error> {
+    pub fn from_commande(cle_secrete: &CleSecrete, value: CommandeSauvegarderCle) -> Result<Self, Box<dyn Error>> {
+        let header = match value.header {
+            Some(inner) => inner,
+            None => Err(format!("TryFrom<CommandeSauvegarderCle> Header manquant"))?
+        };
+        let cle_secrete_string: String = multibase::encode(Base::Base64, &cle_secrete.0);
+        let format: &str = value.format.into();
+        Ok(Self {
+            cle_secrete: cle_secrete_string,
+            domaine: value.domaine,
+            format: format.to_string(),
+            hachage_bytes: value.hachage_bytes,
+            header,
+            identificateurs_document: value.identificateurs_document,
+            signature_identite: value.signature_identite,
+        })
+    }
+
+    pub fn get_cle_secrete(&self) -> Result<CleSecrete, Box<dyn Error>> {
+        let cle_secrete: Vec<u8> = multibase::decode(&self.cle_secrete)?.1;
+        let mut cle_secrete_dechiffree = CleSecrete([0u8; 32]);
+        cle_secrete_dechiffree.0.copy_from_slice(&cle_secrete[..]);
+        Ok(cle_secrete_dechiffree)
+    }
+
+    fn verifier_identite(&self, cle: &CleSecrete) -> Result<(), Box<dyn Error>>{
+        let identite_cle: IdentiteCle = self.clone().into();
+        if identite_cle.verifier(cle)? != true {
+            warn!("maitredescles_common.CleSecreteRechiffrage Erreur verifier identite commande, signature invalide pour cle {}", self.hachage_bytes);
+            Err(format!("maitredescles_commun.CleSecreteRechiffrage Identite cle mismatch"))?
+        }
+        Ok(())
+    }
+
+    pub fn get_cle_ref(&self) -> Result<String, Box<dyn Error>> {
+        let cle_secrete = self.get_cle_secrete()?;
+        let cle_info = CleRefData::from(self);
+        Ok(calculer_cle_ref(cle_info, &cle_secrete)?)
+    }
+
+    /// Rechiffre la cle secrete dechiffree.
+    pub fn rechiffrer_cle(&self, handler_rechiffrage: &HandlerCleRechiffrage) -> Result<(String, CleInterneChiffree), Box<dyn Error>> {
+        let cle_secrete = self.get_cle_secrete()?;
+
+        // Verifier identite. Lance exception si invalide.
+        self.verifier_identite(&cle_secrete)?;
+
+        // Calculer cle_ref
+        let cle_info = CleRefData::from(self);
+        let cle_ref = calculer_cle_ref(cle_info, &cle_secrete)?;
+
+        // Rechiffrer cle
+        let cle_rechiffree = handler_rechiffrage.chiffrer_cle_secrete(&cle_secrete.0[..])?;
+
+        Ok((cle_ref, cle_rechiffree))
+    }
+
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -849,4 +936,69 @@ pub async fn emettre_demande_cle_symmetrique<M,S>(middleware: &M, cle_ca: S) -> 
     middleware.emettre_evenement(routage, &evenement).await?;
 
     Ok(())
+}
+
+/// Dechiffre le message kind:8 d'une batch
+pub fn dechiffrer_batch<M>(middleware: &M, m: MessageValideAction) -> Result<CommandeRechiffrerBatch, Box<dyn Error>>
+    where M: GenerateurMessages + CleChiffrageHandler
+{
+    // Dechiffrer la cle asymmetrique pour certificat local
+    let (header, cle_secrete) = match m.message.parsed.dechiffrage.as_ref() {
+        Some(inner) => {
+            let enveloppe_privee = middleware.get_enveloppe_signature();
+            let fingerprint_local = enveloppe_privee.fingerprint().as_str();
+            let header = match inner.header.as_ref() {
+                Some(inner) => inner.as_str(),
+                None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Erreur format message, header absent"))?
+            };
+            match inner.cles.as_ref() {
+                Some(inner) => {
+                    match inner.get(fingerprint_local) {
+                        Some(inner) => {
+                            // Cle chiffree, on dechiffre
+                            let cle_bytes = multibase::decode(inner)?;
+                            let cle_secrete = dechiffrer_asymmetrique_ed25519(&cle_bytes.1[..], enveloppe_privee.cle_privee())?;
+                            (header, cle_secrete)
+                        },
+                        None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Erreur format message, dechiffrage absent"))?
+                    }
+                },
+                None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Erreur format message, dechiffrage absent"))?
+            }
+        },
+        None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Erreur format message, dechiffrage absent"))?
+    };
+
+    // Dechiffrer le contenu
+    let data_chiffre = DataChiffre {
+        ref_hachage_bytes: None,
+        data_chiffre: format!("m{}", m.message.parsed.contenu),
+        format: FormatChiffrage::mgs4,
+        header: Some(header.to_owned()),
+        tag: None,
+    };
+    debug!("commande_rechiffrer_batch Data chiffre contenu : {:?}", data_chiffre);
+
+    let cle_dechiffre = CleDechiffree {
+        cle: "m".to_string(),
+        cle_secrete,
+        domaine: "MaitreDesCles".to_string(),
+        format: "mgs4".to_string(),
+        hachage_bytes: "".to_string(),
+        identificateurs_document: None,
+        iv: None,
+        tag: None,
+        header: Some(header.to_owned()),
+        signature_identite: "".to_string(),
+    };
+
+    debug!("commande_rechiffrer_batch Dechiffrer data avec cle dechiffree");
+    let data_dechiffre = dechiffrer_data(cle_dechiffre, data_chiffre)?;
+    debug!("commande_rechiffrer_batch Data dechiffre len {}", data_dechiffre.data_dechiffre.len());
+    debug!("commande_rechiffrer_batch Data dechiffre {:?}", String::from_utf8(data_dechiffre.data_dechiffre.clone()));
+
+    let commande: CommandeRechiffrerBatch = serde_json::from_slice(&data_dechiffre.data_dechiffre[..])?;
+    debug!("commande_rechiffrer_batch Commande parsed : {:?}", commande);
+
+    Ok(commande)
 }

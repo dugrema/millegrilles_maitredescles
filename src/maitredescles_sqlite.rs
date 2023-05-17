@@ -11,7 +11,7 @@ use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{doc, Document};
 use millegrilles_common_rust::certificats::{EnveloppeCertificat, EnveloppePrivee, ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::common_messages::RequeteVerifierPreuve;
-use millegrilles_common_rust::chiffrage::{Chiffreur, CleChiffrageHandler, extraire_cle_secrete, FormatChiffrage, rechiffrer_asymetrique_multibase};
+use millegrilles_common_rust::chiffrage::{Chiffreur, CleChiffrageHandler, CleSecrete, extraire_cle_secrete, FormatChiffrage, rechiffrer_asymetrique_multibase};
 use millegrilles_common_rust::chiffrage_cle::CommandeSauvegarderCle;
 use millegrilles_common_rust::chiffrage_ed25519::dechiffrer_asymmetrique_ed25519;
 use millegrilles_common_rust::chrono::{Duration, Utc};
@@ -106,7 +106,7 @@ impl GestionnaireMaitreDesClesSQLite {
 
         let sqlite_path = middleware.get_configuration_noeud().sqlite_path.as_ref().expect("preparer_database sqlite");
         let db_path = format!("{}/maitredescles.sqlite", sqlite_path);
-        debug!("Ouverture fichier sqlite : {}", db_path);
+        info!("Ouverture fichier sqlite : {}", db_path);
         if read_only {
             let flags = sqlite::OpenFlags::new().set_read_only();
             Connection::open_with_flags(db_path, flags).expect("preparer_database open sqlite")
@@ -626,23 +626,28 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
         }
     };
 
+    let enveloppe_privee = middleware.get_enveloppe_signature();
+    let cle_tierce_vec: Vec<u8> = multibase::decode(cle)?.1;
+    let cle_dechiffree = dechiffrer_asymmetrique_ed25519(
+        &cle_tierce_vec[..], enveloppe_privee.cle_privee())?;
+    let cle_rechiffrage = CleSecreteRechiffrage::from_commande(&cle_dechiffree, commande.clone())?;
+
     // Valider identite, calculer cle_ref
-    let cle_ref = {
-        let cle_secrete = extraire_cle_secrete(middleware.get_enveloppe_signature().cle_privee(), cle)?;
-        if commande.verifier_identite(&cle_secrete)? != true {
-            Err(format!("maitredescles_partition.commande_sauvegarder_cle Erreur verifier identite commande, signature invalide"))?
-        }
-        let cle_info = CleRefData::from(&commande);
-        calculer_cle_ref(cle_info, &cle_secrete)?
-    };
+    // let cle_ref = {
+    //     let cle_secrete = extraire_cle_secrete(middleware.get_enveloppe_signature().cle_privee(), cle)?;
+    //     if commande.verifier_identite(&cle_secrete)? != true {
+    //         Err(format!("maitredescles_partition.commande_sauvegarder_cle Erreur verifier identite commande, signature invalide"))?
+    //     }
+    //     let cle_info = CleRefData::from(&commande);
+    //     calculer_cle_ref(cle_info, &cle_secrete)?
+    // };
 
     {
         let connexion_guard = gestionnaire.ouvrir_connection_sauvegardercle(middleware)
             .lock().expect("requete_dechiffrage connection lock");
         let connexion = connexion_guard.as_ref().expect("requete_dechiffrage connection Some");
         connexion.execute("BEGIN;")?;
-        match sauvegarder_cle(middleware, &gestionnaire, connexion,
-                              fingerprint, cle, &commande) {
+        match sauvegarder_cle(middleware, &gestionnaire, connexion, cle_rechiffrage) {
             Ok(()) => connexion.execute("COMMIT;")?,
             Err(e) => {
                 connexion.execute("ROLLBACK;")?;
@@ -685,10 +690,46 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
     where M: GenerateurMessages + IsConfigNoeud + CleChiffrageHandler
 {
     debug!("commande_rechiffrer_batch Consommer commande : {:?}", & m.message);
-    let fingerprint = gestionnaire.handler_rechiffrage.fingerprint();
+    let correlation_id = m.correlation_id.clone();
+    let commande = dechiffrer_batch(middleware, m)?;
 
-    let commande: CommandeRechiffrerBatch = m.message.get_msg().map_contenu()?;
-    debug!("commande_rechiffrer_batch Commande parsed : {:?}", commande);
+    // let nom_collection_cles = match gestionnaire.get_collection_cles() {
+    //     Some(c) => c,
+    //     None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Gestionnaire sans partition/certificat"))?
+    // };
+    //
+    // // Dechiffrer la cle asymmetrique pour certificat local
+    // let (header, cle_secrete) = match m.message.parsed.dechiffrage.as_ref() {
+    //     Some(inner) => {
+    //         let enveloppe_privee = middleware.get_enveloppe_signature();
+    //         let fingerprint_local = enveloppe_privee.fingerprint().as_str();
+    //         let header = match inner.header.as_ref() {
+    //             Some(inner) => inner.as_str(),
+    //             None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Erreur format message, header absent"))?
+    //         };
+    //         match inner.cles.as_ref() {
+    //             Some(inner) => {
+    //                 match inner.get(fingerprint_local) {
+    //                     Some(inner) => {
+    //                         // Cle chiffree, on dechiffre
+    //                         let cle_bytes = multibase::decode(inner)?;
+    //                         let cle_secrete = dechiffrer_asymmetrique_ed25519(&cle_bytes.1[..], enveloppe_privee.cle_privee())?;
+    //                         (header, cle_secrete)
+    //                     },
+    //                     None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Erreur format message, dechiffrage absent"))?
+    //                 }
+    //             },
+    //             None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Erreur format message, dechiffrage absent"))?
+    //         }
+    //     },
+    //     None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Erreur format message, dechiffrage absent"))?
+    // };
+    //
+    // debug!("commande_rechiffrer_batch Consommer commande : {:?}", & m.message);
+    // let fingerprint = gestionnaire.handler_rechiffrage.fingerprint();
+    //
+    // let commande: CommandeRechiffrerBatch = m.message.get_msg().map_contenu()?;
+    // debug!("commande_rechiffrer_batch Commande parsed : {:?}", commande);
 
     let connexion = gestionnaire.ouvrir_connection(middleware, false);
 
@@ -705,46 +746,45 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
     let mut liste_cle_ref: Vec<String> = Vec::new();
     connexion.execute("BEGIN TRANSACTION;")?;
 
-    todo!("fix me");
+    for info_cle in commande.cles {
+        debug!("commande_rechiffrer_batch Cle {:?}", info_cle);
+        // let commande: CommandeSauvegarderCle = info_cle.clone().into_commande(fingerprint.as_str());
 
-    // for info_cle in commande.cles {
-    //     debug!("commande_rechiffrer_batch Cle {:?}", info_cle);
-    //     // let commande: CommandeSauvegarderCle = info_cle.clone().into_commande(fingerprint.as_str());
-    //
-    //     let cle_chiffree_str = match info_cle.cles.get(fingerprint) {
-    //         Some(cle) => cle.as_str(),
-    //         None => {
-    //             debug!("maitredescles_sqlite.commande_rechiffrer_batch Commande rechiffrage sans fingerprint local pour cle {}", info_cle.hachage_bytes);
-    //             continue  // Skip
-    //         }
-    //     };
-    //
-    //     let cle_ref = {
-    //         let cle_secrete = extraire_cle_secrete(middleware.get_enveloppe_signature().cle_privee(), cle_chiffree_str)?;
-    //         if info_cle.verifier_identite(&cle_secrete)? != true {
-    //             warn!("maitredescles_sqlite.commande_sauvegarder_cle Erreur verifier identite commande, signature invalide pour cle {}", info_cle.hachage_bytes);
-    //             continue  // Skip
-    //         }
-    //         calculer_cle_ref(&info_cle, &cle_secrete)?
-    //     };
-    //
-    //     sauvegarder_cle(middleware, &gestionnaire, &connexion, fingerprint, cle_chiffree_str, &info_cle)?;
-    //
-    //     liste_cle_ref.push(cle_ref);
-    // }
-    // connexion.execute("COMMIT;")?;
-    //
-    // // Emettre un evenement pour confirmer le traitement.
-    // // Utilise par le CA (confirme que les cles sont dechiffrables) et par le client (batch traitee)
-    // let routage_event = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_CLE_RECUE_PARTITION).build();
-    // let event_contenu = json!({
-    //     "correlation": &m.correlation_id,
-    //     "liste_hachage_bytes": liste_hachage_bytes,
-    //     CHAMP_LISTE_CLE_REF: liste_cle_ref,
-    // });
-    // middleware.emettre_evenement(routage_event, &event_contenu).await?;
-    //
-    // Ok(middleware.reponse_ok()?)
+        // let cle_chiffree_str = match info_cle.cles.get(fingerprint) {
+        //     Some(cle) => cle.as_str(),
+        //     None => {
+        //         debug!("maitredescles_sqlite.commande_rechiffrer_batch Commande rechiffrage sans fingerprint local pour cle {}", info_cle.hachage_bytes);
+        //         continue  // Skip
+        //     }
+        // };
+
+        // let cle_ref = {
+        //     let cle_secrete = extraire_cle_secrete(middleware.get_enveloppe_signature().cle_privee(), cle_chiffree_str)?;
+        //     if info_cle.verifier_identite(&cle_secrete)? != true {
+        //         warn!("maitredescles_sqlite.commande_sauvegarder_cle Erreur verifier identite commande, signature invalide pour cle {}", info_cle.hachage_bytes);
+        //         continue  // Skip
+        //     }
+        //     calculer_cle_ref(&info_cle, &cle_secrete)?
+        // };
+
+        let cle_ref = info_cle.get_cle_ref()?;
+        sauvegarder_cle(middleware, &gestionnaire, &connexion, info_cle)?;
+
+        liste_cle_ref.push(cle_ref);
+    }
+    connexion.execute("COMMIT;")?;
+
+    // Emettre un evenement pour confirmer le traitement.
+    // Utilise par le CA (confirme que les cles sont dechiffrables) et par le client (batch traitee)
+    let routage_event = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_CLE_RECUE_PARTITION).build();
+    let event_contenu = json!({
+        "correlation": correlation_id,
+        "liste_hachage_bytes": liste_hachage_bytes,
+        CHAMP_LISTE_CLE_REF: liste_cle_ref,
+    });
+    middleware.emettre_evenement(routage_event, &event_contenu).await?;
+
+    Ok(middleware.reponse_ok()?)
 }
 
 async fn aiguillage_transaction<M, T>(_middleware: &M, transaction: T, _gestionnaire: &GestionnaireMaitreDesClesSQLite) -> Result<Option<MessageMilleGrille>, String>
@@ -946,11 +986,19 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
                     for cle in liste_cles {
                         let commande: CommandeSauvegarderCle = cle.clone().into();
                         if let Some(cle_str) = cle.cles.get(fingerprint) {
-                            let cle_secrete = extraire_cle_secrete(middleware.get_enveloppe_signature().cle_privee(), cle_str.as_str())?;
-                            let cle_info = CleRefData::from(&commande);
-                            let cle_ref = calculer_cle_ref(cle_info, &cle_secrete)?;
-                            debug!("requete_dechiffrage.requete_cles_inconnues Sauvegarder cle_ref {} / hachage_bytes {}", cle_ref, cle.hachage_bytes);
-                            sauvegarder_cle(middleware, &gestionnaire, &connexion, fingerprint, cle_str, &commande)?;
+                            // let cle_secrete = extraire_cle_secrete(middleware.get_enveloppe_signature().cle_privee(), cle_str.as_str())?;
+                            // let cle_info = CleRefData::from(&commande);
+                            // let cle_ref = calculer_cle_ref(cle_info, &cle_secrete)?;
+                            // debug!("requete_dechiffrage.requete_cles_inconnues Sauvegarder cle_ref {} / hachage_bytes {}", cle_ref, cle.hachage_bytes);
+
+                            let cle_tierce_vec: Vec<u8> = multibase::decode(cle_str)?.1;
+                            let cle_dechiffree = dechiffrer_asymmetrique_ed25519(
+                                &cle_tierce_vec[..], enveloppe_privee.cle_privee())?;
+                            let cle_rechiffrage = CleSecreteRechiffrage::from_commande(&cle_dechiffree, commande)?;
+
+                            let cle_ref = cle_rechiffrage.get_cle_ref()?;
+
+                            sauvegarder_cle(middleware, &gestionnaire, &connexion, cle_rechiffrage)?;
                             let doc_cle = DocumentClePartition::try_into_document_cle_partition(cle, fingerprint, cle_ref)?;
                             cles.insert(fingerprint.to_string(), doc_cle);
                         }
@@ -1008,6 +1056,8 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
         }
     }
 
+    todo!("fix me")
+
     // // Preparer une liste de verification pour chaque cle par hachage_bytes
     // let mut map_hachage_bytes = HashMap::new();
     // for cle in requete.cles.into_iter() {
@@ -1059,8 +1109,6 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValideAction, gest
     //         // }
     //     }
     // }
-
-    todo!("Fix me")
 
     // // Verifier toutes les cles qui n'ont pas ete identifiees dans la base de donnees (inconnues)
     // let liste_inconnues: Vec<String> = liste_verification.iter().filter(|(k, v)| match v {
@@ -1306,7 +1354,12 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
                         }
                     };
 
-                    sauvegarder_cle(middleware, &gestionnaire, &connexion, fingerprint, cle, &commande)?;
+                    // Dechiffrer la cle
+                    let cle_tierce_vec: Vec<u8> = multibase::decode(cle)?.1;
+                    let cle_dechiffree = dechiffrer_asymmetrique_ed25519(
+                        &cle_tierce_vec[..], enveloppe_privee.cle_privee())?;
+                    let cle_rechiffree = CleSecreteRechiffrage::from_commande(&cle_dechiffree, commande)?;
+                    sauvegarder_cle(middleware, &gestionnaire, &connexion, cle_rechiffree)?;
                 }
                 connexion.execute("COMMIT;")?;
             }
@@ -1611,32 +1664,43 @@ async fn evenement_cle_manquante<M>(middleware: &M, gestionnaire: &GestionnaireM
     }
 }
 
-fn sauvegarder_cle<M,S,T>(
+// fn sauvegarder_cle<M,S,T>(
+//     middleware: &M, gestionnaire: &GestionnaireMaitreDesClesSQLite, connection: &Connection,
+//     fingerprint_: S, cle_: T, commande: &CommandeSauvegarderCle
+// )
+//     -> Result<(), Box<dyn Error>>
+//     where M: FormatteurMessage, S: AsRef<str>, T: AsRef<str>
+fn sauvegarder_cle<M>(
     middleware: &M, gestionnaire: &GestionnaireMaitreDesClesSQLite, connection: &Connection,
-    fingerprint_: S, cle_: T, commande: &CommandeSauvegarderCle
+    info_cle: CleSecreteRechiffrage
 )
     -> Result<(), Box<dyn Error>>
-    where M: FormatteurMessage, S: AsRef<str>, T: AsRef<str>
+    where M: FormatteurMessage
 {
-    let cle = cle_.as_ref();
-    let fingerprint = fingerprint_.as_ref();
-    let hachage_bytes = commande.hachage_bytes.as_str();
+    // let hachage_bytes = commande.hachage_bytes.as_str();
 
-    let (cle_ref, cle_chiffree) = {
-        let cle_secrete = extraire_cle_secrete(middleware.get_enveloppe_signature().cle_privee(), cle)?;
-        if commande.verifier_identite(&cle_secrete)? != true {
-            Err(format!("maitredescles_partition.commande_sauvegarder_cle Erreur verifier identite commande, signature invalide"))?
-        }
+    // let cle_secrete = CleSecrete ( [0u8; 32] );
+    // let cle_secrete: Vec<u8> = multibase::decode(info_cle.cle_secrete.as_str())?.1;
 
-        // Chiffrer avec cle symmetrique locale
-        let handler_rechiffrage = &gestionnaire.handler_rechiffrage;
-        let cle_chiffree = handler_rechiffrage.chiffrer_cle_secrete(&cle_secrete.0[..])?;
+    // let (cle_ref, cle_chiffree) = {
+    //     let cle_secrete = extraire_cle_secrete(middleware.get_enveloppe_signature().cle_privee(), cle)?;
+    //     if commande.verifier_identite(&cle_secrete)? != true {
+    //         Err(format!("maitredescles_partition.commande_sauvegarder_cle Erreur verifier identite commande, signature invalide"))?
+    //     }
+    //
+    //     // Chiffrer avec cle symmetrique locale
+    //     let handler_rechiffrage = &gestionnaire.handler_rechiffrage;
+    //     let cle_chiffree = handler_rechiffrage.chiffrer_cle_secrete(&cle_secrete.0[..])?;
+    //
+    //     let cle_info = CleRefData::from(commande);
+    //     let cle_ref = calculer_cle_ref(cle_info, &cle_secrete)?;
+    //
+    //     (cle_ref, cle_chiffree)
+    // };
 
-        let cle_info = CleRefData::from(commande);
-        let cle_ref = calculer_cle_ref(cle_info, &cle_secrete)?;
-
-        (cle_ref, cle_chiffree)
-    };
+    let hachage_bytes = info_cle.hachage_bytes.as_str();
+    let (cle_ref, cle_chiffree) = info_cle.rechiffrer_cle(
+        &gestionnaire.handler_rechiffrage)?;
 
     {
         let mut prepared_statement_verifier = connection
@@ -1661,43 +1725,46 @@ fn sauvegarder_cle<M,S,T>(
             VALUES(?, ?, ?)
         ")?;
 
-    let format_str: String = serde_json::to_string(&commande.format)?.replace("\"", "");
+    let format_str: String = serde_json::to_string(&info_cle.format)?.replace("\"", "");
 
-    let iv_str = match &commande.iv {
-        Some(iv) => Some(iv.as_str()),
-        None => None,
-    };
-    let tag_str = match &commande.tag {
-        Some(tag) => Some(tag.as_str()),
-        None => None,
-    };
-    let header_str = match &commande.header {
-        Some(header) => Some(header.as_str()),
-        None => None,
-    };
+    let iv_str = None::<&str>;
+    // let iv_str = match &info_cle.iv {
+    //     Some(iv) => Some(iv.as_str()),
+    //     None => None,
+    // };
+    let tag_str = None::<&str>;
+    // let tag_str = match &info_cle.tag {
+    //     Some(tag) => Some(tag.as_str()),
+    //     None => None,
+    // };
+    let header_str = info_cle.header.as_str();
+    // let header_str = match &info_cle.header {
+    //     Some(header) => Some(header.as_str()),
+    //     None => None,
+    // };
 
     prepared_statement_cle.bind(1, cle_ref.as_str())?;
-    prepared_statement_cle.bind(2, commande.hachage_bytes.as_str())?;
-    prepared_statement_cle.bind(3, cle)?;
+    prepared_statement_cle.bind(2, hachage_bytes)?;
+    prepared_statement_cle.bind(3, "")?;  // Cle asymmetrique (obsolete)
     prepared_statement_cle.bind(4, iv_str)?;
     prepared_statement_cle.bind(5, tag_str)?;
     prepared_statement_cle.bind(6, header_str)?;
     prepared_statement_cle.bind(7, cle_chiffree.cle.as_str())?;
     prepared_statement_cle.bind(8, cle_chiffree.nonce.as_str())?;
     prepared_statement_cle.bind(9, format_str.as_str())?;
-    prepared_statement_cle.bind(10, commande.domaine.as_str())?;
+    prepared_statement_cle.bind(10, info_cle.domaine.as_str())?;
     prepared_statement_cle.bind(11, 0)?;
-    prepared_statement_cle.bind(12, commande.signature_identite.as_str())?;
+    prepared_statement_cle.bind(12, info_cle.signature_identite.as_str())?;
 
-    debug!("Conserver cle dans sqlite : {}", commande.hachage_bytes);
+    debug!("Conserver cle dans sqlite : {}", hachage_bytes);
     let resultat = prepared_statement_cle.next()?;
     debug!("Resultat ajout cle dans sqlite : {:?}", resultat);
 
     if State::Done != resultat {
-        Err(format!("Erreur insertion cle {:?} (Resultat {:?})", commande.hachage_bytes, resultat))?
+        Err(format!("Erreur insertion cle {:?} (Resultat {:?})", hachage_bytes, resultat))?
     }
 
-    for (cle, valeur) in &commande.identificateurs_document {
+    for (cle, valeur) in &info_cle.identificateurs_document {
         prepared_statement_identificateurs.bind(1, cle_ref.as_str())?;
         prepared_statement_identificateurs.bind(2, cle.as_str())?;
         prepared_statement_identificateurs.bind(3, valeur.as_str())?;
