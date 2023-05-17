@@ -48,6 +48,9 @@ pub const COMMANDE_CLE_SYMMETRIQUE: &str = "cleSymmetrique";
 
 pub const TRANSACTION_CLE: &str = "cle";
 
+pub const CHAMP_CLE_SYMMETRIQUE: &str = "cle_symmetrique";
+pub const CHAMP_NONCE_SYMMETRIQUE: &str = "nonce_symmetrique";
+
 // pub const EVENEMENT_RESET_CLES_NON_DECHIFFRABLES: &str = "resetClesNonDechiffrables";
 pub const EVENEMENT_CLES_MANQUANTES_PARTITION: &str = "clesManquantesPartition";
 pub const EVENEMENT_CLE_RECUE_PARTITION: &str = "cleRecuePartition";
@@ -402,8 +405,31 @@ pub struct ReponseConfirmerClesSurCa {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CleSecreteRechiffrage {
+    #[serde(rename="cleSecrete")]
+    pub cle_secrete: String,
+    pub domaine: String,
+    pub format: String,
+    pub hachage_bytes: String,
+    pub header: String,
+    pub identificateurs_document: HashMap<String, String>,
+    pub signature_identite: String,
+}
+
+impl Into<IdentiteCle> for CleSecreteRechiffrage {
+    fn into(self) -> IdentiteCle {
+        IdentiteCle {
+            hachage_bytes: self.hachage_bytes.clone(),
+            domaine: self.domaine.clone(),
+            identificateurs_document: self.identificateurs_document.clone(),
+            signature_identite: self.signature_identite.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CommandeRechiffrerBatch {
-    pub cles: Vec<CommandeSauvegarderCle>
+    pub cles: Vec<CleSecreteRechiffrage>
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -664,17 +690,49 @@ pub struct GestionnaireRessources {
     pub routing: Mutex<HashMap<String, Sender<TypeMessage>>>,
 }
 
+pub struct CleRefData<'a> {
+    hachage_bytes: &'a str,
+    iv: Option<&'a str>,
+    tag: Option<&'a str>,
+    header: Option<&'a str>,
+    domaine: &'a str,
+}
+
+impl<'a> From<&'a CommandeSauvegarderCle> for CleRefData<'a> {
+    fn from(value: &'a CommandeSauvegarderCle) -> Self {
+        Self {
+            hachage_bytes: value.hachage_bytes.as_str(),
+            iv: match value.iv.as_ref() { Some(inner) => Some(inner.as_str()), None => None },
+            tag: match value.tag.as_ref() { Some(inner) => Some(inner.as_str()), None => None },
+            header: match value.header.as_ref() { Some(inner) => Some(inner.as_str()), None => None },
+            domaine: value.domaine.as_str(),
+        }
+    }
+}
+
+impl<'a> From<&'a CleSecreteRechiffrage> for CleRefData<'a> {
+    fn from(value: &'a CleSecreteRechiffrage) -> Self {
+        Self {
+            hachage_bytes: value.hachage_bytes.as_str(),
+            iv: None,
+            tag: None,
+            header: Some(value.header.as_str()),
+            domaine: value.domaine.as_str(),
+        }
+    }
+}
+
 /// Calcule la cle_ref a partir du hachage et cle_secret d'une cle recue (commande/transaction)
-pub fn calculer_cle_ref(commande: &CommandeSauvegarderCle, cle_secrete: &CleSecrete) -> Result<String, String>
+pub fn calculer_cle_ref(info: CleRefData, cle_secrete: &CleSecrete) -> Result<String, String>
 {
-    let hachage_bytes_str = commande.hachage_bytes.as_str();
+    let hachage_bytes_str = info.hachage_bytes;
     let mut hachage_src_bytes: Vec<u8> = match multibase::decode(hachage_bytes_str) {
         Ok(b) => b.1,
         Err(e) => Err(format!("calculer_cle_ref Erreur decodage multibase hachage_bytes : {:?}", e))?
     };
 
     // Ajouter iv, tag, header si presents
-    if let Some(iv) = commande.iv.as_ref() {
+    if let Some(iv) = info.iv {
         let mut iv_bytes: Vec<u8> = match multibase::decode(iv) {
             Ok(b) => b.1,
             Err(e) => Err(format!("calculer_cle_ref Erreur decodage multibase iv : {:?}", e))?
@@ -682,7 +740,7 @@ pub fn calculer_cle_ref(commande: &CommandeSauvegarderCle, cle_secrete: &CleSecr
         hachage_src_bytes.extend(&iv_bytes[..]);
     }
 
-    if let Some(tag) = commande.tag.as_ref() {
+    if let Some(tag) = info.tag {
         let mut tag_bytes: Vec<u8> = match multibase::decode(tag) {
             Ok(b) => b.1,
             Err(e) => Err(format!("calculer_cle_ref Erreur decodage multibase tag : {:?}", e))?
@@ -690,7 +748,7 @@ pub fn calculer_cle_ref(commande: &CommandeSauvegarderCle, cle_secrete: &CleSecr
         hachage_src_bytes.extend(&tag_bytes[..]);
     }
 
-    if let Some(header) = commande.header.as_ref() {
+    if let Some(header) = info.header {
         let mut header_bytes: Vec<u8> = match multibase::decode(header) {
             Ok(b) => b.1,
             Err(e) => Err(format!("calculer_cle_ref Erreur decodage multibase header : {:?}", e))?
@@ -702,7 +760,7 @@ pub fn calculer_cle_ref(commande: &CommandeSauvegarderCle, cle_secrete: &CleSecr
     hachage_src_bytes.extend(cle_secrete.0);
 
     // Ajouter domaine
-    let domaine = commande.domaine.as_str();
+    let domaine = info.domaine;
     hachage_src_bytes.extend(domaine.as_bytes());
 
     // Hacher
