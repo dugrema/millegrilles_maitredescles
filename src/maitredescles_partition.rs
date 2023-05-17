@@ -1631,7 +1631,7 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
 async fn confirmer_cles_ca<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition, reset_flag: Option<bool>) -> Result<(), Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + VerificateurMessage + CleChiffrageHandler
 {
-    let batch_size = 50;
+    let batch_size = 200;
     let nom_collection = match gestionnaire.get_collection_cles() {
         Some(n) => n,
         None => Err(format!("maitredescles_partition.confirmer_cles_ca Collection cles n'est pas definie"))?
@@ -1759,7 +1759,8 @@ async fn traiter_cles_manquantes_ca<M>(
                 Ok(cle) => {
                     match convertir_bson_deserializable::<DocumentClePartition>(cle) {
                         Ok(c) => {
-                            match rechiffrer_pour_maitredescles_ca(middleware, c) {
+                            match rechiffrer_pour_maitredescles_ca(
+                                middleware, &gestionnaire.handler_rechiffrage, c) {
                                 Ok(c) => c,
                                 Err(e) => {
                                     error!("traiter_cles_manquantes_ca Erreur traitement rechiffrage cle : {:?}", e);

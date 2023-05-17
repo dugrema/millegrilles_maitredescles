@@ -513,7 +513,16 @@ async fn requete_cles_non_dechiffrables<M>(middleware: &M, m: MessageValideActio
             None => 1000 as u64
         };
 
-        let mut filtre = doc! { CHAMP_NON_DECHIFFRABLE: true };
+        let (skip_docs, mut filtre) = match requete.skip {
+            Some(inner) => {
+                let filtre = doc! {};
+                (inner, filtre)
+            },
+            None => {
+                let filtre = doc! {CHAMP_NON_DECHIFFRABLE: true};
+                (0 as u64, filtre)
+            }
+        };
 
         match requete.date_creation_min {
             Some(d) => {
@@ -537,6 +546,7 @@ async fn requete_cles_non_dechiffrables<M>(middleware: &M, m: MessageValideActio
         let opts = FindOptions::builder()
             .hint(hint)
             // .sort(sort_doc)
+            .skip(skip_docs)
             .limit(Some(limite_docs as i64))
             .build();
         debug!("requete_cles_non_dechiffrables filtre cles a rechiffrer : filtre {:?} opts {:?}", filtre, opts);
@@ -574,6 +584,7 @@ async fn requete_cles_non_dechiffrables<M>(middleware: &M, m: MessageValideActio
 struct RequeteClesNonDechiffrable {
     limite: Option<u64>,
     // page: Option<u64>,
+    skip: Option<u64>,
     date_creation_min: Option<DateEpochSeconds>,
     exclude_hachage_bytes: Option<Vec<String>>
 }

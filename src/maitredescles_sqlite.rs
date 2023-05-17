@@ -1428,7 +1428,8 @@ async fn traiter_cles_manquantes_ca<M>(
                 match charger_cle(connexion, hachage_bytes) {
                     Ok(c) => match c {
                         Some(cle) => {
-                            match rechiffrer_pour_maitredescles_ca(middleware, cle) {
+                            match rechiffrer_pour_maitredescles_ca(
+                                middleware, &gestionnaire.handler_rechiffrage, cle) {
                                 Ok(c) => c,
                                 Err(e) => {
                                     error!("traiter_cles_manquantes_ca Erreur traitement rechiffrage cle : {:?}", e);

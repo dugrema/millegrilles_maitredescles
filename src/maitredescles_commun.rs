@@ -18,7 +18,7 @@ use millegrilles_common_rust::tokio::{sync::mpsc::Sender, time::{Duration, sleep
 use millegrilles_common_rust::certificats::ordered_map;
 use millegrilles_common_rust::common_messages::{DataChiffre, ReponseSignatureCertificat};
 use millegrilles_common_rust::{multibase, multibase::Base, serde_json};
-use millegrilles_common_rust::chiffrage_ed25519::dechiffrer_asymmetrique_ed25519;
+use millegrilles_common_rust::chiffrage_ed25519::{chiffrer_asymmetrique_ed25519, dechiffrer_asymmetrique_ed25519};
 use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::dechiffrage::dechiffrer_data;
 use millegrilles_common_rust::hachages::hacher_bytes;
@@ -968,44 +968,57 @@ pub struct MessageListeCles {
 
 /// Genere une commande de sauvegarde de cles pour tous les certificats maitre des cles connus
 /// incluant le certificat de millegrille
-pub fn rechiffrer_pour_maitredescles_ca<M>(middleware: &M, cle: DocumentClePartition)
-    -> Result<DocCleSymmetrique, Box<dyn Error>>
+pub fn rechiffrer_pour_maitredescles_ca<M>(middleware: &M, handler: &HandlerCleRechiffrage, cle: DocumentClePartition)
+    -> Result<CommandeSauvegarderCle, Box<dyn Error>>
     where M: GenerateurMessages + CleChiffrageHandler
 {
     let enveloppe_privee = middleware.get_enveloppe_signature();
-    let fingerprint_local = enveloppe_privee.fingerprint().as_str();
-    let pk_chiffrage = middleware.get_publickeys_chiffrage();
-    let cle_locale = cle.cle.to_owned();
-    let cle_privee = enveloppe_privee.cle_privee();
-
-    let mut fingerprint_partitions = Vec::new();
-    let mut map_cles = HashMap::new();
+    // let fingerprint_local = enveloppe_privee.fingerprint().as_str();
+    // let pk_chiffrage = middleware.get_publickeys_chiffrage();
+    // let cle_locale = cle.cle.to_owned();
+    // let cle_privee = enveloppe_privee.cle_privee();
+    //
+    // let mut fingerprint_partitions = Vec::new();
 
     // Convertir la commande
-    let mut commande_transfert = DocCleSymmetrique::from(cle);
+    // let mut commande_transfert = DocCleSymmetrique::from(cle);
+    let mut commande_transfert = cle.clone().into_commande("");
+    commande_transfert.cles = HashMap::new();
+
+    // Ajouter cle rechiffree pour CA
+    {
+        let cle_interne = CleInterneChiffree::try_from(cle.clone())?;
+        let cle_secrete = handler.dechiffer_cle_secrete(cle_interne)?;
+        let cle_publique_ca = &enveloppe_privee.enveloppe_ca.cle_publique;
+
+        let cle_rechiffree = chiffrer_asymmetrique_ed25519(&cle_secrete.0[..], cle_publique_ca)?;
+        let cle_ca_str = multibase::encode(Base::Base64, cle_rechiffree);
+        let cle_ca_fingerprint = enveloppe_privee.enveloppe_ca.fingerprint.as_str();
+        commande_transfert.cles.insert(cle_ca_fingerprint.to_owned(), cle_ca_str);
+    };
 
     // Cles rechiffrees
-    for pk_item in pk_chiffrage {
-        let fp = pk_item.fingerprint;
-        let pk = pk_item.public_key;
-
-        // Conserver liste des partitions
-        if ! pk_item.est_cle_millegrille {
-            fingerprint_partitions.push(fp.clone());
-        }
-
-        // Rechiffrer cle
-        if fp.as_str() != fingerprint_local {
-            // match chiffrer_asymetrique(&pk, &cle_secrete) {
-            match rechiffrer_asymetrique_multibase(cle_privee, &pk, cle_locale.as_str()) {
-                Ok(cle_rechiffree) => {
-                    // let cle_mb = multibase::encode(Base::Base64, cle_rechiffree);
-                    map_cles.insert(fp, cle_rechiffree);
-                },
-                Err(e) => error!("Erreur rechiffrage cle : {:?}", e)
-            }
-        }
-    }
+    // for pk_item in pk_chiffrage {
+    //     let fp = pk_item.fingerprint;
+    //     let pk = pk_item.public_key;
+    //
+    //     // Conserver liste des partitions
+    //     if ! pk_item.est_cle_millegrille {
+    //         fingerprint_partitions.push(fp.clone());
+    //     }
+    //
+    //     // Rechiffrer cle
+    //     if fp.as_str() != fingerprint_local {
+    //         // match chiffrer_asymetrique(&pk, &cle_secrete) {
+    //         match rechiffrer_asymetrique_multibase(cle_privee, &pk, cle_locale.as_str()) {
+    //             Ok(cle_rechiffree) => {
+    //                 // let cle_mb = multibase::encode(Base::Base64, cle_rechiffree);
+    //                 map_cles.insert(fp, cle_rechiffree);
+    //             },
+    //             Err(e) => error!("Erreur rechiffrage cle : {:?}", e)
+    //         }
+    //     }
+    // }
 
     Ok(commande_transfert)
 }
