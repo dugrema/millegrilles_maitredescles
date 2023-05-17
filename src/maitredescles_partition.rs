@@ -22,12 +22,12 @@ use millegrilles_common_rust::constantes::Securite::L3Protege;
 use millegrilles_common_rust::common_messages::{DataChiffre, RequeteVerifierPreuve};
 use millegrilles_common_rust::dechiffrage::dechiffrer_data;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
-use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille, MessageSerialise};
+use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille, MessageReponseChiffree, MessageSerialise};
 use millegrilles_common_rust::futures_util::stream::FuturesUnordered;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
 use millegrilles_common_rust::hachages::hacher_bytes;
 use millegrilles_common_rust::messages_generiques::MessageCedule;
-use millegrilles_common_rust::middleware::{Middleware, sauvegarder_transaction};
+use millegrilles_common_rust::middleware::{ChiffrageFactoryTrait, Middleware, sauvegarder_transaction};
 use millegrilles_common_rust::mongo_dao::{ChampIndex, convertir_bson_deserializable, convertir_to_bson, IndexOptions, MongoDao, verifier_erreur_duplication_mongo};
 use millegrilles_common_rust::mongodb::Cursor;
 use millegrilles_common_rust::mongodb::options::{FindOptions, InsertOneOptions, UpdateOptions};
@@ -517,7 +517,7 @@ pub async fn preparer_index_mongodb_partition<M>(middleware: &M, gestionnaire: &
 }
 
 async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesPartition) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage + CleChiffrageHandler + ConfigMessages
+    where M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage + CleChiffrageHandler + ConfigMessages + ChiffrageFactoryTrait
 {
     debug!("Consommer requete : {:?}", &message.message);
 
@@ -632,7 +632,7 @@ where
 
 async fn consommer_evenement<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition, m: MessageValideAction)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: ValidateurX509 + GenerateurMessages + MongoDao + CleChiffrageHandler + ConfigMessages
+    where M: ValidateurX509 + GenerateurMessages + MongoDao + CleChiffrageHandler + ConfigMessages + ChiffrageFactoryTrait
 {
     debug!("consommer_evenement Consommer evenement : {:?}", &m.message);
 
@@ -914,12 +914,15 @@ async fn commande_cle_symmetrique<M>(middleware: &M, m: MessageValideAction, ges
 
 /// Commande recue d'un client (e.g. Coup D'Oeil) avec une batch de cles secretes dechiffrees.
 /// La commande est chiffree pour tous les MaitreDesComptes (kind:8)
-async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesPartition)
+async fn commande_rechiffrer_batch<M>(middleware: &M, mut m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesPartition)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + CleChiffrageHandler
 {
     let correlation_id = m.correlation_id.clone();
-    let commande = dechiffrer_batch(middleware, m)?;
+    let message_chiffre = MessageReponseChiffree::try_from(m.message.parsed)?;
+    let message_dechiffre = message_chiffre.dechiffrer(middleware)?;
+    let commande: CommandeRechiffrerBatch = serde_json::from_slice(&message_dechiffre.data_dechiffre[..])?;
+
     debug!("commande_rechiffrer_batch Commande parsed : {:?}", commande);
 
     let enveloppe_privee = middleware.get_enveloppe_signature();
@@ -1786,7 +1789,7 @@ async fn traiter_cles_manquantes_ca<M>(
 
 async fn evenement_cle_manquante<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesPartition)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: ValidateurX509 + GenerateurMessages + MongoDao + CleChiffrageHandler + ConfigMessages
+    where M: ValidateurX509 + GenerateurMessages + MongoDao + CleChiffrageHandler + ConfigMessages + ChiffrageFactoryTrait
 {
     debug!("evenement_cle_manquante Verifier si on peut transmettre la cle manquante {:?}", &m.message);
 
@@ -1885,8 +1888,9 @@ async fn evenement_cle_manquante<M>(middleware: &M, m: MessageValideAction, gest
             });
 
             debug!("evenement_cle_manquante Emettre reponse avec {} cles", cles.len());
-            todo!("fix me");
-            //Ok(Some(middleware.formatter_reponse_chiffree(middleware, reponse, enveloppe.as_ref())?))
+            let reponse = middleware.formatter_reponse_chiffree(middleware, reponse, enveloppe.as_ref())?;
+            debug!("evenement_cle_manquante Reponse chiffree {:?}", reponse);
+            Ok(Some(reponse))
         }
     } else {
         // Si on n'a aucune cle, ne pas repondre. Un autre maitre des cles pourrait le faire

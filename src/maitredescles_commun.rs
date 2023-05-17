@@ -961,67 +961,68 @@ pub async fn emettre_demande_cle_symmetrique<M,S>(middleware: &M, cle_ca: S) -> 
     Ok(())
 }
 
-/// Dechiffre le message kind:8 d'une batch
-pub fn dechiffrer_batch<M>(middleware: &M, m: MessageValideAction) -> Result<CommandeRechiffrerBatch, Box<dyn Error>>
-    where M: GenerateurMessages + CleChiffrageHandler
-{
-    // Dechiffrer la cle asymmetrique pour certificat local
-    let (header, cle_secrete) = match m.message.parsed.dechiffrage.as_ref() {
-        Some(inner) => {
-            let enveloppe_privee = middleware.get_enveloppe_signature();
-            let fingerprint_local = enveloppe_privee.fingerprint().as_str();
-            let header = match inner.header.as_ref() {
-                Some(inner) => inner.as_str(),
-                None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Erreur format message, header absent"))?
-            };
-            match inner.cles.as_ref() {
-                Some(inner) => {
-                    match inner.get(fingerprint_local) {
-                        Some(inner) => {
-                            // Cle chiffree, on dechiffre
-                            let cle_bytes = multibase::decode(inner)?;
-                            let cle_secrete = dechiffrer_asymmetrique_ed25519(&cle_bytes.1[..], enveloppe_privee.cle_privee())?;
-                            (header, cle_secrete)
-                        },
-                        None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Erreur format message, dechiffrage absent"))?
-                    }
-                },
-                None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Erreur format message, dechiffrage absent"))?
-            }
-        },
-        None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Erreur format message, dechiffrage absent"))?
-    };
-
-    // Dechiffrer le contenu
-    let data_chiffre = DataChiffre {
-        ref_hachage_bytes: None,
-        data_chiffre: format!("m{}", m.message.parsed.contenu),
-        format: FormatChiffrage::mgs4,
-        header: Some(header.to_owned()),
-        tag: None,
-    };
-    debug!("commande_rechiffrer_batch Data chiffre contenu : {:?}", data_chiffre);
-
-    let cle_dechiffre = CleDechiffree {
-        cle: "m".to_string(),
-        cle_secrete,
-        domaine: "MaitreDesCles".to_string(),
-        format: "mgs4".to_string(),
-        hachage_bytes: "".to_string(),
-        identificateurs_document: None,
-        iv: None,
-        tag: None,
-        header: Some(header.to_owned()),
-        signature_identite: "".to_string(),
-    };
-
-    debug!("commande_rechiffrer_batch Dechiffrer data avec cle dechiffree");
-    let data_dechiffre = dechiffrer_data(cle_dechiffre, data_chiffre)?;
-    debug!("commande_rechiffrer_batch Data dechiffre len {}", data_dechiffre.data_dechiffre.len());
-    debug!("commande_rechiffrer_batch Data dechiffre {:?}", String::from_utf8(data_dechiffre.data_dechiffre.clone()));
-
-    let commande: CommandeRechiffrerBatch = serde_json::from_slice(&data_dechiffre.data_dechiffre[..])?;
-    debug!("commande_rechiffrer_batch Commande parsed : {:?}", commande);
-
-    Ok(commande)
-}
+// /// Dechiffre le message kind:8 d'une batch
+// pub fn dechiffrer_batch<M>(middleware: &M, m: MessageValideAction) -> Result<CommandeRechiffrerBatch, Box<dyn Error>>
+// pub fn dechiffrer_batch<M>(middleware: &M, m: MessageValideAction) -> Result<CommandeRechiffrerBatch, Box<dyn Error>>
+//     where M: GenerateurMessages + CleChiffrageHandler
+// {
+//     // Dechiffrer la cle asymmetrique pour certificat local
+//     let (header, cle_secrete) = match m.message.parsed.dechiffrage.as_ref() {
+//         Some(inner) => {
+//             let enveloppe_privee = middleware.get_enveloppe_signature();
+//             let fingerprint_local = enveloppe_privee.fingerprint().as_str();
+//             let header = match inner.header.as_ref() {
+//                 Some(inner) => inner.as_str(),
+//                 None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Erreur format message, header absent"))?
+//             };
+//             match inner.cles.as_ref() {
+//                 Some(inner) => {
+//                     match inner.get(fingerprint_local) {
+//                         Some(inner) => {
+//                             // Cle chiffree, on dechiffre
+//                             let cle_bytes = multibase::decode(inner)?;
+//                             let cle_secrete = dechiffrer_asymmetrique_ed25519(&cle_bytes.1[..], enveloppe_privee.cle_privee())?;
+//                             (header, cle_secrete)
+//                         },
+//                         None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Erreur format message, dechiffrage absent"))?
+//                     }
+//                 },
+//                 None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Erreur format message, dechiffrage absent"))?
+//             }
+//         },
+//         None => Err(format!("maitredescles_partition.commande_rechiffrer_batch Erreur format message, dechiffrage absent"))?
+//     };
+//
+//     // Dechiffrer le contenu
+//     let data_chiffre = DataChiffre {
+//         ref_hachage_bytes: None,
+//         data_chiffre: format!("m{}", m.message.parsed.contenu),
+//         format: FormatChiffrage::mgs4,
+//         header: Some(header.to_owned()),
+//         tag: None,
+//     };
+//     debug!("commande_rechiffrer_batch Data chiffre contenu : {:?}", data_chiffre);
+//
+//     let cle_dechiffre = CleDechiffree {
+//         cle: "m".to_string(),
+//         cle_secrete,
+//         domaine: "MaitreDesCles".to_string(),
+//         format: "mgs4".to_string(),
+//         hachage_bytes: "".to_string(),
+//         identificateurs_document: None,
+//         iv: None,
+//         tag: None,
+//         header: Some(header.to_owned()),
+//         signature_identite: "".to_string(),
+//     };
+//
+//     debug!("commande_rechiffrer_batch Dechiffrer data avec cle dechiffree");
+//     let data_dechiffre = dechiffrer_data(cle_dechiffre, data_chiffre)?;
+//     debug!("commande_rechiffrer_batch Data dechiffre len {}", data_dechiffre.data_dechiffre.len());
+//     debug!("commande_rechiffrer_batch Data dechiffre {:?}", String::from_utf8(data_dechiffre.data_dechiffre.clone()));
+//
+//     let commande: CommandeRechiffrerBatch = serde_json::from_slice(&data_dechiffre.data_dechiffre[..])?;
+//     debug!("commande_rechiffrer_batch Commande parsed : {:?}", commande);
+//
+//     Ok(commande)
+// }
