@@ -691,45 +691,46 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValideAction, ge
 {
     debug!("commande_rechiffrer_batch Consommer commande : {:?}", & m.message);
     let correlation_id = m.correlation_id.clone();
-    todo!("fix me");
-    // let commande = dechiffrer_batch(middleware, m)?;
-    //
-    // let connexion = gestionnaire.ouvrir_connection(middleware, false);
-    //
-    // let enveloppe_privee = middleware.get_enveloppe_signature();
-    // let fingerprint_ca = enveloppe_privee.enveloppe_ca.fingerprint.clone();
-    // let fingerprint = enveloppe_privee.enveloppe.fingerprint.as_str();
-    //
-    // let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
-    //     .exchanges(vec![Securite::L4Secure])
-    //     .build();
-    //
-    // // Traiter chaque cle individuellement
-    // let liste_hachage_bytes: Vec<String> = commande.cles.iter().map(|c| c.hachage_bytes.to_owned()).collect();
-    // let mut liste_cle_ref: Vec<String> = Vec::new();
-    // connexion.execute("BEGIN TRANSACTION;")?;
-    //
-    // for info_cle in commande.cles {
-    //     debug!("commande_rechiffrer_batch Cle {:?}", info_cle);
-    //
-    //     let cle_ref = info_cle.get_cle_ref()?;
-    //     sauvegarder_cle(middleware, &gestionnaire, &connexion, info_cle)?;
-    //
-    //     liste_cle_ref.push(cle_ref);
-    // }
-    // connexion.execute("COMMIT;")?;
-    //
-    // // Emettre un evenement pour confirmer le traitement.
-    // // Utilise par le CA (confirme que les cles sont dechiffrables) et par le client (batch traitee)
-    // let routage_event = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_CLE_RECUE_PARTITION).build();
-    // let event_contenu = json!({
-    //     "correlation": correlation_id,
-    //     "liste_hachage_bytes": liste_hachage_bytes,
-    //     CHAMP_LISTE_CLE_REF: liste_cle_ref,
-    // });
-    // middleware.emettre_evenement(routage_event, &event_contenu).await?;
-    //
-    // Ok(middleware.reponse_ok()?)
+    let message_chiffre = MessageReponseChiffree::try_from(m.message.parsed)?;
+    let message_dechiffre = message_chiffre.dechiffrer(middleware)?;
+    let commande: CommandeRechiffrerBatch = serde_json::from_slice(&message_dechiffre.data_dechiffre[..])?;
+
+    let connexion = gestionnaire.ouvrir_connection(middleware, false);
+
+    let enveloppe_privee = middleware.get_enveloppe_signature();
+    let fingerprint_ca = enveloppe_privee.enveloppe_ca.fingerprint.clone();
+    let fingerprint = enveloppe_privee.enveloppe.fingerprint.as_str();
+
+    let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
+        .exchanges(vec![Securite::L4Secure])
+        .build();
+
+    // Traiter chaque cle individuellement
+    let liste_hachage_bytes: Vec<String> = commande.cles.iter().map(|c| c.hachage_bytes.to_owned()).collect();
+    let mut liste_cle_ref: Vec<String> = Vec::new();
+    connexion.execute("BEGIN TRANSACTION;")?;
+
+    for info_cle in commande.cles {
+        debug!("commande_rechiffrer_batch Cle {:?}", info_cle);
+
+        let cle_ref = info_cle.get_cle_ref()?;
+        sauvegarder_cle(middleware, &gestionnaire, &connexion, info_cle)?;
+
+        liste_cle_ref.push(cle_ref);
+    }
+    connexion.execute("COMMIT;")?;
+
+    // Emettre un evenement pour confirmer le traitement.
+    // Utilise par le CA (confirme que les cles sont dechiffrables) et par le client (batch traitee)
+    let routage_event = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_CLE_RECUE_PARTITION).build();
+    let event_contenu = json!({
+        "correlation": correlation_id,
+        "liste_hachage_bytes": liste_hachage_bytes,
+        CHAMP_LISTE_CLE_REF: liste_cle_ref,
+    });
+    middleware.emettre_evenement(routage_event, &event_contenu).await?;
+
+    Ok(middleware.reponse_ok()?)
 }
 
 async fn aiguillage_transaction<M, T>(_middleware: &M, transaction: T, _gestionnaire: &GestionnaireMaitreDesClesSQLite) -> Result<Option<MessageMilleGrille>, String>
@@ -1212,7 +1213,7 @@ fn rechiffrer_pour_maitredescles<M>(middleware: &M, cle: DocumentClePartition)
 
 #[derive(Clone, Deserialize)]
 struct MessageListeCles {
-    cles: Vec<CommandeSauvegarderCle>
+    cles: Vec<CleSecreteRechiffrage>
 }
 
 async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesSQLite) -> Result<(), Box<dyn Error>>
@@ -1278,19 +1279,15 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
             let evenement_cles_manquantes = ReponseSynchroniserCles { liste_hachage_bytes: liste_cles };
             let reponse = middleware.transmettre_requete(routage_evenement_manquant.clone(), &evenement_cles_manquantes).await?;
             // debug!("Reponse  {:?}", reponse);
-            let reponse = match reponse {
+            let data_reponse = match reponse {
                 TypeMessage::Valide(mut inner) => {
                     debug!("Reponse demande cles manquantes : {:?}", inner);
-                    let dechiffrage = match inner.message.parsed.dechiffrage.take() {
-                        Some(inner) => inner,
-                        None => {
-                            warn!("maitredescles_sqlite.synchroniser_cles Reponse sans information de dechiffrage");
+                    match MessageReponseChiffree::try_from(inner.message.parsed) {
+                        Ok(inner) => inner.dechiffrer(middleware)?,
+                        Err(e) => {
+                            warn!("maitredescles_sqlite.synchroniser_cles Erreur dechiffrage reponse : {:?}", e);
                             continue;
                         }
-                    };
-                    MessageReponseChiffree {
-                        contenu: inner.message.parsed.contenu,
-                        dechiffrage,
                     }
                 },
                 _ => {
@@ -1299,10 +1296,30 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
                 }
             };
 
-            let contenu_dechiffre = reponse.dechiffrer(middleware)?;
-            let reponse: MessageListeCles = serde_json::from_slice(&contenu_dechiffre.data_dechiffre[..])?;
+            let reponse: MessageListeCles = serde_json::from_slice(&data_reponse.data_dechiffre[..])?;
             debug!("Reponse {:?}", reponse.cles);
-            todo!("recu");
+            connexion.execute("BEGIN TRANSACTION;")?;
+            for cle_rechiffree in reponse.cles.into_iter() {
+                // let hachage_bytes = commande.hachage_bytes.as_str();
+                //
+                // let cle = match commande.cles.get(fingerprint) {
+                //     Some(cle) => cle.as_str(),
+                //     None => {
+                //         let message = format!("maitredescles_ca.synchroniser_cles: Erreur validation - commande sauvegarder cles ne contient pas la cle locale ({}) : {:?}", fingerprint, commande);
+                //         warn!("{}", message);
+                //         continue
+                //     }
+                // };
+                //
+                // // Dechiffrer la cle
+                // let cle_tierce_vec: Vec<u8> = multibase::decode(cle)?.1;
+                // let cle_dechiffree = dechiffrer_asymmetrique_ed25519(
+                //     &cle_tierce_vec[..], enveloppe_privee.cle_privee())?;
+                // let cle_rechiffree = CleSecreteRechiffrage::from_commande(&cle_dechiffree, commande)?;
+                sauvegarder_cle(middleware, &gestionnaire, &connexion, cle_rechiffree)?;
+            }
+            connexion.execute("COMMIT;")?;
+
 
             // if let TypeMessage::Valide(m) = reponse {
             //
