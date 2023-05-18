@@ -417,11 +417,17 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
     }
 
     async fn entretien<M>(self: &'static Self, middleware: Arc<M>) where M: Middleware + 'static {
-        let handler_rechiffrage = self.handler_rechiffrage.clone();
+        let mut q_preparation_completee = false;
         loop {
             if !self.handler_rechiffrage.is_ready() {
+
+                if q_preparation_completee == true {
+                    panic!("handler rechiffrage is_ready() == false et q_preparation_completee == true");
+                }
+
                 info!("entretien_rechiffreur Aucun certificat configure, on demande de generer un certificat volatil");
-                let resultat = match preparer_rechiffreur_mongo(middleware.as_ref(), handler_rechiffrage.as_ref()).await {
+                let resultat = match preparer_rechiffreur_mongo(
+                    middleware.as_ref(), self.handler_rechiffrage.as_ref()).await {
                     Ok(()) => {
                         debug!("entretien.Certificat pret, activer Qs et synchroniser cles");
                         true
@@ -454,6 +460,8 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
                         let named_queue = NamedQueue::new(queue, tx, Some(1), Some(futures_consumer));
                         middleware.ajouter_named_queue(queue_name, named_queue);
                     }
+
+                    q_preparation_completee = true;
                 }
             }
 

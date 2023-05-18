@@ -724,9 +724,15 @@ async fn entretien<M>(gestionnaire: &'static GestionnaireMaitreDesClesSQLite, mi
     // Preparer la collection avec index
     gestionnaire.preparer_database(middleware.as_ref()).await.expect("preparer_database");
 
-    let handler_rechiffrage = gestionnaire.handler_rechiffrage.clone();
+    let mut q_preparation_completee = false;
+
     loop {
-        if !handler_rechiffrage.is_ready() {
+        if !gestionnaire.handler_rechiffrage.is_ready() {
+
+            if q_preparation_completee == true {
+                panic!("handler rechiffrage is_ready() == false et q_preparation_completee == true");
+            }
+
             info!("entretien_rechiffreur Aucun certificat configure, on demande de generer un certificat volatil");
             let resultat = match preparer_rechiffreur_sqlite(middleware.as_ref(), gestionnaire).await {
                 Ok(()) => {
@@ -757,6 +763,8 @@ async fn entretien<M>(gestionnaire: &'static GestionnaireMaitreDesClesSQLite, mi
                     // Ajouter nouvelle queue
                     let named_queue = NamedQueue::new(queue, tx, Some(1), Some(futures_consumer));
                     middleware.ajouter_named_queue(queue_name, named_queue);
+
+                    q_preparation_completee = true;
                 }
             }
         }
