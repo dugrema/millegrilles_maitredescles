@@ -233,6 +233,7 @@ impl GestionnaireMaitreDesClesPartition {
 
         let commandes_protegees = vec![
             COMMANDE_RECHIFFRER_BATCH,
+            COMMANDE_VERIFIER_CLE_SYMMETRIQUE,
         ];
         for commande in commandes_protegees {
             rk_volatils.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, commande), exchange: L3Protege });
@@ -419,7 +420,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
     async fn entretien<M>(self: &'static Self, middleware: Arc<M>) where M: Middleware + 'static {
         let mut q_preparation_completee = false;
         loop {
-            if !self.handler_rechiffrage.is_ready() {
+            if !self.handler_rechiffrage.is_ready() || q_preparation_completee == false {
 
                 if q_preparation_completee == true {
                     panic!("handler rechiffrage is_ready() == false et q_preparation_completee == true");
@@ -674,6 +675,8 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionna
 
             COMMANDE_RECHIFFRER_BATCH => commande_rechiffrer_batch(middleware, m, gestionnaire).await,
             COMMANDE_CLE_SYMMETRIQUE => commande_cle_symmetrique(middleware, m, gestionnaire).await,
+            COMMANDE_VERIFIER_CLE_SYMMETRIQUE => commande_verifier_cle_symmetrique(middleware, gestionnaire, &m).await,
+
             // Commandes inconnues
             _ => Err(format!("maitredescles_partition.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
         }
@@ -1884,6 +1887,23 @@ async fn evenement_cle_manquante<M>(middleware: &M, m: MessageValideAction, gest
         debug!("evenement_cle_manquante On n'a aucune des cles demandees");
         Ok(None)
     }
+}
+
+async fn commande_verifier_cle_symmetrique<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition, m: &MessageValideAction)
+                                              -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: ValidateurX509 + GenerateurMessages + MongoDao
+{
+    debug!("evenement_verifier_cle_symmetrique Verifier si la cle symmetrique est chargee");
+
+    if gestionnaire.handler_rechiffrage.is_ready() == false {
+        // Cle symmetrique manquante, on l'emet
+        debug!("evenement_verifier_cle_symmetrique Cle symmetrique manquante");
+        preparer_rechiffreur_mongo(middleware, &gestionnaire.handler_rechiffrage).await?;
+    } else {
+        debug!("evenement_verifier_cle_symmetrique Cle symmetrique OK");
+    }
+
+    Ok(None)
 }
 
 async fn evenement_cle_rechiffrage<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesPartition)

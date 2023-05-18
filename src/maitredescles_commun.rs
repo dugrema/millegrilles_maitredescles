@@ -58,6 +58,7 @@ pub const CHAMP_NONCE_SYMMETRIQUE: &str = "nonce_symmetrique";
 pub const EVENEMENT_CLES_MANQUANTES_PARTITION: &str = "clesManquantesPartition";
 pub const EVENEMENT_CLE_RECUE_PARTITION: &str = "cleRecuePartition";
 pub const EVENEMENT_DEMANDE_CLE_SYMMETRIQUE: &str = "demandeCleSymmetrique";
+pub const COMMANDE_VERIFIER_CLE_SYMMETRIQUE: &str = "verifierCleSymmetrique";
 
 pub const CHAMP_HACHAGE_BYTES: &str = "hachage_bytes";
 pub const CHAMP_LISTE_HACHAGE_BYTES: &str = "liste_hachage_bytes";

@@ -382,6 +382,7 @@ impl GestionnaireMaitreDesClesSQLite {
 
         let commandes_protegees = vec![
             COMMANDE_RECHIFFRER_BATCH,
+            COMMANDE_VERIFIER_CLE_SYMMETRIQUE,
         ];
         for commande in commandes_protegees {
             rk_volatils.push(ConfigRoutingExchange {
@@ -560,6 +561,8 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionna
             // Commandes standard
             COMMANDE_SAUVEGARDER_CLE => commande_sauvegarder_cle(middleware, m, gestionnaire).await,
             COMMANDE_CERT_MAITREDESCLES => {emettre_certificat_maitredescles(middleware, Some(m)).await?; Ok(None)},
+            COMMANDE_VERIFIER_CLE_SYMMETRIQUE => commande_verifier_cle_symmetrique(middleware, gestionnaire, &m).await,
+
             // Commandes inconnues
             _ => Err(format!("core_backup.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
         }
@@ -727,7 +730,7 @@ async fn entretien<M>(gestionnaire: &'static GestionnaireMaitreDesClesSQLite, mi
     let mut q_preparation_completee = false;
 
     loop {
-        if !gestionnaire.handler_rechiffrage.is_ready() {
+        if !gestionnaire.handler_rechiffrage.is_ready() || q_preparation_completee == false {
 
             if q_preparation_completee == true {
                 panic!("handler rechiffrage is_ready() == false et q_preparation_completee == true");
@@ -1561,6 +1564,23 @@ async fn evenement_cle_manquante<M>(middleware: &M, gestionnaire: &GestionnaireM
         debug!("evenement_cle_manquante On n'a aucune des cles demandees");
         Ok(None)
     }
+}
+
+async fn commande_verifier_cle_symmetrique<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesSQLite, m: &MessageValideAction)
+                                              -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + ValidateurX509 + IsConfigNoeud
+{
+    debug!("evenement_verifier_cle_symmetrique Verifier si la cle symmetrique est chargee");
+
+    if gestionnaire.handler_rechiffrage.is_ready() == false {
+        // Cle symmetrique manquante, on l'emet
+        debug!("evenement_verifier_cle_symmetrique Cle symmetrique manquante");
+        preparer_rechiffreur_sqlite(middleware, gestionnaire).await?;
+    } else {
+        debug!("evenement_verifier_cle_symmetrique Cle symmetrique OK");
+    }
+
+    Ok(None)
 }
 
 // fn sauvegarder_cle<M,S,T>(
