@@ -13,7 +13,7 @@ use millegrilles_common_rust::bson::{doc, Document};
 use millegrilles_common_rust::certificats::{EnveloppeCertificat, EnveloppePrivee, ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chiffrage::{chiffrer_asymetrique_multibase, Chiffreur, CleChiffrageHandler, CleSecrete, extraire_cle_secrete, FormatChiffrage, rechiffrer_asymetrique_multibase};
 use millegrilles_common_rust::chiffrage_cle::{CleDechiffree, CommandeSauvegarderCle, IdentiteCle};
-use millegrilles_common_rust::chiffrage_ed25519::dechiffrer_asymmetrique_ed25519;
+use millegrilles_common_rust::chiffrage_ed25519::{chiffrer_asymmetrique_ed25519, dechiffrer_asymmetrique_ed25519};
 use millegrilles_common_rust::chiffrage_streamxchacha20poly1305::DecipherMgs4;
 use millegrilles_common_rust::chrono::{Duration, Utc};
 use millegrilles_common_rust::configuration::ConfigMessages;
@@ -26,7 +26,7 @@ use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMil
 use millegrilles_common_rust::futures_util::stream::FuturesUnordered;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
 use millegrilles_common_rust::hachages::hacher_bytes;
-use millegrilles_common_rust::messages_generiques::MessageCedule;
+use millegrilles_common_rust::messages_generiques::{CommandeCleRechiffree, CommandeDechiffrerCle, MessageCedule};
 use millegrilles_common_rust::middleware::{ChiffrageFactoryTrait, Middleware, sauvegarder_transaction};
 use millegrilles_common_rust::mongo_dao::{ChampIndex, convertir_bson_deserializable, convertir_to_bson, IndexOptions, MongoDao, verifier_erreur_duplication_mongo};
 use millegrilles_common_rust::mongodb::{Collection, Cursor};
@@ -230,6 +230,7 @@ impl GestionnaireMaitreDesClesPartition {
             rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION), exchange: sec.clone() });
         }
         rk_volatils.push(ConfigRoutingExchange { routing_key: format!("evenement.{}.{}", DOMAINE_NOM, EVENEMENT_CLES_RECHIFFRAGE), exchange: Securite::L4Secure });
+        rk_volatils.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, COMMANDE_DECHIFFRER_CLE), exchange: Securite::L4Secure });
 
         let commandes_protegees = vec![
             COMMANDE_RECHIFFRER_BATCH,
@@ -695,6 +696,7 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionna
             COMMANDE_CERT_MAITREDESCLES => {emettre_certificat_maitredescles(middleware, Some(m)).await?; Ok(None)},
             COMMANDE_ROTATION_CERTIFICAT => commande_rotation_certificat(middleware, m, gestionnaire).await,
             COMMANDE_CLE_SYMMETRIQUE => commande_cle_symmetrique(middleware, m, gestionnaire).await,
+            COMMANDE_DECHIFFRER_CLE => commande_dechiffrer_cle(middleware, m, gestionnaire).await,
             // Commandes inconnues
             _ => Err(format!("maitredescles_partition.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
         }
@@ -2071,6 +2073,37 @@ pub async fn preparer_rechiffreur_mongo<M>(middleware: &M, handler_rechiffrage: 
     Ok(())
 }
 
+pub async fn commande_dechiffrer_cle<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesPartition)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages
+{
+    debug!("evenement_cle_rechiffrage Conserver cles de rechiffrage {:?}", &m.message);
+    let commande: CommandeDechiffrerCle = m.message.parsed.map_contenu()?;
+
+    let enveloppe_signature = middleware.get_enveloppe_signature();
+    let enveloppe_destinataire = match m.message.certificat {
+        Some(inner) => inner,
+        None => {
+            warn!("commande_dechiffrer_cle Certificat absent");
+            return Ok(Some(middleware.formatter_reponse(&json!({"ok": false}), None)?));
+        }
+    };
+
+    // verifier que le destinataire est de type L4Secure
+    if enveloppe_destinataire.verifier_exchanges(vec![Securite::L4Secure]) == false {
+        warn!("commande_dechiffrer_cle Certificat mauvais type (doit etre L4Secure)");
+        return Ok(Some(middleware.formatter_reponse(&json!({"ok": false}), None)?));
+    }
+
+    let (_, cle_chiffree) = multibase::decode(commande.cle.as_str())?;
+    let cle_secrete = dechiffrer_asymmetrique_ed25519(&cle_chiffree[..], enveloppe_signature.cle_privee())?;
+    let cle_rechiffree = chiffrer_asymmetrique_ed25519(&cle_secrete.0[..], &enveloppe_destinataire.cle_publique)?;
+    let cle_rechiffree_str: String = multibase::encode(Base::Base64, cle_rechiffree);
+
+    let cle_reponse = CommandeCleRechiffree { ok: true, cle: Some(cle_rechiffree_str) };
+
+    Ok(Some(middleware.formatter_reponse(&cle_reponse, None)?))
+}
 
 // #[cfg(test)]
 // mod ut {
