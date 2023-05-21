@@ -2077,7 +2077,7 @@ pub async fn commande_dechiffrer_cle<M>(middleware: &M, m: MessageValideAction, 
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages
 {
-    debug!("evenement_cle_rechiffrage Conserver cles de rechiffrage {:?}", &m.message);
+    debug!("commande_dechiffrer_cle Dechiffrer cle {:?}", &m.message);
     let commande: CommandeDechiffrerCle = m.message.parsed.map_contenu()?;
 
     let enveloppe_signature = middleware.get_enveloppe_signature();
