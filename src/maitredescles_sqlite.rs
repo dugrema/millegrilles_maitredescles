@@ -13,7 +13,7 @@ use millegrilles_common_rust::certificats::{EnveloppeCertificat, EnveloppePrivee
 use millegrilles_common_rust::common_messages::RequeteVerifierPreuve;
 use millegrilles_common_rust::chiffrage::{Chiffreur, CleChiffrageHandler, CleSecrete, extraire_cle_secrete, FormatChiffrage, rechiffrer_asymetrique_multibase};
 use millegrilles_common_rust::chiffrage_cle::CommandeSauvegarderCle;
-use millegrilles_common_rust::chiffrage_ed25519::dechiffrer_asymmetrique_ed25519;
+use millegrilles_common_rust::chiffrage_ed25519::{chiffrer_asymmetrique_ed25519, dechiffrer_asymmetrique_ed25519};
 use millegrilles_common_rust::chrono::{Duration, Utc};
 use millegrilles_common_rust::configuration::{ConfigMessages, IsConfigNoeud};
 use millegrilles_common_rust::constantes::*;
@@ -22,7 +22,7 @@ use millegrilles_common_rust::formatteur_messages::{FormatteurMessage, MessageMi
 use millegrilles_common_rust::futures::stream::FuturesUnordered;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
 use millegrilles_common_rust::hachages::hacher_bytes;
-use millegrilles_common_rust::messages_generiques::MessageCedule;
+use millegrilles_common_rust::messages_generiques::{CommandeCleRechiffree, CommandeDechiffrerCle, MessageCedule};
 use millegrilles_common_rust::middleware::{ChiffrageFactoryTrait, Middleware, sauvegarder_transaction};
 use millegrilles_common_rust::middleware_db::MiddlewareDb;
 use millegrilles_common_rust::mongo_dao::MongoDao;
@@ -379,6 +379,7 @@ impl GestionnaireMaitreDesClesSQLite {
             rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION), exchange: sec.clone() });
         }
         rk_volatils.push(ConfigRoutingExchange { routing_key: format!("evenement.{}.{}", DOMAINE_NOM, EVENEMENT_CLES_RECHIFFRAGE), exchange: Securite::L4Secure });
+        rk_volatils.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, COMMANDE_DECHIFFRER_CLE), exchange: Securite::L4Secure });
 
         let commandes_protegees = vec![
             COMMANDE_RECHIFFRER_BATCH,
@@ -573,6 +574,7 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionna
             COMMANDE_CERT_MAITREDESCLES => {emettre_certificat_maitredescles(middleware, Some(m)).await?; Ok(None)},
             COMMANDE_ROTATION_CERTIFICAT => commande_rotation_certificat(middleware, m, gestionnaire).await,
             COMMANDE_CLE_SYMMETRIQUE => commande_cle_symmetrique(middleware, m, gestionnaire).await,
+            COMMANDE_DECHIFFRER_CLE => commande_dechiffrer_cle(middleware, m, gestionnaire).await,
             // Commandes inconnues
             _ => Err(format!("core_backup.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
         }
@@ -1900,4 +1902,36 @@ async fn commande_cle_symmetrique<M>(middleware: &M, m: MessageValideAction, ges
     // collection.insert_one(cle_locale, None).await?;
 
     Ok(middleware.reponse_ok()?)
+}
+
+pub async fn commande_dechiffrer_cle<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesSQLite)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages
+{
+    debug!("commande_dechiffrer_cle Dechiffrer cle {:?}", &m.message);
+    let commande: CommandeDechiffrerCle = m.message.parsed.map_contenu()?;
+
+    let enveloppe_signature = middleware.get_enveloppe_signature();
+    let enveloppe_destinataire = match m.message.certificat {
+        Some(inner) => inner,
+        None => {
+            warn!("commande_dechiffrer_cle Certificat absent");
+            return Ok(Some(middleware.formatter_reponse(&json!({"ok": false}), None)?));
+        }
+    };
+
+    // verifier que le destinataire est de type L4Secure
+    if enveloppe_destinataire.verifier_exchanges(vec![Securite::L4Secure]) == false {
+        warn!("commande_dechiffrer_cle Certificat mauvais type (doit etre L4Secure)");
+        return Ok(Some(middleware.formatter_reponse(&json!({"ok": false}), None)?));
+    }
+
+    let (_, cle_chiffree) = multibase::decode(commande.cle.as_str())?;
+    let cle_secrete = dechiffrer_asymmetrique_ed25519(&cle_chiffree[..], enveloppe_signature.cle_privee())?;
+    let cle_rechiffree = chiffrer_asymmetrique_ed25519(&cle_secrete.0[..], &enveloppe_destinataire.cle_publique)?;
+    let cle_rechiffree_str: String = multibase::encode(Base::Base64, cle_rechiffree);
+
+    let cle_reponse = CommandeCleRechiffree { ok: true, cle: Some(cle_rechiffree_str) };
+
+    Ok(Some(middleware.formatter_reponse(&cle_reponse, None)?))
 }
