@@ -12,7 +12,7 @@ use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{doc, Document};
 use millegrilles_common_rust::certificats::{EnveloppeCertificat, EnveloppePrivee, ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chiffrage::{chiffrer_asymetrique_multibase, Chiffreur, CleChiffrageHandler, CleSecrete, extraire_cle_secrete, FormatChiffrage, rechiffrer_asymetrique_multibase};
-use millegrilles_common_rust::chiffrage_cle::{CleDechiffree, CommandeSauvegarderCle, IdentiteCle};
+use millegrilles_common_rust::chiffrage_cle::{CleDechiffree, CommandeSauvegarderCle};
 use millegrilles_common_rust::chiffrage_ed25519::{chiffrer_asymmetrique_ed25519, dechiffrer_asymmetrique_ed25519};
 use millegrilles_common_rust::chiffrage_streamxchacha20poly1305::DecipherMgs4;
 use millegrilles_common_rust::chrono::{Duration, Utc};
@@ -803,9 +803,9 @@ async fn sauvegarder_cle<M, S>(
     // Valider identite, calculer cle_ref
     let (cle_ref, cle_chiffree) = {
         let cle_secrete = extraire_cle_secrete(middleware.get_enveloppe_signature().cle_privee(), cle)?;
-        if commande.verifier_identite(&cle_secrete)? != true {
-            Err(format!("maitredescles_partition.commande_sauvegarder_cle Erreur verifier identite commande, signature invalide"))?
-        }
+        // if commande.verifier_identite(&cle_secrete)? != true {
+        //     Err(format!("maitredescles_partition.commande_sauvegarder_cle Erreur verifier identite commande, signature invalide"))?
+        // }
 
         // Chiffrer avec cle symmetrique locale
         let handler_rechiffrage = gestionnaire.handler_rechiffrage.as_ref();

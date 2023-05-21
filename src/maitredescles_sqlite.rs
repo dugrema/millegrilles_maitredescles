@@ -1640,7 +1640,8 @@ fn sauvegarder_cle<M>(
     prepared_statement_cle.bind(9, format_str.as_str())?;
     prepared_statement_cle.bind(10, info_cle.domaine.as_str())?;
     prepared_statement_cle.bind(11, 0)?;
-    prepared_statement_cle.bind(12, info_cle.signature_identite.as_str())?;
+    // prepared_statement_cle.bind(12, info_cle.signature_identite.as_str())?;
+    prepared_statement_cle.bind(12, "")?;
 
     debug!("Conserver cle dans sqlite : {}", hachage_bytes);
     let resultat = prepared_statement_cle.next()?;
@@ -1707,7 +1708,7 @@ fn charger_cle<S>(connexion: &Connection, hachage_bytes_: S)
         hachage_bytes: hachage_bytes.to_owned(),
         domaine: statement.read(7)?,
         identificateurs_document,
-        signature_identite: statement.read(8)?,
+        // signature_identite: statement.read(8)?,
         cle: statement.read(2)?,
         cle_symmetrique: Some(statement.read(9)?),
         nonce_symmetrique: Some(statement.read(10)?),

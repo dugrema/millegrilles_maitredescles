@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use log::{debug, error, info, warn};
 use millegrilles_common_rust::certificats::{EnveloppeCertificat, EnveloppePrivee, ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chiffrage::{chiffrer_asymetrique_multibase, CleChiffrageHandler, CleSecrete, FormatChiffrage, rechiffrer_asymetrique_multibase};
-use millegrilles_common_rust::chiffrage_cle::{CleDechiffree, CommandeSauvegarderCle, IdentiteCle};
+use millegrilles_common_rust::chiffrage_cle::{CleDechiffree, CommandeSauvegarderCle};
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::formatteur_messages::{MessageMilleGrille, MessageReponseChiffree};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
@@ -426,19 +426,19 @@ pub struct CleSecreteRechiffrage {
     pub hachage_bytes: String,
     pub header: String,
     pub identificateurs_document: HashMap<String, String>,
-    pub signature_identite: String,
+    // pub signature_identite: String,
 }
 
-impl Into<IdentiteCle> for CleSecreteRechiffrage {
-    fn into(self) -> IdentiteCle {
-        IdentiteCle {
-            hachage_bytes: self.hachage_bytes.clone(),
-            domaine: self.domaine.clone(),
-            identificateurs_document: self.identificateurs_document.clone(),
-            signature_identite: self.signature_identite.clone(),
-        }
-    }
-}
+// impl Into<IdentiteCle> for CleSecreteRechiffrage {
+//     fn into(self) -> IdentiteCle {
+//         IdentiteCle {
+//             hachage_bytes: self.hachage_bytes.clone(),
+//             domaine: self.domaine.clone(),
+//             identificateurs_document: self.identificateurs_document.clone(),
+//             signature_identite: self.signature_identite.clone(),
+//         }
+//     }
+// }
 
 impl TryInto<DocumentClePartition> for CleSecreteRechiffrage {
     type Error = String;
@@ -449,7 +449,7 @@ impl TryInto<DocumentClePartition> for CleSecreteRechiffrage {
             hachage_bytes: self.hachage_bytes,
             domaine: self.domaine,
             identificateurs_document: self.identificateurs_document,
-            signature_identite: self.signature_identite,
+            // signature_identite: self.signature_identite,
             cle: "".to_string(),
             cle_symmetrique: None,
             nonce_symmetrique: None,
@@ -478,7 +478,7 @@ impl TryFrom<CommandeSauvegarderCle> for CleSecreteRechiffrage {
             hachage_bytes: value.hachage_bytes,
             header,
             identificateurs_document: value.identificateurs_document,
-            signature_identite: value.signature_identite,
+            // signature_identite: value.signature_identite,
         })
     }
 }
@@ -500,7 +500,7 @@ impl CleSecreteRechiffrage {
             hachage_bytes: value.hachage_bytes,
             header,
             identificateurs_document: value.identificateurs_document,
-            signature_identite: value.signature_identite,
+            // signature_identite: value.signature_identite,
         })
     }
 
@@ -518,7 +518,7 @@ impl CleSecreteRechiffrage {
             hachage_bytes: value.hachage_bytes,
             header,
             identificateurs_document: value.identificateurs_document,
-            signature_identite: value.signature_identite,
+            // signature_identite: value.signature_identite,
         })
     }
 
@@ -529,14 +529,14 @@ impl CleSecreteRechiffrage {
         Ok(cle_secrete_dechiffree)
     }
 
-    fn verifier_identite(&self, cle: &CleSecrete) -> Result<(), Box<dyn Error>>{
-        let identite_cle: IdentiteCle = self.clone().into();
-        if identite_cle.verifier(cle)? != true {
-            warn!("maitredescles_common.CleSecreteRechiffrage Erreur verifier identite commande, signature invalide pour cle {}", self.hachage_bytes);
-            Err(format!("maitredescles_commun.CleSecreteRechiffrage Identite cle mismatch"))?
-        }
-        Ok(())
-    }
+    // fn verifier_identite(&self, cle: &CleSecrete) -> Result<(), Box<dyn Error>>{
+    //     let identite_cle: IdentiteCle = self.clone().into();
+    //     if identite_cle.verifier(cle)? != true {
+    //         warn!("maitredescles_common.CleSecreteRechiffrage Erreur verifier identite commande, signature invalide pour cle {}", self.hachage_bytes);
+    //         Err(format!("maitredescles_commun.CleSecreteRechiffrage Identite cle mismatch"))?
+    //     }
+    //     Ok(())
+    // }
 
     pub fn get_cle_ref(&self) -> Result<String, Box<dyn Error>> {
         let cle_secrete = self.get_cle_secrete()?;
@@ -548,8 +548,8 @@ impl CleSecreteRechiffrage {
     pub fn rechiffrer_cle(&self, handler_rechiffrage: &HandlerCleRechiffrage) -> Result<(String, CleInterneChiffree), Box<dyn Error>> {
         let cle_secrete = self.get_cle_secrete()?;
 
-        // Verifier identite. Lance exception si invalide.
-        self.verifier_identite(&cle_secrete)?;
+        // // Verifier identite. Lance exception si invalide.
+        // self.verifier_identite(&cle_secrete)?;
 
         // Calculer cle_ref
         let cle_info = CleRefData::from(self);
@@ -581,7 +581,7 @@ pub struct TransactionCle {
     pub hachage_bytes: String,
     pub domaine: String,
     pub identificateurs_document: HashMap<String, String>,
-    pub signature_identite: String,
+    // pub signature_identite: String,
 
     // Cle chiffree
     pub cle: String,
@@ -599,16 +599,16 @@ pub struct TransactionCle {
     pub partition: Option<String>,
 }
 
-impl Into<IdentiteCle> for TransactionCle {
-    fn into(self) -> IdentiteCle {
-        IdentiteCle {
-            hachage_bytes: self.hachage_bytes,
-            domaine: self.domaine,
-            identificateurs_document: self.identificateurs_document,
-            signature_identite: self.signature_identite
-        }
-    }
-}
+// impl Into<IdentiteCle> for TransactionCle {
+//     fn into(self) -> IdentiteCle {
+//         IdentiteCle {
+//             hachage_bytes: self.hachage_bytes,
+//             domaine: self.domaine,
+//             identificateurs_document: self.identificateurs_document,
+//             signature_identite: self.signature_identite
+//         }
+//     }
+// }
 
 impl TransactionCle {
     pub fn new_from_commande(commande: &CommandeSauvegarderCle, fingerprint: &str)
@@ -625,7 +625,7 @@ impl TransactionCle {
             hachage_bytes: commande.hachage_bytes.to_owned(),
             domaine: commande.domaine.clone(),
             identificateurs_document: commande.identificateurs_document.clone(),
-            signature_identite: commande.signature_identite.clone(),
+            // signature_identite: commande.signature_identite.clone(),
             cle: cle.to_owned(),
             format: commande.format.clone(),
             iv: commande.iv.clone(),
@@ -645,7 +645,7 @@ impl TransactionCle {
             hachage_bytes: self.hachage_bytes,
             domaine: self.domaine,
             identificateurs_document: self.identificateurs_document,
-            signature_identite: self.signature_identite,
+            // signature_identite: self.signature_identite,
             cles,
             format: self.format,
             iv: self.iv,
@@ -656,10 +656,10 @@ impl TransactionCle {
         }
     }
 
-    pub fn verifier_identite(&self, cle_secrete: &CleSecrete) -> Result<bool, String> {
-        let identite: IdentiteCle = self.clone().into();
-        Ok(identite.verifier(cle_secrete)?)
-    }
+    // pub fn verifier_identite(&self, cle_secrete: &CleSecrete) -> Result<bool, String> {
+    //     let identite: IdentiteCle = self.clone().into();
+    //     Ok(identite.verifier(cle_secrete)?)
+    // }
 
 }
 
@@ -670,7 +670,7 @@ pub struct DocumentClePartition {
     pub hachage_bytes: String,
     pub domaine: String,
     pub identificateurs_document: HashMap<String, String>,
-    pub signature_identite: String,
+    // pub signature_identite: String,
 
     // Cle chiffree
     pub cle: String,
@@ -693,7 +693,7 @@ impl From<CommandeSauvegarderCle> for DocumentClePartition {
             hachage_bytes: value.hachage_bytes,
             domaine: value.domaine,
             identificateurs_document: value.identificateurs_document,
-            signature_identite: value.signature_identite,
+            // signature_identite: value.signature_identite,
             cle: "".to_string(),
             cle_symmetrique: None,
             nonce_symmetrique: None,
@@ -717,7 +717,7 @@ impl DocumentClePartition {
             hachage_bytes: self.hachage_bytes,
             domaine: self.domaine,
             identificateurs_document: self.identificateurs_document,
-            signature_identite: self.signature_identite,
+            // signature_identite: self.signature_identite,
             cles,
             format: self.format,
             iv: self.iv,
@@ -767,7 +767,7 @@ pub struct DocCleSymmetrique {
     pub domaine: String,
     #[serde(serialize_with = "ordered_map")]
     pub identificateurs_document: HashMap<String, String>,
-    pub signature_identite: String,
+    // pub signature_identite: String,
 
     // Cles chiffrees
     //#[serde(serialize_with = "ordered_map")]
@@ -794,7 +794,7 @@ impl Into<CommandeSauvegarderCle> for DocCleSymmetrique {
             hachage_bytes: self.hachage_bytes.clone(),
             domaine: self.domaine.clone(),
             identificateurs_document: self.identificateurs_document.clone(),
-            signature_identite: self.signature_identite.clone(),
+            // signature_identite: self.signature_identite.clone(),
             // cles: self.cles.clone(),
             cles: HashMap::new(),
             format: self.format.clone(),
@@ -813,7 +813,7 @@ impl From<DocumentClePartition> for DocCleSymmetrique {
             hachage_bytes: value.hachage_bytes,
             domaine: value.domaine,
             identificateurs_document: value.identificateurs_document,
-            signature_identite: value.signature_identite,
+            // signature_identite: value.signature_identite,
             // cles: HashMap::new(),
             cle_symmetrique: value.cle_symmetrique,
             nonce_symmetrique: value.nonce_symmetrique,
