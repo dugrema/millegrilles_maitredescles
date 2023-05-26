@@ -18,6 +18,7 @@ use millegrilles_common_rust::tokio::{sync::mpsc::Sender, time::{Duration, sleep
 use millegrilles_common_rust::certificats::ordered_map;
 use millegrilles_common_rust::common_messages::{DataChiffre, ReponseSignatureCertificat};
 use millegrilles_common_rust::{multibase, multibase::Base, serde_json};
+use millegrilles_common_rust::bson::{Bson, bson, doc, Document};
 use millegrilles_common_rust::chiffrage_ed25519::{chiffrer_asymmetrique_ed25519, dechiffrer_asymmetrique_ed25519};
 use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::dechiffrage::dechiffrer_data;
@@ -61,13 +62,15 @@ pub const EVENEMENT_DEMANDE_CLE_SYMMETRIQUE: &str = "demandeCleSymmetrique";
 pub const COMMANDE_VERIFIER_CLE_SYMMETRIQUE: &str = "verifierCleSymmetrique";
 
 pub const CHAMP_HACHAGE_BYTES: &str = "hachage_bytes";
+pub const CHAMP_DOMAINE: &str = "domaine";
 pub const CHAMP_LISTE_HACHAGE_BYTES: &str = "liste_hachage_bytes";
 // pub const CHAMP_LISTE_FINGERPRINTS: &str = "liste_fingerprints";
 pub const CHAMP_LISTE_CLE_REF: &str = "liste_cle_ref";
 pub const CHAMP_NON_DECHIFFRABLE: &str = "non_dechiffrable";
 // pub const CHAMP_FINGERPRINT_PK: &str = "fingerprint_pk";
 pub const CHAMP_CLE_REF: &str = "cle_ref";
-pub const CHAMP_LISTE_CLES: &str = "cles";
+pub const CHAMP_CLES: &str = "cles";
+pub const CHAMP_LISTE_CLES: &str = "liste_cles";
 
 // pub const CHAMP_ACCES: &str = "acces";
 pub const CHAMP_ACCES_REFUSE: &str = "0.refuse";
@@ -346,8 +349,12 @@ pub async fn requete_cles_inconnues<M>(middleware: &M, requete: &RequeteDechiffr
     -> Result<MessageListeCles, Box<dyn Error>>
     where M: GenerateurMessages + CleChiffrageHandler
 {
+    let domaine = requete.domaine.clone();
+
     // Faire une demande interne de sync pour voir si les cles inconnues existent (async)
-    let routage_evenement_manquant = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION)
+    let routage_evenement_manquant = RoutageMessageAction::builder(
+        DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION
+    )
         .exchanges(vec![Securite::L4Secure])
         .timeout_blocking(3000)
         .build();
@@ -357,10 +364,12 @@ pub async fn requete_cles_inconnues<M>(middleware: &M, requete: &RequeteDechiffr
     let mut set_cles_trouvees = HashSet::new();
     set_cles_trouvees.extend(&cles_connues);
     let set_diff = set_cles.difference(&set_cles_trouvees);
-    let liste_cles: Vec<String> = set_diff.into_iter().map(|m| m.to_string()).collect();
+    let liste_cles: Vec<CleSynchronisation> = set_diff.into_iter().map(|m| {
+        CleSynchronisation { hachage_bytes: m.to_string(), domaine: domaine.clone() }
+    }).collect();
     debug!("maitredescles_commun.requete_cles_inconnues Requete de cles inconnues : {:?}", liste_cles);
 
-    let evenement_cles_manquantes = ReponseSynchroniserCles { liste_hachage_bytes: liste_cles };
+    let evenement_cles_manquantes = ReponseSynchroniserCles { liste_cles };
 
     let reponse = match middleware.transmettre_requete(routage_evenement_manquant.clone(), &evenement_cles_manquantes).await? {
         TypeMessage::Valide(m) => {
@@ -407,14 +416,66 @@ pub struct RequeteSynchroniserCles {
     pub limite: u32,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq, Hash)]
+pub struct CleSynchronisation {
+    pub domaine: String,
+    pub hachage_bytes: String,
+}
+
+impl Into<Bson> for CleSynchronisation {
+    fn into(self) -> Bson {
+        bson!({
+            "domaine": self.domaine,
+            "hachage_bytes": self.hachage_bytes,
+        })
+    }
+}
+
+impl AsRef<Self> for CleSynchronisation {
+    fn as_ref(&self) -> &Self {
+        &self
+    }
+}
+
+impl CleSynchronisation {
+    pub fn get_bson_filter<S>(cles: &Vec<S>) -> Result<Vec<Document>, Box<dyn Error>>
+        where S: AsRef<Self>
+    {
+        // Extraire refs
+        let cles: Vec<&Self> = cles.iter().map(|c| c.as_ref()).collect();
+
+        let mut map_domaines: HashMap<&String, Vec<&str>> = HashMap::new();
+
+        for item in cles {
+            match map_domaines.get_mut(&item.domaine) {
+                Some(liste) => liste.push(item.hachage_bytes.as_str()),
+                None => {
+                    let mut liste = Vec::new();
+                    liste.push(item.hachage_bytes.as_str());
+                    map_domaines.insert(&item.domaine, liste);
+                }
+            }
+        }
+
+        // Fabriquer un Vec de { domaine: mon_domaine, hachage_bytes: {"$in": [...]} }
+        // Permet de creer un filtre avec { "$or": ...vec... }
+        let mut liste_domaines = Vec::new();
+        for (domaine, liste) in map_domaines.into_iter() {
+            liste_domaines.push(doc!{ CHAMP_DOMAINE: domaine, CHAMP_HACHAGE_BYTES: {"$in": liste}});
+        }
+
+        Ok(liste_domaines)
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReponseSynchroniserCles {
-    pub liste_hachage_bytes: Vec<String>
+    pub liste_cles: Vec<CleSynchronisation>
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReponseConfirmerClesSurCa {
-    pub cles_manquantes: Vec<String>
+    pub cles_manquantes: Vec<CleSynchronisation>
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -570,8 +631,8 @@ pub struct CommandeRechiffrerBatch {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RequeteDechiffrage {
+    pub domaine: String,
     pub liste_hachage_bytes: Vec<String>,
-    // pub permission: Option<MessageMilleGrille>,
     pub certificat_rechiffrage: Option<Vec<String>>,
 }
 

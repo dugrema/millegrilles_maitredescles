@@ -905,40 +905,41 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
     if cles.len() < requete.liste_hachage_bytes.len() {
         debug!("requete_dechiffrage Cles manquantes, on a {} trouvees sur {} demandees", cles.len(), requete.liste_hachage_bytes.len());
 
-        let cles_connues = cles.keys().map(|s|s.to_owned()).collect();
-        // emettre_cles_inconnues(middleware, requete, cles_connues).await?;
-        match requete_cles_inconnues(middleware, &requete, cles_connues).await {
-            Ok(mut reponse) => {
-                debug!("Reponse cle manquantes recue : {:?}", reponse.cles);
-                let connexion = gestionnaire.ouvrir_connection(middleware, false);
-                for cle in reponse.cles.into_iter() {
-                    let hachage_bytes = cle.hachage_bytes.clone();
-
-                    let cle_secrete = cle.get_cle_secrete()?;
-                    let (_, cle_rechiffree) = cle.rechiffrer_cle(&gestionnaire.handler_rechiffrage)?;
-
-                    let mut doc_cle: DocumentClePartition = cle.try_into()?;
-                    doc_cle.cle_symmetrique = Some(cle_rechiffree.cle);
-                    doc_cle.nonce_symmetrique = Some(cle_rechiffree.nonce);
-
-                    let cle_interne = CleSecreteRechiffrage::from_doc_cle(cle_secrete, doc_cle.clone())?;
-                    sauvegarder_cle(middleware, &gestionnaire, &connexion, cle_interne)?;
-
-                    match rechiffrer_cle(&mut doc_cle, &gestionnaire.handler_rechiffrage, certificat.as_ref()) {
-                        Ok(()) => {
-                            cles.insert(hachage_bytes, doc_cle);
-                        },
-                        Err(e) => {
-                            error!("rechiffrer_cles Erreur rechiffrage cle {:?}", e);
-                            continue;  // Skip cette cle
-                        }
-                    }
-                }
-            },
-            Err(e) => {
-                error!("requete_dechiffrage Erreur requete_cles_inconnues, skip : {:?}", e)
-            }
-        }
+        todo!("fix me");
+        // let cles_connues = cles.keys().map(|s|s.to_owned()).collect();
+        // // emettre_cles_inconnues(middleware, requete, cles_connues).await?;
+        // match requete_cles_inconnues(middleware, &requete, cles_connues).await {
+        //     Ok(mut reponse) => {
+        //         debug!("Reponse cle manquantes recue : {:?}", reponse.cles);
+        //         let connexion = gestionnaire.ouvrir_connection(middleware, false);
+        //         for cle in reponse.cles.into_iter() {
+        //             let hachage_bytes = cle.hachage_bytes.clone();
+        //
+        //             let cle_secrete = cle.get_cle_secrete()?;
+        //             let (_, cle_rechiffree) = cle.rechiffrer_cle(&gestionnaire.handler_rechiffrage)?;
+        //
+        //             let mut doc_cle: DocumentClePartition = cle.try_into()?;
+        //             doc_cle.cle_symmetrique = Some(cle_rechiffree.cle);
+        //             doc_cle.nonce_symmetrique = Some(cle_rechiffree.nonce);
+        //
+        //             let cle_interne = CleSecreteRechiffrage::from_doc_cle(cle_secrete, doc_cle.clone())?;
+        //             sauvegarder_cle(middleware, &gestionnaire, &connexion, cle_interne)?;
+        //
+        //             match rechiffrer_cle(&mut doc_cle, &gestionnaire.handler_rechiffrage, certificat.as_ref()) {
+        //                 Ok(()) => {
+        //                     cles.insert(hachage_bytes, doc_cle);
+        //                 },
+        //                 Err(e) => {
+        //                     error!("rechiffrer_cles Erreur rechiffrage cle {:?}", e);
+        //                     continue;  // Skip cette cle
+        //                 }
+        //             }
+        //         }
+        //     },
+        //     Err(e) => {
+        //         error!("requete_dechiffrage Erreur requete_cles_inconnues, skip : {:?}", e)
+        //     }
+        // }
     }
 
     // Preparer la reponse
@@ -1178,91 +1179,94 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
         };
         requete_sync.page += 1;  // Incrementer page pour prochaine requete
 
-        let liste_hachage_bytes = reponse.liste_hachage_bytes;
-        if liste_hachage_bytes.len() == 0 {
+        let liste_cles = reponse.liste_cles;
+        if liste_cles.len() == 0 {
             debug!("synchroniser_cles Traitement sync termine");
             break
         }
 
-        let mut cles_manquantes = HashSet::new();
-        debug!("synchroniser_cles Recu liste_hachage_bytes a verifier : {}", liste_hachage_bytes.len());
+        todo!("fix me");
 
-        {
-            let mut prepared_statement_checkcle = connexion.prepare("SELECT hachage_bytes FROM cles WHERE hachage_bytes = ?")?;
-            for hachage_bytes in liste_hachage_bytes.into_iter() {
-                let cle = format!("cle:{}:{}", fingerprint, hachage_bytes);
-                prepared_statement_checkcle.bind(1, hachage_bytes.as_str())?;
-                let resultat = prepared_statement_checkcle.next()?;
-                match resultat {
-                    State::Row => (),
-                    State::Done => { cles_manquantes.insert(hachage_bytes); }
-                }
-                prepared_statement_checkcle.reset()?;
-            }
-        }
-
-        if cles_manquantes.len() > 0 {
-            info!("Cles manquantes nb: {}", cles_manquantes.len());
-            let liste_cles: Vec<String> = cles_manquantes.iter().map(|m| String::from(m.as_str())).collect();
-            let evenement_cles_manquantes = ReponseSynchroniserCles { liste_hachage_bytes: liste_cles };
-            let reponse = middleware.transmettre_requete(routage_evenement_manquant.clone(), &evenement_cles_manquantes).await?;
-            // debug!("Reponse  {:?}", reponse);
-            let data_reponse = match reponse {
-                TypeMessage::Valide(mut inner) => {
-                    debug!("Reponse demande cles manquantes : {:?}", inner);
-                    match MessageReponseChiffree::try_from(inner.message.parsed) {
-                        Ok(inner) => inner.dechiffrer(middleware)?,
-                        Err(e) => {
-                            warn!("maitredescles_sqlite.synchroniser_cles Erreur dechiffrage reponse : {:?}", e);
-                            continue;
-                        }
-                    }
-                },
-                _ => {
-                    warn!("maitredescles_sqlite.synchroniser_cles Erreur reception reponse cles manquantes, mauvais type reponse.");
-                    continue;
-                }
-            };
-
-            let reponse: MessageListeCles = serde_json::from_slice(&data_reponse.data_dechiffre[..])?;
-            debug!("Reponse {:?}", reponse.cles);
-            connexion.execute("BEGIN TRANSACTION;")?;
-            for cle_rechiffree in reponse.cles.into_iter() {
-                sauvegarder_cle(middleware, &gestionnaire, &connexion, cle_rechiffree)?;
-            }
-            connexion.execute("COMMIT;")?;
-
-
-            // if let TypeMessage::Valide(m) = reponse {
-            //
-            //     let message_serialise = m.message;
-            //     let message_cles: MessageListeCles = message_serialise.parsed.map_contenu()?;
-            //     // let commandes: Vec<CommandeSauvegarderCle> = message_serialise.parsed.map_contenu(Some("cles"))?;
-            //     let commandes = message_cles.cles;
-            //
-            //     connexion.execute("BEGIN TRANSACTION;")?;
-            //     for commande in commandes {
-            //         let hachage_bytes = commande.hachage_bytes.as_str();
-            //
-            //         let cle = match commande.cles.get(fingerprint) {
-            //             Some(cle) => cle.as_str(),
-            //             None => {
-            //                 let message = format!("maitredescles_ca.synchroniser_cles: Erreur validation - commande sauvegarder cles ne contient pas la cle locale ({}) : {:?}", fingerprint, commande);
-            //                 warn!("{}", message);
-            //                 continue
-            //             }
-            //         };
-            //
-            //         // Dechiffrer la cle
-            //         let cle_tierce_vec: Vec<u8> = multibase::decode(cle)?.1;
-            //         let cle_dechiffree = dechiffrer_asymmetrique_ed25519(
-            //             &cle_tierce_vec[..], enveloppe_privee.cle_privee())?;
-            //         let cle_rechiffree = CleSecreteRechiffrage::from_commande(&cle_dechiffree, commande)?;
-            //         sauvegarder_cle(middleware, &gestionnaire, &connexion, cle_rechiffree)?;
-            //     }
-            //     connexion.execute("COMMIT;")?;
-            // }
-        }
+        // let mut cles_manquantes = HashSet::new();
+        // debug!("synchroniser_cles Recu liste_hachage_bytes a verifier : {}", liste_cles.len());
+        //
+        //
+        // {
+        //     let mut prepared_statement_checkcle = connexion.prepare("SELECT hachage_bytes FROM cles WHERE hachage_bytes = ?")?;
+        //     for hachage_bytes in liste_cles.into_iter() {
+        //         let cle = format!("cle:{}:{}", fingerprint, hachage_bytes);
+        //         prepared_statement_checkcle.bind(1, hachage_bytes.as_str())?;
+        //         let resultat = prepared_statement_checkcle.next()?;
+        //         match resultat {
+        //             State::Row => (),
+        //             State::Done => { cles_manquantes.insert(hachage_bytes); }
+        //         }
+        //         prepared_statement_checkcle.reset()?;
+        //     }
+        // }
+        //
+        // if cles_manquantes.len() > 0 {
+        //     info!("Cles manquantes nb: {}", cles_manquantes.len());
+        //     let liste_cles: Vec<String> = cles_manquantes.iter().map(|m| String::from(m.as_str())).collect();
+        //     let evenement_cles_manquantes = ReponseSynchroniserCles { liste_hachage_bytes: liste_cles };
+        //     let reponse = middleware.transmettre_requete(routage_evenement_manquant.clone(), &evenement_cles_manquantes).await?;
+        //     // debug!("Reponse  {:?}", reponse);
+        //     let data_reponse = match reponse {
+        //         TypeMessage::Valide(mut inner) => {
+        //             debug!("Reponse demande cles manquantes : {:?}", inner);
+        //             match MessageReponseChiffree::try_from(inner.message.parsed) {
+        //                 Ok(inner) => inner.dechiffrer(middleware)?,
+        //                 Err(e) => {
+        //                     warn!("maitredescles_sqlite.synchroniser_cles Erreur dechiffrage reponse : {:?}", e);
+        //                     continue;
+        //                 }
+        //             }
+        //         },
+        //         _ => {
+        //             warn!("maitredescles_sqlite.synchroniser_cles Erreur reception reponse cles manquantes, mauvais type reponse.");
+        //             continue;
+        //         }
+        //     };
+        //
+        //     let reponse: MessageListeCles = serde_json::from_slice(&data_reponse.data_dechiffre[..])?;
+        //     debug!("Reponse {:?}", reponse.cles);
+        //     connexion.execute("BEGIN TRANSACTION;")?;
+        //     for cle_rechiffree in reponse.cles.into_iter() {
+        //         sauvegarder_cle(middleware, &gestionnaire, &connexion, cle_rechiffree)?;
+        //     }
+        //     connexion.execute("COMMIT;")?;
+        //
+        //
+        //     // if let TypeMessage::Valide(m) = reponse {
+        //     //
+        //     //     let message_serialise = m.message;
+        //     //     let message_cles: MessageListeCles = message_serialise.parsed.map_contenu()?;
+        //     //     // let commandes: Vec<CommandeSauvegarderCle> = message_serialise.parsed.map_contenu(Some("cles"))?;
+        //     //     let commandes = message_cles.cles;
+        //     //
+        //     //     connexion.execute("BEGIN TRANSACTION;")?;
+        //     //     for commande in commandes {
+        //     //         let hachage_bytes = commande.hachage_bytes.as_str();
+        //     //
+        //     //         let cle = match commande.cles.get(fingerprint) {
+        //     //             Some(cle) => cle.as_str(),
+        //     //             None => {
+        //     //                 let message = format!("maitredescles_ca.synchroniser_cles: Erreur validation - commande sauvegarder cles ne contient pas la cle locale ({}) : {:?}", fingerprint, commande);
+        //     //                 warn!("{}", message);
+        //     //                 continue
+        //     //             }
+        //     //         };
+        //     //
+        //     //         // Dechiffrer la cle
+        //     //         let cle_tierce_vec: Vec<u8> = multibase::decode(cle)?.1;
+        //     //         let cle_dechiffree = dechiffrer_asymmetrique_ed25519(
+        //     //             &cle_tierce_vec[..], enveloppe_privee.cle_privee())?;
+        //     //         let cle_rechiffree = CleSecreteRechiffrage::from_commande(&cle_dechiffree, commande)?;
+        //     //         sauvegarder_cle(middleware, &gestionnaire, &connexion, cle_rechiffree)?;
+        //     //     }
+        //     //     connexion.execute("COMMIT;")?;
+        //     // }
+        // }
 
     }
 
@@ -1306,23 +1310,25 @@ async fn confirmer_cles_ca<M>(middleware: Arc<M>, gestionnaire: &'static Gestion
             break;
         }
 
-        match emettre_cles_vers_ca(middleware.as_ref(), gestionnaire, &batch_cles).await {
-            Ok(()) => (),
-            Err(e) => error!("emettre_batch_cles_versca Erreur traitement batch cles : {:?}", e)
-        }
+        todo!("fix me");
 
-        // Marquer les cles restantes comme non confirmees
-        {
-            let mut prepared_statement = connexion.prepare(
-                "UPDATE cles SET confirmation_ca = 2 WHERE hachage_bytes = ? AND confirmation_ca = 0")?;
-            connexion.execute("BEGIN")?;
-            for cle in batch_cles {
-                prepared_statement.bind(1, cle.as_str())?;
-                prepared_statement.next()?;
-                prepared_statement.reset()?;
-            }
-            connexion.execute("COMMIT")?;
-        }
+        // match emettre_cles_vers_ca(middleware.as_ref(), gestionnaire, &batch_cles).await {
+        //     Ok(()) => (),
+        //     Err(e) => error!("emettre_batch_cles_versca Erreur traitement batch cles : {:?}", e)
+        // }
+        //
+        // // Marquer les cles restantes comme non confirmees
+        // {
+        //     let mut prepared_statement = connexion.prepare(
+        //         "UPDATE cles SET confirmation_ca = 2 WHERE hachage_bytes = ? AND confirmation_ca = 0")?;
+        //     connexion.execute("BEGIN")?;
+        //     for cle in batch_cles {
+        //         prepared_statement.bind(1, cle.as_str())?;
+        //         prepared_statement.next()?;
+        //         prepared_statement.reset()?;
+        //     }
+        //     connexion.execute("COMMIT")?;
+        // }
     }
 
     // Reset les cles non confirmees (2) a l'etat non traite (0)
@@ -1337,33 +1343,35 @@ async fn confirmer_cles_ca<M>(middleware: Arc<M>, gestionnaire: &'static Gestion
 /// Marque les cles presentes sur la partition et CA comme confirmation_ca=true
 /// Rechiffre et emet vers le CA les cles manquantes
 async fn emettre_cles_vers_ca<M>(
-    middleware: &M, gestionnaire: &GestionnaireMaitreDesClesSQLite, hachage_bytes: &Vec<String>)
+    middleware: &M, gestionnaire: &GestionnaireMaitreDesClesSQLite, cles_synchronisation: &Vec<CleSynchronisation>)
     -> Result<(), Box<dyn Error>>
     where M: GenerateurMessages + IsConfigNoeud + VerificateurMessage + CleChiffrageHandler
 {
-    debug!("emettre_cles_vers_ca Batch cles {:?}", hachage_bytes);
+    debug!("emettre_cles_vers_ca Batch cles {:?}", cles_synchronisation);
 
-    let commande = ReponseSynchroniserCles {liste_hachage_bytes: hachage_bytes.clone()};
-    let routage = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_CONFIRMER_CLES_SUR_CA)
-        .exchanges(vec![Securite::L4Secure])
-        .build();
-    let option_reponse = middleware.transmettre_commande(routage, &commande, true).await?;
-    match option_reponse {
-        Some(r) => {
-            match r {
-                TypeMessage::Valide(reponse) => {
-                    debug!("emettre_cles_vers_ca Reponse confirmer cle sur CA : {:?}", reponse);
-                    let reponse_cles_manquantes: ReponseConfirmerClesSurCa = reponse.message.get_msg().map_contenu()?;
-                    let cles_manquantes = reponse_cles_manquantes.cles_manquantes;
-                    traiter_cles_manquantes_ca(middleware, gestionnaire, &hachage_bytes, &cles_manquantes).await?;
-                },
-                _ => Err(format!("emettre_cles_vers_ca Recu mauvais type de reponse "))?
-            }
-        },
-        None => info!("emettre_cles_vers_ca Aucune reponse du serveur")
-    }
+    todo!("fix me");
 
-    Ok(())
+    // let commande = ReponseSynchroniserCles { liste_cles: cles_synchronisation.clone() };
+    // let routage = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_CONFIRMER_CLES_SUR_CA)
+    //     .exchanges(vec![Securite::L4Secure])
+    //     .build();
+    // let option_reponse = middleware.transmettre_commande(routage, &commande, true).await?;
+    // match option_reponse {
+    //     Some(r) => {
+    //         match r {
+    //             TypeMessage::Valide(reponse) => {
+    //                 debug!("emettre_cles_vers_ca Reponse confirmer cle sur CA : {:?}", reponse);
+    //                 let reponse_cles_manquantes: ReponseConfirmerClesSurCa = reponse.message.get_msg().map_contenu()?;
+    //                 let cles_manquantes = reponse_cles_manquantes.cles_manquantes;
+    //                 traiter_cles_manquantes_ca(middleware, gestionnaire, &cles_synchronisation, &cles_manquantes).await?;
+    //             },
+    //             _ => Err(format!("emettre_cles_vers_ca Recu mauvais type de reponse "))?
+    //         }
+    //     },
+    //     None => info!("emettre_cles_vers_ca Aucune reponse du serveur")
+    // }
+    //
+    // Ok(())
 }
 
 /// Marque les cles emises comme confirmees par le CA sauf si elles sont dans la liste de cles manquantes.
@@ -1516,56 +1524,58 @@ async fn evenement_cle_manquante<M>(middleware: &M, gestionnaire: &GestionnaireM
         .partition(partition)
         .build();
 
-    let hachages_bytes_list = event_non_dechiffrables.liste_hachage_bytes;
+    let hachages_bytes_list = event_non_dechiffrables.liste_cles;
 
     let connexion = gestionnaire.ouvrir_connection(middleware, true);
 
-    let mut cles = Vec::new();
-    for hachage_bytes in hachages_bytes_list {
-        let commande = match charger_cle(&connexion, hachage_bytes.as_str()) {
-            Ok(cle) => {
-                match cle {
-                    Some(cle) => {
-                        let cle_interne = CleInterneChiffree::try_from(cle.clone())?;
-                        let cle_secrete = gestionnaire.handler_rechiffrage.dechiffer_cle_secrete(cle_interne)?;
-                        CleSecreteRechiffrage::from_doc_cle(cle_secrete, cle)?
-                    },
-                    None => {
-                        warn!("evenement_cle_manquante Cle inconnue : {:?}", hachage_bytes);
-                        continue
-                    }
-                }
-            },
-            Err(e) => {
-                warn!("evenement_cle_manquante Erreur conversion document en cle : {:?}", e);
-                continue
-            }
-        };
+    todo!("fix me");
 
-        cles.push(commande);
-    }
-
-    if cles.len() > 0 {
-
-        if est_evenement {
-            todo!("obsolete")
-        } else {
-            // Repondre
-            let reponse = json!({
-                "ok": true,
-                "cles": cles,
-            });
-
-            debug!("evenement_cle_manquante Emettre reponse avec {} cles", cles.len());
-            let reponse = middleware.formatter_reponse_chiffree(
-                middleware, reponse, enveloppe.as_ref())?;
-            Ok(Some(reponse))
-        }
-    } else {
-        // Si on n'a aucune cle, ne pas repondre. Un autre maitre des cles pourrait le faire
-        debug!("evenement_cle_manquante On n'a aucune des cles demandees");
-        Ok(None)
-    }
+    // let mut cles = Vec::new();
+    // for hachage_bytes in hachages_bytes_list {
+    //     let commande = match charger_cle(&connexion, hachage_bytes.as_str()) {
+    //         Ok(cle) => {
+    //             match cle {
+    //                 Some(cle) => {
+    //                     let cle_interne = CleInterneChiffree::try_from(cle.clone())?;
+    //                     let cle_secrete = gestionnaire.handler_rechiffrage.dechiffer_cle_secrete(cle_interne)?;
+    //                     CleSecreteRechiffrage::from_doc_cle(cle_secrete, cle)?
+    //                 },
+    //                 None => {
+    //                     warn!("evenement_cle_manquante Cle inconnue : {:?}", hachage_bytes);
+    //                     continue
+    //                 }
+    //             }
+    //         },
+    //         Err(e) => {
+    //             warn!("evenement_cle_manquante Erreur conversion document en cle : {:?}", e);
+    //             continue
+    //         }
+    //     };
+    //
+    //     cles.push(commande);
+    // }
+    //
+    // if cles.len() > 0 {
+    //
+    //     if est_evenement {
+    //         todo!("obsolete")
+    //     } else {
+    //         // Repondre
+    //         let reponse = json!({
+    //             "ok": true,
+    //             "cles": cles,
+    //         });
+    //
+    //         debug!("evenement_cle_manquante Emettre reponse avec {} cles", cles.len());
+    //         let reponse = middleware.formatter_reponse_chiffree(
+    //             middleware, reponse, enveloppe.as_ref())?;
+    //         Ok(Some(reponse))
+    //     }
+    // } else {
+    //     // Si on n'a aucune cle, ne pas repondre. Un autre maitre des cles pourrait le faire
+    //     debug!("evenement_cle_manquante On n'a aucune des cles demandees");
+    //     Ok(None)
+    // }
 }
 
 async fn commande_verifier_cle_symmetrique<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesSQLite, m: &MessageValideAction)

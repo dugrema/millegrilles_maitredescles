@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::error::Error;
 use std::sync::Arc;
 
-use log::{debug, error, warn};
+use log::{debug, error, info, trace, warn};
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{DateTime, doc, Document};
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
@@ -204,7 +204,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
 async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesCa) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage
 {
-    debug!("Consommer requete : {:?}", &message.message);
+    debug!("Consommer requete {} : {:?}", message.action, message.correlation_id);
 
     // Autorisation : On accepte les requetes de 3.protege ou 4.secure
     match message.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
@@ -238,7 +238,7 @@ async fn consommer_evenement<M>(middleware: &M, m: MessageValideAction) -> Resul
 where
     M: ValidateurX509 + GenerateurMessages + MongoDao,
 {
-    debug!("maitredescles_ca.consommer_evenement Consommer evenement : {:?}", &m.message);
+    debug!("maitredescles_ca.consommer_evenement Consommer evenement {} : {:?}", m.action, m.correlation_id);
 
     // Autorisation : doit etre de niveau 3.protege ou 4.secure
     match m.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure]) {
@@ -258,7 +258,7 @@ async fn consommer_transaction<M>(middleware: &M, m: MessageValideAction, gestio
 where
     M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage
 {
-    debug!("maitredescles_ca.consommer_transaction Consommer transaction : {:?}", &m.message);
+    debug!("maitredescles_ca.consommer_transaction Consommer transaction {} : {:?}", m.action, m.correlation_id);
 
     // Autorisation : doit etre de niveau 3.protege ou 4.secure
     match m.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure]) {
@@ -278,7 +278,7 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionna
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + VerificateurMessage
 {
-    debug!("consommer_commande : {:?}", &m.message);
+    debug!("consommer_commande {} : {:?}", m.action, m.correlation_id);
 
     let user_id = m.get_user_id();
     let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
@@ -331,9 +331,9 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao,
 {
-    debug!("commande_sauvegarder_cle Consommer commande : {:?}", & m.message);
+    debug!("commande_sauvegarder_cle Consommer commande : {:?}", & m.correlation_id);
     let commande: CommandeSauvegarderCle = m.message.get_msg().map_contenu()?;
-    debug!("Commande sauvegarder cle parsed : {:?}", commande);
+    debug!("Commande sauvegarder cle parsed domaine {} hachage_bytes {}", commande.domaine, commande.hachage_bytes);
 
     // // Valider identite
     // {
@@ -376,7 +376,7 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
 
     debug!("commande_sauvegarder_cle: Ops bson : {:?}", ops);
 
-    let filtre = doc! { "hachage_bytes": commande.hachage_bytes.as_str() };
+    let filtre = doc! { "hachage_bytes": &commande.hachage_bytes, "domaine": &commande.domaine };
     let opts = UpdateOptions::builder().upsert(true).build();
 
     let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
@@ -503,9 +503,9 @@ async fn requete_cles_non_dechiffrables<M>(middleware: &M, m: MessageValideActio
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + VerificateurMessage,
 {
-    debug!("requete_cles_non_dechiffrables Consommer commande : {:?}", & m.message);
+    debug!("requete_cles_non_dechiffrables Consommer commande : {:?}", m.correlation_id);
     let requete: RequeteClesNonDechiffrable = m.message.get_msg().map_contenu()?;
-    debug!("requete_cles_non_dechiffrables cle parsed : {:?}", requete);
+    // debug!("requete_cles_non_dechiffrables cle parsed : {:?}", requete);
 
     let mut curseur = {
         let limite_docs = match requete.limite {
@@ -593,9 +593,9 @@ async fn requete_synchronizer_cles<M>(middleware: &M, m: MessageValideAction, _g
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + VerificateurMessage,
 {
-    debug!("requete_synchronizer_cles Consommer requete : {:?}", & m.message);
+    debug!("requete_synchronizer_cles Consommer requete : {:?}", m.correlation_id);
     let requete: RequeteSynchroniserCles = m.message.get_msg().map_contenu()?;
-    debug!("requete_synchronizer_cles cle parsed : {:?}", requete);
+    // debug!("requete_synchronizer_cles cle parsed : {:?}", requete);
 
     let mut curseur = {
         let limite_docs = requete.limite;
@@ -605,7 +605,7 @@ async fn requete_synchronizer_cles<M>(middleware: &M, m: MessageValideAction, _g
         let filtre = doc! {};
         let hint = Hint::Keys(doc!{"_id": 1});  // Index _id
         //let sort_doc = doc! {"_id": 1};
-        let projection = doc!{CHAMP_HACHAGE_BYTES: 1};
+        let projection = doc!{CHAMP_HACHAGE_BYTES: 1, CHAMP_DOMAINE: 1};
         let opts = FindOptions::builder()
             .hint(hint)
             //.sort(sort_doc)
@@ -622,31 +622,32 @@ async fn requete_synchronizer_cles<M>(middleware: &M, m: MessageValideAction, _g
     while let Some(d) = curseur.next().await {
         match d {
             Ok(doc_cle) => {
-                match doc_cle.get(CHAMP_HACHAGE_BYTES) {
-                    Some(h) => {
-                        match h.as_str() {
-                            Some(h) => cles.push(h.to_owned()),
-                            None => ()
-                        }
+                match convertir_bson_deserializable::<CleSynchronisation>(doc_cle) {
+                    Ok(h) => {
+                        cles.push(h.to_owned());
                     },
-                    None => ()
+                    Err(e) => {
+                        info!("requete_synchronizer_cles Erreur mapping CleSynchronisation : {:?}", e);
+                    }
                 }
             },
             Err(e) => error!("requete_synchronizer_cles Erreur lecture doc cle : {:?}", e)
         }
     }
 
-    let reponse = ReponseSynchroniserCles { liste_hachage_bytes: cles };
+    let reponse = ReponseSynchroniserCles { liste_cles: cles };
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
 }
 
 async fn evenement_cle_manquante<M>(middleware: &M, m: &MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: ValidateurX509 + GenerateurMessages + MongoDao,
 {
-    debug!("evenement_cle_manquante Marquer cles comme non dechiffrables {:?}", &m.message);
+    debug!("evenement_cle_manquante Marquer cles comme non dechiffrables correlation_id : {:?}", m.correlation_id);
     let event_non_dechiffrables: ReponseSynchroniserCles = m.message.get_msg().map_contenu()?;
 
-    let filtre = doc! { CHAMP_HACHAGE_BYTES: { "$in": event_non_dechiffrables.liste_hachage_bytes }};
+    // let filtre = doc! { CHAMP_HACHAGE_BYTES: { "$in": event_non_dechiffrables.liste_hachage_bytes }};
+    let filtre = doc! { "$or": CleSynchronisation::get_bson_filter(&event_non_dechiffrables.liste_cles)? };
+
     let ops = doc! {
         "$set": { CHAMP_NON_DECHIFFRABLE: true },
         "$currentDate": { CHAMP_MODIFICATION: true },
@@ -662,10 +663,12 @@ async fn evenement_cle_manquante<M>(middleware: &M, m: &MessageValideAction) -> 
 async fn evenement_cle_recue_partition<M>(middleware: &M, m: &MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: ValidateurX509 + GenerateurMessages + MongoDao,
 {
-    debug!("evenement_cle_recue_partition Marquer cle comme confirmee (dechiffrable) par la partition {:?}", &m.message);
+    debug!("evenement_cle_recue_partition Marquer cle comme confirmee (dechiffrable) par la partition {:?}", m.correlation_id);
     let event_cles_recues: ReponseSynchroniserCles = m.message.get_msg().map_contenu()?;
 
-    let filtre = doc! { CHAMP_HACHAGE_BYTES: { "$in": event_cles_recues.liste_hachage_bytes }};
+    // let filtre = doc! { CHAMP_HACHAGE_BYTES: { "$in": event_cles_recues.liste_hachage_bytes }};
+    let filtre = doc! { "$or": CleSynchronisation::get_bson_filter(&event_cles_recues.liste_cles)? };
+
     let ops = doc! {
         "$set": { CHAMP_NON_DECHIFFRABLE: false },
         "$currentDate": { CHAMP_MODIFICATION: true },
@@ -681,15 +684,16 @@ async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValideActio
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + VerificateurMessage,
 {
-    debug!("commande_confirmer_cles_sur_ca Consommer commande : {:?}", & m.message);
+    debug!("commande_confirmer_cles_sur_ca Consommer commande : {:?}", & m.correlation_id);
     let requete: ReponseSynchroniserCles = m.message.get_msg().map_contenu()?;
-    debug!("requete_synchronizer_cles cle parsed : {:?}", requete);
+    // debug!("requete_synchronizer_cles cle parsed : {:?}", requete);
 
     let mut cles_manquantes = HashSet::new();
-    cles_manquantes.extend(requete.liste_hachage_bytes.clone());
+    cles_manquantes.extend(requete.liste_cles.clone());
 
     let filtre_update = doc! {
-        CHAMP_HACHAGE_BYTES: {"$in": &requete.liste_hachage_bytes },
+        // CHAMP_HACHAGE_BYTES: {"$in": &requete.liste_hachage_bytes },
+        "$or": CleSynchronisation::get_bson_filter(&requete.liste_cles)?,
         CHAMP_NON_DECHIFFRABLE: true,
     };
 
@@ -702,29 +706,32 @@ async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValideActio
     let resultat_update = collection.update_many(filtre_update, ops, None).await?;
     debug!("commande_confirmer_cles_sur_ca Resultat update : {:?}", resultat_update);
 
-    let filtre = doc! { CHAMP_HACHAGE_BYTES: {"$in": &requete.liste_hachage_bytes } };
-    let projection = doc! { CHAMP_HACHAGE_BYTES: 1 };
+    let filtre = doc! { "$or": CleSynchronisation::get_bson_filter(&requete.liste_cles)? };
+    debug!("commande_confirmer_cles_sur_ca Filtre cles CA: {:?}", filtre);
+    let projection = doc! { CHAMP_HACHAGE_BYTES: 1, CHAMP_DOMAINE: 1 };
     let opts = FindOptions::builder().projection(projection).build();
     let mut curseur = collection.find(filtre, opts).await?;
     while let Some(d) = curseur.next().await {
         match d {
             Ok(d) => {
-                match d.get(CHAMP_HACHAGE_BYTES) {
-                    Some(c) => match c.as_str() {
-                        Some(hachage) => {
-                            // Enlever la cle de la liste de cles manquantes
-                            cles_manquantes.remove(hachage);
-                        },
-                        None => ()
+                match convertir_bson_deserializable::<CleSynchronisation>(d) {
+                //match d.get(CHAMP_HACHAGE_BYTES) {
+                    Ok(c) => {
+                        // Enlever la cle de la liste de cles manquantes
+                        trace!("Cle CA confirmee (presente) : {:?}", c);
+                        cles_manquantes.remove(&c);
                     },
-                    None => ()
+                    Err(e) => {
+                        info!("commande_confirmer_cles_sur_ca Erreur conversion CleSynchronisation : {:?}", e);
+                    }
                 }
             },
-            Err(e) => warn!("Erreur traitement curseur mongo : {:?}", e)
+            Err(e) => warn!("commande_confirmer_cles_sur_ca Erreur traitement curseur mongo : {:?}", e)
         }
     }
 
     let mut vec_cles_manquantes = Vec::new();
+    debug!("commande_confirmer_cles_sur_ca Demander {} cles manquantes sur CA", cles_manquantes.len());
     vec_cles_manquantes.extend(cles_manquantes);
     let reponse = ReponseConfirmerClesSurCa { cles_manquantes: vec_cles_manquantes };
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
