@@ -10,7 +10,7 @@ use millegrilles_common_rust::{multibase, multibase::Base, redis, serde_json};
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{doc, Document};
 use millegrilles_common_rust::certificats::{EnveloppeCertificat, EnveloppePrivee, ValidateurX509, VerificateurPermissions};
-use millegrilles_common_rust::common_messages::RequeteVerifierPreuve;
+use millegrilles_common_rust::common_messages::{RequeteDechiffrage, RequeteVerifierPreuve};
 use millegrilles_common_rust::chiffrage::{Chiffreur, CleChiffrageHandler, CleSecrete, extraire_cle_secrete, FormatChiffrage, rechiffrer_asymetrique_multibase};
 use millegrilles_common_rust::chiffrage_cle::CommandeSauvegarderCle;
 use millegrilles_common_rust::chiffrage_ed25519::{chiffrer_asymmetrique_ed25519, dechiffrer_asymmetrique_ed25519};

@@ -16,7 +16,7 @@ use millegrilles_common_rust::recepteur_messages::{MessageValideAction, TypeMess
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::tokio::{sync::mpsc::Sender, time::{Duration, sleep}};
 use millegrilles_common_rust::certificats::ordered_map;
-use millegrilles_common_rust::common_messages::{DataChiffre, ReponseSignatureCertificat};
+use millegrilles_common_rust::common_messages::{DataChiffre, ReponseSignatureCertificat, RequeteDechiffrage};
 use millegrilles_common_rust::{multibase, multibase::Base, serde_json};
 use millegrilles_common_rust::bson::{Bson, bson, doc, Document};
 use millegrilles_common_rust::chiffrage_ed25519::{chiffrer_asymmetrique_ed25519, dechiffrer_asymmetrique_ed25519};
@@ -627,13 +627,6 @@ impl CleSecreteRechiffrage {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CommandeRechiffrerBatch {
     pub cles: Vec<CleSecreteRechiffrage>
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct RequeteDechiffrage {
-    pub domaine: String,
-    pub liste_hachage_bytes: Vec<String>,
-    pub certificat_rechiffrage: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

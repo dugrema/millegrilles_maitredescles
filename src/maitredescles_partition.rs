@@ -19,7 +19,7 @@ use millegrilles_common_rust::chrono::{Duration, Utc};
 use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::constantes::Securite::L3Protege;
-use millegrilles_common_rust::common_messages::{DataChiffre, RequeteVerifierPreuve};
+use millegrilles_common_rust::common_messages::{DataChiffre, RequeteDechiffrage, RequeteVerifierPreuve};
 use millegrilles_common_rust::dechiffrage::dechiffrer_data;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille, MessageReponseChiffree, MessageSerialise};
