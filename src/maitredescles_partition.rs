@@ -1033,7 +1033,13 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
     where M: GenerateurMessages + MongoDao + VerificateurMessage + ValidateurX509 + CleChiffrageHandler
 {
     debug!("requete_dechiffrage Consommer requete : {:?}", & m.message);
-    let requete: RequeteDechiffrage = m.message.get_msg().map_contenu()?;
+    let requete: RequeteDechiffrage = match m.message.get_msg().map_contenu() {
+        Ok(inner) => inner,
+        Err(e) => {
+            info!("requete_dechiffrage Erreur mapping ParametresGetPermissionMessages : {:?}", e);
+            return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": format!("Erreur mapping requete : {:?}", e)}), None)?))
+        }
+    };
     debug!("requete_dechiffrage cle parsed : {:?}", requete);
 
     let enveloppe_privee = middleware.get_enveloppe_signature();

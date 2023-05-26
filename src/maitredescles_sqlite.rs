@@ -842,7 +842,13 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
     where M: GenerateurMessages + IsConfigNoeud + VerificateurMessage + ValidateurX509 + CleChiffrageHandler
 {
     debug!("requete_dechiffrage Consommer requete : {:?}", & m.message);
-    let requete: RequeteDechiffrage = m.message.get_msg().map_contenu()?;
+    let requete: RequeteDechiffrage = match m.message.get_msg().map_contenu() {
+        Ok(inner) => inner,
+        Err(e) => {
+            info!("requete_dechiffrage Erreur mapping ParametresGetPermissionMessages : {:?}", e);
+            return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": format!("Erreur mapping requete : {:?}", e)}), None)?))
+        }
+    };
     debug!("requete_dechiffrage cle parsed : {:?}", requete);
 
     let enveloppe_privee = middleware.get_enveloppe_signature();
@@ -905,41 +911,39 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValideAction, gestionn
     if cles.len() < requete.liste_hachage_bytes.len() {
         debug!("requete_dechiffrage Cles manquantes, on a {} trouvees sur {} demandees", cles.len(), requete.liste_hachage_bytes.len());
 
-        todo!("fix me");
-        // let cles_connues = cles.keys().map(|s|s.to_owned()).collect();
-        // // emettre_cles_inconnues(middleware, requete, cles_connues).await?;
-        // match requete_cles_inconnues(middleware, &requete, cles_connues).await {
-        //     Ok(mut reponse) => {
-        //         debug!("Reponse cle manquantes recue : {:?}", reponse.cles);
-        //         let connexion = gestionnaire.ouvrir_connection(middleware, false);
-        //         for cle in reponse.cles.into_iter() {
-        //             let hachage_bytes = cle.hachage_bytes.clone();
-        //
-        //             let cle_secrete = cle.get_cle_secrete()?;
-        //             let (_, cle_rechiffree) = cle.rechiffrer_cle(&gestionnaire.handler_rechiffrage)?;
-        //
-        //             let mut doc_cle: DocumentClePartition = cle.try_into()?;
-        //             doc_cle.cle_symmetrique = Some(cle_rechiffree.cle);
-        //             doc_cle.nonce_symmetrique = Some(cle_rechiffree.nonce);
-        //
-        //             let cle_interne = CleSecreteRechiffrage::from_doc_cle(cle_secrete, doc_cle.clone())?;
-        //             sauvegarder_cle(middleware, &gestionnaire, &connexion, cle_interne)?;
-        //
-        //             match rechiffrer_cle(&mut doc_cle, &gestionnaire.handler_rechiffrage, certificat.as_ref()) {
-        //                 Ok(()) => {
-        //                     cles.insert(hachage_bytes, doc_cle);
-        //                 },
-        //                 Err(e) => {
-        //                     error!("rechiffrer_cles Erreur rechiffrage cle {:?}", e);
-        //                     continue;  // Skip cette cle
-        //                 }
-        //             }
-        //         }
-        //     },
-        //     Err(e) => {
-        //         error!("requete_dechiffrage Erreur requete_cles_inconnues, skip : {:?}", e)
-        //     }
-        // }
+        let cles_connues = cles.keys().map(|s|s.to_owned()).collect();
+        match requete_cles_inconnues(middleware, &requete, cles_connues).await {
+            Ok(mut reponse) => {
+                debug!("Reponse cle manquantes recue : {:?}", reponse.cles);
+                let connexion = gestionnaire.ouvrir_connection(middleware, false);
+                for cle in reponse.cles.into_iter() {
+                    let hachage_bytes = cle.hachage_bytes.clone();
+
+                    let cle_secrete = cle.get_cle_secrete()?;
+                    let (_, cle_rechiffree) = cle.rechiffrer_cle(&gestionnaire.handler_rechiffrage)?;
+
+                    let mut doc_cle: DocumentClePartition = cle.try_into()?;
+                    doc_cle.cle_symmetrique = Some(cle_rechiffree.cle);
+                    doc_cle.nonce_symmetrique = Some(cle_rechiffree.nonce);
+
+                    let cle_interne = CleSecreteRechiffrage::from_doc_cle(cle_secrete, doc_cle.clone())?;
+                    sauvegarder_cle(middleware, &gestionnaire, &connexion, cle_interne)?;
+
+                    match rechiffrer_cle(&mut doc_cle, &gestionnaire.handler_rechiffrage, certificat.as_ref()) {
+                        Ok(()) => {
+                            cles.insert(hachage_bytes, doc_cle);
+                        },
+                        Err(e) => {
+                            error!("rechiffrer_cles Erreur rechiffrage cle {:?}", e);
+                            continue;  // Skip cette cle
+                        }
+                    }
+                }
+            },
+            Err(e) => {
+                error!("requete_dechiffrage Erreur requete_cles_inconnues, skip : {:?}", e)
+            }
+        }
     }
 
     // Preparer la reponse
