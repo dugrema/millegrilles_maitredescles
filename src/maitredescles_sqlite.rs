@@ -1196,8 +1196,8 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
             let mut prepared_statement_checkcle = connexion.prepare(
                 "SELECT domaine, hachage_bytes FROM cles WHERE domaine = ? AND hachage_bytes = ?")?;
             for cle_synchronisation in liste_cles.iter() {
-                prepared_statement_checkcle.bind(1, cle_synchronisation.domaine.as_str())?;
-                prepared_statement_checkcle.bind(2, cle_synchronisation.hachage_bytes.as_str())?;
+                prepared_statement_checkcle.bind((1, cle_synchronisation.domaine.as_str()))?;
+                prepared_statement_checkcle.bind((2, cle_synchronisation.hachage_bytes.as_str()))?;
                 let resultat = prepared_statement_checkcle.next()?;
                 match resultat {
                     State::Row => (),
@@ -1263,13 +1263,16 @@ async fn confirmer_cles_ca<M>(middleware: Arc<M>, gestionnaire: &'static Gestion
         // Lire une batch de cles
         let batch_cles = {
             let mut prepared_statement = connexion.prepare("SELECT domaine, hachage_bytes FROM cles WHERE confirmation_ca = 0 LIMIT ?")?;
-            prepared_statement.bind(1, batch_size)?;
+            prepared_statement.bind((1, batch_size))?;
             let mut batch_cles = Vec::new();
 
-            let mut cursor = prepared_statement.into_cursor();
-            while let Some(row) = cursor.next()? {
-                let domaine: String = row[0].as_string().expect("__curseur_lire_cles domaine").to_owned();
-                let hachage_bytes: String = row[1].as_string().expect("__curseur_lire_cles hachage_bytes").to_owned();
+            let mut cursor = prepared_statement.into_iter();
+            while let Some(row_result) = cursor.next() {
+                let row = row_result?;
+                // let domaine: String = row[0].as_string().expect("__curseur_lire_cles domaine").to_owned();
+                // let hachage_bytes: String = row[1].as_string().expect("__curseur_lire_cles hachage_bytes").to_owned();
+                let domaine: String = row.read::<&str, _>("domaine").to_string();
+                let hachage_bytes: String = row.read::<&str, _>("hachage_bytes").to_string();
                 batch_cles.push(CleSynchronisation { hachage_bytes, domaine });
             }
 
@@ -1292,8 +1295,8 @@ async fn confirmer_cles_ca<M>(middleware: Arc<M>, gestionnaire: &'static Gestion
                 "UPDATE cles SET confirmation_ca = 2 WHERE domaine = ? AND hachage_bytes = ? AND confirmation_ca = 0")?;
             connexion.execute("BEGIN")?;
             for cle in &batch_cles {
-                prepared_statement.bind(1, cle.domaine.as_str())?;
-                prepared_statement.bind(2, cle.hachage_bytes.as_str())?;
+                prepared_statement.bind((1, cle.domaine.as_str()))?;
+                prepared_statement.bind((2, cle.hachage_bytes.as_str()))?;
                 prepared_statement.next()?;
                 prepared_statement.reset()?;
             }
@@ -1364,8 +1367,8 @@ async fn traiter_cles_manquantes_ca<M>(
             "UPDATE cles SET confirmation_ca = 1 WHERE domaine = ? AND hachage_bytes = ?")?;
         for cle in cles_confirmees {
             // redis_dao.retirer_cleca_manquante(fingerprint, hachage_bytes).await?;
-            statement.bind(1, cle.domaine.as_str())?;
-            statement.bind(1, cle.hachage_bytes.as_str())?;
+            statement.bind((1, cle.domaine.as_str()))?;
+            statement.bind((2, cle.hachage_bytes.as_str()))?;
             statement.next()?;
             statement.reset()?;
         }
@@ -1585,7 +1588,7 @@ fn sauvegarder_cle<M>(
     {
         let mut prepared_statement_verifier = connection
             .prepare("SELECT cle_ref FROM cles WHERE cle_ref = ?")?;
-        prepared_statement_verifier.bind(1, cle_ref.as_str())?;
+        prepared_statement_verifier.bind((1, cle_ref.as_str()))?;
         if State::Row == prepared_statement_verifier.next()? {
             // Skip, la cle existe deja
             debug!("sauvegarder_cle Skip cle existante {}", hachage_bytes);
@@ -1611,19 +1614,19 @@ fn sauvegarder_cle<M>(
     let tag_str = None::<&str>;
     let header_str = info_cle.header.as_str();
 
-    prepared_statement_cle.bind(1, cle_ref.as_str())?;
-    prepared_statement_cle.bind(2, hachage_bytes)?;
-    prepared_statement_cle.bind(3, "")?;  // Cle asymmetrique (obsolete)
-    prepared_statement_cle.bind(4, iv_str)?;
-    prepared_statement_cle.bind(5, tag_str)?;
-    prepared_statement_cle.bind(6, header_str)?;
-    prepared_statement_cle.bind(7, cle_chiffree.cle.as_str())?;
-    prepared_statement_cle.bind(8, cle_chiffree.nonce.as_str())?;
-    prepared_statement_cle.bind(9, format_str.as_str())?;
-    prepared_statement_cle.bind(10, info_cle.domaine.as_str())?;
-    prepared_statement_cle.bind(11, 0)?;
+    prepared_statement_cle.bind((1, cle_ref.as_str()))?;
+    prepared_statement_cle.bind((2, hachage_bytes))?;
+    prepared_statement_cle.bind((3, ""))?;  // Cle asymmetrique (obsolete)
+    prepared_statement_cle.bind((4, iv_str))?;
+    prepared_statement_cle.bind((5, tag_str))?;
+    prepared_statement_cle.bind((6, header_str))?;
+    prepared_statement_cle.bind((7, cle_chiffree.cle.as_str()))?;
+    prepared_statement_cle.bind((8, cle_chiffree.nonce.as_str()))?;
+    prepared_statement_cle.bind((9, format_str.as_str()))?;
+    prepared_statement_cle.bind((10, info_cle.domaine.as_str()))?;
+    prepared_statement_cle.bind((11, 0))?;
     // prepared_statement_cle.bind(12, info_cle.signature_identite.as_str())?;
-    prepared_statement_cle.bind(12, "")?;
+    prepared_statement_cle.bind((12, ""))?;
 
     trace!("Conserver cle dans sqlite : {}", hachage_bytes);
     let resultat = prepared_statement_cle.next()?;
@@ -1634,9 +1637,9 @@ fn sauvegarder_cle<M>(
     }
 
     for (cle, valeur) in &info_cle.identificateurs_document {
-        prepared_statement_identificateurs.bind(1, cle_ref.as_str())?;
-        prepared_statement_identificateurs.bind(2, cle.as_str())?;
-        prepared_statement_identificateurs.bind(3, valeur.as_str())?;
+        prepared_statement_identificateurs.bind((1, cle_ref.as_str()))?;
+        prepared_statement_identificateurs.bind((2, cle.as_str()))?;
+        prepared_statement_identificateurs.bind((3, valeur.as_str()))?;
         let resultat = prepared_statement_identificateurs.next()?;
         prepared_statement_identificateurs.reset()?;
     }
@@ -1657,8 +1660,8 @@ fn charger_cle<D,S>(connexion: &Connection, domaine: D, hachage_bytes: S)
                cle_symmetrique, nonce_symmetrique \
         FROM cles WHERE domaine = ? AND hachage_bytes = ?"
     )?;
-    statement.bind(1, domaine)?;
-    statement.bind(2, hachage_bytes)?;
+    statement.bind((1, domaine))?;
+    statement.bind((2, hachage_bytes))?;
     match statement.next()? {
         State::Row => (),
         State::Done => return Ok(None)
@@ -1668,7 +1671,7 @@ fn charger_cle<D,S>(connexion: &Connection, domaine: D, hachage_bytes: S)
 
     let mut statement_id = connexion.prepare(
         "SELECT cle, valeur FROM identificateurs_document WHERE cle_ref = ?")?;
-    statement_id.bind(1, cle_ref.as_str())?;
+    statement_id.bind((1, cle_ref.as_str()))?;
     let mut identificateurs_document = HashMap::new();
     while State::Done != statement_id.next()? {
         let cle: String = statement_id.read(0)?;
@@ -1725,8 +1728,8 @@ fn charger_cle_configuration<M,S>(middleware: &M, connexion: &Connection, type_c
                 WHERE type_cle = ? AND instance_id = ? \
                 "
             )?;
-            statement.bind(1, type_cle)?;
-            statement.bind(2, instance_id.as_str())?;
+            statement.bind((1, type_cle))?;
+            statement.bind((2, instance_id.as_str()))?;
 
             statement
         },
@@ -1740,9 +1743,9 @@ fn charger_cle_configuration<M,S>(middleware: &M, connexion: &Connection, type_c
                 WHERE type_cle = ? AND instance_id = ? and fingerprint = ? \
                 "
             )?;
-            statement.bind(1, type_cle)?;
-            statement.bind(2, instance_id.as_str())?;
-            statement.bind(3, fingerprint.as_str())?;
+            statement.bind((1, type_cle))?;
+            statement.bind((2, instance_id.as_str()))?;
+            statement.bind((3, fingerprint.as_str()))?;
 
             statement
         }
@@ -1775,11 +1778,11 @@ fn sauvegarder_cle_configuration<M,S,I,T,F>(middleware: &M, connection: &Connect
             VALUES(?, ?, ?, ?, ?)
         ")?;
 
-    prepared_statement_configuration.bind(1, type_cle)?;
-    prepared_statement_configuration.bind(2, fingerprint)?;
-    prepared_statement_configuration.bind(3, instance_id)?;
-    prepared_statement_configuration.bind(4, cle)?;
-    prepared_statement_configuration.bind(5, nonce)?;
+    prepared_statement_configuration.bind((1, type_cle))?;
+    prepared_statement_configuration.bind((2, fingerprint))?;
+    prepared_statement_configuration.bind((3, instance_id))?;
+    prepared_statement_configuration.bind((4, cle))?;
+    prepared_statement_configuration.bind((5, nonce))?;
 
     debug!("Conserver config cle dans sqlite : {}", fingerprint);
     let resultat = match prepared_statement_configuration.next() {
