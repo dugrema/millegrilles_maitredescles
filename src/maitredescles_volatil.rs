@@ -1,25 +1,17 @@
-use std::error::Error;
 use std::fmt::{Debug, Formatter};
 use std::sync::{Arc, Mutex};
-use log::debug;
-use millegrilles_common_rust::chiffrage::{CleSecrete, rechiffrer_asymetrique_multibase};
-use millegrilles_common_rust::chiffrage_ed25519::{chiffrer_asymmetrique_ed25519, CleDerivee, dechiffrer_asymmetrique_ed25519, deriver_asymetrique_ed25519};
-use millegrilles_common_rust::{multibase, openssl, openssl::pkey::{Id, PKey, Private, Public}};
-use millegrilles_common_rust::certificats::{EnveloppeCertificat, EnveloppePrivee};
-use millegrilles_common_rust::chiffrage_rsa::dechiffrer_asymetrique;
-use millegrilles_common_rust::chiffrage_streamxchacha20poly1305::CipherMgs4;
-use millegrilles_common_rust::common_messages::DemandeSignature;
-use millegrilles_common_rust::constantes::{ROLE_MAITRE_DES_CLES, ROLE_MAITRE_DES_CLES_VOLATIL, SECURITE_4_SECURE};
+use millegrilles_common_rust::{multibase, openssl::pkey::{PKey, Public}};
 use millegrilles_common_rust::multibase::Base;
-use millegrilles_common_rust::openssl::hash::MessageDigest;
-use millegrilles_common_rust::openssl::nid::Nid;
-use millegrilles_common_rust::openssl::symm::Mode;
-use millegrilles_common_rust::openssl::x509::{X509Algorithm, X509Name, X509ReqBuilder};
 use millegrilles_common_rust::chacha20poly1305::{
     aead::{Aead, AeadCore, KeyInit, OsRng},
-    XChaCha20Poly1305, XNonce
+    XChaCha20Poly1305
 };
-use crate::maitredescles_commun::{DocCleSymmetrique, DocumentClePartition};
+use millegrilles_common_rust::millegrilles_cryptographie::x509::EnveloppePrivee;
+use millegrilles_common_rust::error::Error;
+use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::CleSecrete;
+use millegrilles_common_rust::millegrilles_cryptographie::x25519::{chiffrer_asymmetrique_ed25519, CleSecreteX25519, dechiffrer_asymmetrique_ed25519};
+
+use crate::maitredescles_commun::DocumentClePartition;
 
 pub struct CleInterneChiffree {
     pub cle: String,
@@ -67,7 +59,7 @@ pub struct HandlerCleRechiffrage {
     enveloppe_privee: Arc<EnveloppePrivee>,
 
     /// Cle symmetrique utilisee pour chiffrer/dechiffrer la table MaitreDesCles/cles
-    cle_symmetrique: Mutex<Option<CleSecrete>>,
+    cle_symmetrique: Mutex<Option<CleSecreteX25519>>,
 }
 
 impl Clone for HandlerCleRechiffrage {
@@ -87,7 +79,11 @@ impl Clone for HandlerCleRechiffrage {
 
 impl Debug for HandlerCleRechiffrage {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_str(format!("HandlerCleRechiffrage fingerprint {}", self.fingerprint()).as_str())
+        let fingerprint = match self.fingerprint() {
+            Ok(inner) => inner,
+            Err(e) => Err(std::fmt::Error{})?
+        };
+        f.write_str(format!("HandlerCleRechiffrage fingerprint {}", fingerprint).as_str())
         // match self.fingerprint() {
         //     Some(fingerprint) => {
         //         f.write_str(format!("HandlerCleRechiffrage fingerprint {}", fingerprint).as_str())
@@ -99,7 +95,7 @@ impl Debug for HandlerCleRechiffrage {
 
 impl HandlerCleRechiffrage {
 
-    // pub fn new_volatil_memoire() -> Result<Self, Box<dyn Error>> {
+    // pub fn new_volatil_memoire() -> Result<Self, Error> {
     //     let cle_rechiffrage = PKey::generate_ed25519()?;
     //     Ok(Self {
     //         cle_rechiffrage,
@@ -110,7 +106,7 @@ impl HandlerCleRechiffrage {
     // }
 
     pub fn with_certificat(enveloppe_privee: Arc<EnveloppePrivee>) -> Self {
-        let cle_privee = enveloppe_privee.cle_privee().to_owned();
+        let cle_privee = enveloppe_privee.cle_privee.to_owned();
         Self {
             // cle_rechiffrage: cle_privee,
             // certificat_maitredescles: Mutex::new(Some(enveloppe)),
@@ -120,7 +116,7 @@ impl HandlerCleRechiffrage {
     }
 
     // pub fn fingerprint(&self) -> Option<String> {
-    pub fn fingerprint(&self) -> &str {
+    pub fn fingerprint(&self) -> Result<String, Error> {
         // match self.certificat_maitredescles.lock().expect("lock fingerprint").as_ref() {
         //     Some(c) => Some(c.fingerprint.to_owned()),
         //     None => None
@@ -129,10 +125,10 @@ impl HandlerCleRechiffrage {
         //     Some(c) => Some(c.fingerprint().to_owned()),
         //     None => None
         // }
-        self.enveloppe_privee.fingerprint().as_str()
+        Ok(self.enveloppe_privee.fingerprint()?)
     }
 
-    // pub fn generer_csr<S>(&self, idmg_: S) -> Result<DemandeSignature, Box<dyn Error>>
+    // pub fn generer_csr<S>(&self, idmg_: S) -> Result<DemandeSignature, Error>
     //     where S: AsRef<str>
     // {
     //     debug!("Generer csr");
@@ -213,14 +209,14 @@ impl HandlerCleRechiffrage {
         self.enveloppe_privee.clone()
     }
 
-    pub fn generer_cle_symmetrique(&self) -> Result<(), Box<dyn Error>> {
+    pub fn generer_cle_symmetrique(&self) -> Result<(), Error> {
         // Generer une cle secrete 32 bytes pour chiffrage symmetrique
         let mut guard = self.cle_symmetrique.lock().expect("lock");
         *guard = Some(CleSecrete::generer());
         Ok(())
     }
 
-    pub fn get_cle_symmetrique_chiffree(&self, cle_publique: &PKey<Public>) -> Result<String, Box<dyn Error>> {
+    pub fn get_cle_symmetrique_chiffree(&self, cle_publique: &PKey<Public>) -> Result<String, Error> {
         // Conserver versions asymmetriques de la cle privee
         match self.cle_symmetrique.lock().expect("lock").as_ref() {
             Some(inner) => {
@@ -233,20 +229,20 @@ impl HandlerCleRechiffrage {
         }
     }
 
-    pub fn set_cle_symmetrique<S>(&self, cle: S) -> Result<(), Box<dyn Error>>
+    pub fn set_cle_symmetrique<S>(&self, cle: S) -> Result<(), Error>
         where S: AsRef<str>
     {
         let cle = cle.as_ref();
         let enveloppe_privee = self.enveloppe_privee.as_ref();
         let cle_bytes = multibase::decode(cle)?;
-        let cle_secrete = dechiffrer_asymmetrique_ed25519(&cle_bytes.1[..], enveloppe_privee.cle_privee())?;
+        let cle_secrete = dechiffrer_asymmetrique_ed25519(&cle_bytes.1[..], &enveloppe_privee.cle_privee)?;
         let mut guard = self.cle_symmetrique.lock().expect("lock");
         *guard = Some(cle_secrete);
 
         Ok(())
     }
 
-    pub fn chiffrer_cle_secrete(&self, cle: &[u8]) -> Result<CleInterneChiffree, Box<dyn Error>> {
+    pub fn chiffrer_cle_secrete(&self, cle: &[u8]) -> Result<CleInterneChiffree, Error> {
         let (nonce, ciphertext) = {
             let guard = self.cle_symmetrique.lock().expect("lock");
             match guard.as_ref() {
@@ -272,7 +268,7 @@ impl HandlerCleRechiffrage {
         Ok(CleInterneChiffree {cle: cle_chiffree, nonce: nonce_string})
     }
 
-    pub fn dechiffer_cle_secrete(&self, cle: CleInterneChiffree) -> Result<CleSecrete, Box<dyn Error>> {
+    pub fn dechiffer_cle_secrete(&self, cle: CleInterneChiffree) -> Result<CleSecreteX25519, Error> {
         let nonce = multibase::decode(cle.nonce)?;
         let cle_chiffree = multibase::decode(cle.cle)?;
 

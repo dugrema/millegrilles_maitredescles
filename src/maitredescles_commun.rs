@@ -1,35 +1,41 @@
 use std::collections::{HashMap, HashSet};
-use std::error::Error;
 use std::sync::{Arc, Mutex};
 
 use log::{debug, error, info, warn};
-use millegrilles_common_rust::certificats::{EnveloppeCertificat, EnveloppePrivee, ValidateurX509, VerificateurPermissions};
-use millegrilles_common_rust::chiffrage::{chiffrer_asymetrique_multibase, CleChiffrageHandler, CleSecrete, FormatChiffrage, rechiffrer_asymetrique_multibase};
-use millegrilles_common_rust::chiffrage_cle::{CleDechiffree, CommandeSauvegarderCle};
+use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
+use millegrilles_common_rust::chiffrage_cle::CommandeSauvegarderCle;
 use millegrilles_common_rust::constantes::*;
-use millegrilles_common_rust::formatteur_messages::{MessageMilleGrille, MessageReponseChiffree};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
 use millegrilles_common_rust::messages_generiques::MessageCedule;
 use millegrilles_common_rust::middleware::Middleware;
 use millegrilles_common_rust::mongo_dao::{ChampIndex, IndexOptions, MongoDao};
-use millegrilles_common_rust::recepteur_messages::{MessageValideAction, TypeMessage};
+use millegrilles_common_rust::recepteur_messages::{MessageValide, TypeMessage};
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::tokio::{sync::mpsc::Sender, time::{Duration, sleep}};
 use millegrilles_common_rust::certificats::ordered_map;
 use millegrilles_common_rust::common_messages::{DataChiffre, ReponseSignatureCertificat, RequeteDechiffrage};
 use millegrilles_common_rust::{multibase, multibase::Base, serde_json};
 use millegrilles_common_rust::bson::{Bson, bson, doc, Document};
-use millegrilles_common_rust::chiffrage_ed25519::{chiffrer_asymmetrique_ed25519, dechiffrer_asymmetrique_ed25519};
+use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::configuration::ConfigMessages;
-use millegrilles_common_rust::dechiffrage::dechiffrer_data;
 use millegrilles_common_rust::hachages::hacher_bytes;
+use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::{CleSecrete, FormatChiffrage};
+use millegrilles_common_rust::millegrilles_cryptographie::x25519::{chiffrer_asymmetrique_ed25519, CleSecreteX25519};
+use millegrilles_common_rust::millegrilles_cryptographie::x509::EnveloppeCertificat;
 use millegrilles_common_rust::multibase::Base::Base58Btc;
 use millegrilles_common_rust::multihash::Code;
 use millegrilles_common_rust::serde_json::json;
+use millegrilles_common_rust::error::Error;
+use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_cles::CleChiffrageHandler;
+use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
+use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::epochseconds;
+
+use crate::chiffrage_cles::chiffrer_asymetrique_multibase;
 use crate::domaines_maitredescles::TypeGestionnaire;
 use crate::maitredescles_partition::GestionnaireMaitreDesClesPartition;
 use crate::maitredescles_sqlite::GestionnaireMaitreDesClesSQLite;
 use crate::maitredescles_volatil::{CleInterneChiffree, HandlerCleRechiffrage};
+use crate::messages::MessageReponseChiffree;
 
 pub const DOMAINE_NOM: &str = "MaitreDesCles";
 
@@ -80,7 +86,7 @@ pub const CHAMP_ACCES_PERMIS: &str = "1.permis";
 pub const CHAMP_ACCES_CLE_INCONNUE: &str = "4.inconnue";
 
 /// Creer index MongoDB
-pub async fn preparer_index_mongodb_custom<M>(middleware: &M, nom_collection_cles: &str, ca: bool) -> Result<(), String>
+pub async fn preparer_index_mongodb_custom<M>(middleware: &M, nom_collection_cles: &str, ca: bool) -> Result<(), Error>
     where M: MongoDao + ConfigMessages
 {
     // // Index hachage_bytes
@@ -166,8 +172,8 @@ pub async fn entretien<M>(middleware: Arc<M>)
 /// Emet le certificat de maitre des cles
 /// Le message n'a aucun contenu, c'est l'enveloppe qui permet de livrer le certificat
 /// Si message est None, emet sur evenement.MaitreDesCles.certMaitreDesCles
-pub async fn emettre_certificat_maitredescles<M>(middleware: &M, m: Option<MessageValideAction>)
-    -> Result<(), Box<dyn Error>>
+pub async fn emettre_certificat_maitredescles<M>(middleware: &M, m: Option<MessageValide>)
+    -> Result<(), Error>
     where M: GenerateurMessages
 {
     debug!("emettre_certificat_maitredescles");
@@ -176,23 +182,26 @@ pub async fn emettre_certificat_maitredescles<M>(middleware: &M, m: Option<Messa
 
     match m {
         Some(demande) => {
-            match demande.reply_q.as_ref() {
-                Some(reply_q) => {
-                    // On utilise une correlation fixe pour permettre au demandeur de recevoir les
-                    // reponses de plusieurs partitions de maitre des cles en meme temps.
-                    let routage = RoutageMessageReponse::new(
-                        reply_q, COMMANDE_CERT_MAITREDESCLES);
-                    let message_reponse = middleware.formatter_reponse(&reponse, None)?;
-                    middleware.repondre(routage, message_reponse).await?;
+            let reply_to = match demande.type_message {
+                TypeMessageOut::Reponse(r) => {
+                    r.reply_to
                 },
-                None => {
-                    debug!("Mauvais message recu pour emettre_certificat (pas de reply_q)");
+                _ => {
+                    Err(Error::Str("emettre_certificat_maitredescles Mauvais type de message, doit etre reponse"))?
                 }
-            }
+            };
+
+            // On utilise une correlation fixe pour permettre au demandeur de recevoir les
+            // reponses de plusieurs partitions de maitre des cles en meme temps.
+            let routage = RoutageMessageReponse::new(
+                reply_to, COMMANDE_CERT_MAITREDESCLES);
+            middleware.repondre(routage, &reponse).await?;
         },
         None => {
-            let routage = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_CERT_MAITREDESCLES)
-                .exchanges(vec![Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure])
+            let routage = RoutageMessageAction::builder(
+                DOMAINE_NOM, COMMANDE_CERT_MAITREDESCLES,
+                vec![Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure]
+            )
                 .correlation_id(COMMANDE_CERT_MAITREDESCLES)
                 .build();
             middleware.emettre_evenement(routage, &reponse).await?;
@@ -204,7 +213,7 @@ pub async fn emettre_certificat_maitredescles<M>(middleware: &M, m: Option<Messa
 
 /// Emettre les cles de l'instance locale pour s'assurer que tous les maitre des cles en ont une copie
 pub async fn emettre_cles_symmetriques<M>(middleware: &M, rechiffreur: &HandlerCleRechiffrage)
-    -> Result<(), Box<dyn Error>>
+    -> Result<(), Error>
     where M: GenerateurMessages + CleChiffrageHandler
 {
     debug!("emettre_cles_symmetriques");
@@ -213,11 +222,12 @@ pub async fn emettre_cles_symmetriques<M>(middleware: &M, rechiffreur: &HandlerC
     let enveloppes_publiques = middleware.get_publickeys_chiffrage();
 
     // Recuperer cles symmetriques chiffrees pour CA et tous les maitre des cles connus
-    let cle_secrete_chiffree_ca = rechiffreur.get_cle_symmetrique_chiffree(&enveloppe_privee.enveloppe_ca.cle_publique)?;
+    let cle_secrete_chiffree_ca = rechiffreur.get_cle_symmetrique_chiffree(
+        &enveloppe_privee.enveloppe_ca.certificat.public_key()?)?;
     let mut cles = HashMap::new();
     for cle in enveloppes_publiques.into_iter() {
-        let cle_rechiffree = rechiffreur.get_cle_symmetrique_chiffree(&cle.public_key)?;
-        cles.insert(cle.fingerprint, cle_rechiffree);
+        let cle_rechiffree = rechiffreur.get_cle_symmetrique_chiffree(&cle.certificat.public_key()?)?;
+        cles.insert(cle.fingerprint()?, cle_rechiffree);
     }
 
     let evenement = EvenementClesRechiffrage {
@@ -229,8 +239,8 @@ pub async fn emettre_cles_symmetriques<M>(middleware: &M, rechiffreur: &HandlerC
     //     "cles_dechiffrage": cles,
     // });
 
-    let routage = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_CLES_RECHIFFRAGE)
-        .exchanges(vec![Securite::L4Secure])
+    let routage = RoutageMessageAction::builder(
+        DOMAINE_NOM, EVENEMENT_CLES_RECHIFFRAGE, vec![Securite::L4Secure])
         .build();
 
     middleware.emettre_evenement(routage, &evenement).await?;
@@ -263,7 +273,7 @@ pub async fn emettre_cles_symmetriques<M>(middleware: &M, rechiffreur: &HandlerC
 // }
 
 // pub async fn generer_certificat_volatil<M>(middleware: &M, handler_rechiffrage: &HandlerCleRechiffrage)
-//     -> Result<(), Box<dyn Error>>
+//     -> Result<(), Error>
 //     where M: GenerateurMessages + ValidateurX509
 // {
 //     let idmg = middleware.get_enveloppe_signature().idmg()?;
@@ -303,14 +313,14 @@ pub async fn emettre_cles_symmetriques<M>(middleware: &M, rechiffreur: &HandlerC
 // }
 
 pub async fn preparer_rechiffreur<M>(middleware: &M, handler_rechiffrage: &HandlerCleRechiffrage)
-    -> Result<(), Box<dyn Error>>
+    -> Result<(), Error>
     where M: GenerateurMessages + ValidateurX509
 {
     info!("preparer_rechiffreur Generer nouvelle cle symmetrique de rechiffrage");
     handler_rechiffrage.generer_cle_symmetrique()
 }
 
-pub async fn traiter_cedule<M>(_middleware: &M, _trigger: &MessageCedule) -> Result<(), Box<dyn Error>>
+pub async fn traiter_cedule<M>(_middleware: &M, _trigger: &MessageCedule) -> Result<(), Error>
 where M: Middleware + 'static {
     // let message = trigger.message;
 
@@ -322,7 +332,7 @@ where M: Middleware + 'static {
 /// Emettre evenement de cles inconnues suite a une requete. Permet de faire la difference entre
 /// les cles de la requete et les cles connues.
 // pub async fn emettre_cles_inconnues<M>(middleware: &M, requete: &RequeteDechiffrage, cles_connues: Vec<String>)
-//     -> Result<(), Box<dyn Error>>
+//     -> Result<(), Error>
 //     where M: GenerateurMessages
 // {
 //     // Faire une demande interne de sync pour voir si les cles inconnues existent (async)
@@ -346,16 +356,15 @@ where M: Middleware + 'static {
 /// Emettre evenement de cles inconnues suite a une requete. Permet de faire la difference entre
 /// les cles de la requete et les cles connues.
 pub async fn requete_cles_inconnues<M>(middleware: &M, requete: &RequeteDechiffrage, cles_connues: Vec<String>)
-    -> Result<MessageListeCles, Box<dyn Error>>
+    -> Result<MessageListeCles, Error>
     where M: GenerateurMessages + CleChiffrageHandler
 {
     let domaine = requete.domaine.clone();
 
     // Faire une demande interne de sync pour voir si les cles inconnues existent (async)
     let routage_evenement_manquant = RoutageMessageAction::builder(
-        DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION
+        DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION, vec![Securite::L4Secure]
     )
-        .exchanges(vec![Securite::L4Secure])
         .timeout_blocking(3000)
         .build();
 
@@ -372,20 +381,24 @@ pub async fn requete_cles_inconnues<M>(middleware: &M, requete: &RequeteDechiffr
     let evenement_cles_manquantes = ReponseSynchroniserCles { liste_cles };
 
     let reponse = match middleware.transmettre_requete(routage_evenement_manquant.clone(), &evenement_cles_manquantes).await? {
-        TypeMessage::Valide(m) => {
-            debug!("maitredescles_commun.requete_cles_inconnues Reponse recue {:?}", m);
-            match MessageReponseChiffree::try_from(m.message.parsed) {
-                Ok(inner) => {
-                    let message_dechiffre = inner.dechiffrer(middleware)?;
-                    let reponse: MessageListeCles = serde_json::from_slice(&message_dechiffre.data_dechiffre[..])?;
-                    reponse
-                },
-                Err(e) => {
-                    Err(format!("maitredescles_commun.requete_cles_inconnues synchroniser_cles Erreur dechiffrage reponse : {:?}", e))?
+        Some(inner) => match inner {
+            TypeMessage::Valide(m) => {
+                debug!("maitredescles_commun.requete_cles_inconnues Reponse recue {:?}", m.type_message);
+                let message_ref = m.message.parse()?;
+                match MessageReponseChiffree::try_from(message_ref) {
+                    Ok(inner) => {
+                        let message_dechiffre = inner.dechiffrer(middleware)?;
+                        let reponse: MessageListeCles = serde_json::from_slice(&message_dechiffre.data_dechiffre[..])?;
+                        reponse
+                    },
+                    Err(e) => {
+                        Err(format!("maitredescles_commun.requete_cles_inconnues synchroniser_cles Erreur dechiffrage reponse : {:?}", e))?
+                    }
                 }
-            }
+            },
+            _ => Err(format!("maitredescles_commun.requete_cles_inconnues Erreur reponse pour requete cle manquante, mauvais type de reponse"))?
         },
-        _ => Err(format!("maitredescles_commun.requete_cles_inconnues Erreur reponse pour requete cle manquante, mauvais type de reponse"))?
+        None => Err(format!("maitredescles_commun.requete_cles_inconnues Aucune reponse pour requete cle manquante"))?
     };
 
     Ok(reponse)
@@ -438,7 +451,7 @@ impl AsRef<Self> for CleSynchronisation {
 }
 
 impl CleSynchronisation {
-    pub fn get_bson_filter<S>(cles: &Vec<S>) -> Result<Vec<Document>, Box<dyn Error>>
+    pub fn get_bson_filter<S>(cles: &Vec<S>) -> Result<Vec<Document>, Error>
         where S: AsRef<Self>
     {
         // Extraire refs
@@ -547,7 +560,7 @@ impl TryFrom<CommandeSauvegarderCle> for CleSecreteRechiffrage {
 impl CleSecreteRechiffrage {
 
     // fn try_from(value: CommandeSauvegarderCle) -> Result<Self, Self::Error> {
-    pub fn from_commande(cle_secrete: &CleSecrete, value: CommandeSauvegarderCle) -> Result<Self, Box<dyn Error>> {
+    pub fn from_commande(cle_secrete: &CleSecreteX25519, value: CommandeSauvegarderCle) -> Result<Self, Error> {
         let header = match value.header {
             Some(inner) => inner,
             None => Err(format!("TryFrom<CommandeSauvegarderCle> Header manquant"))?
@@ -565,7 +578,7 @@ impl CleSecreteRechiffrage {
         })
     }
 
-    pub fn from_doc_cle(cle_secrete: CleSecrete, value: DocumentClePartition) -> Result<Self, Box<dyn Error>> {
+    pub fn from_doc_cle(cle_secrete: CleSecreteX25519, value: DocumentClePartition) -> Result<Self, Error> {
         let header = match value.header {
             Some(inner) => inner,
             None => Err(format!("TryFrom<CommandeSauvegarderCle> Header manquant"))?
@@ -583,14 +596,14 @@ impl CleSecreteRechiffrage {
         })
     }
 
-    pub fn get_cle_secrete(&self) -> Result<CleSecrete, Box<dyn Error>> {
+    pub fn get_cle_secrete(&self) -> Result<CleSecreteX25519, Error> {
         let cle_secrete: Vec<u8> = multibase::decode(&self.cle_secrete)?.1;
         let mut cle_secrete_dechiffree = CleSecrete([0u8; 32]);
         cle_secrete_dechiffree.0.copy_from_slice(&cle_secrete[..]);
         Ok(cle_secrete_dechiffree)
     }
 
-    // fn verifier_identite(&self, cle: &CleSecrete) -> Result<(), Box<dyn Error>>{
+    // fn verifier_identite(&self, cle: &CleSecrete) -> Result<(), Error>{
     //     let identite_cle: IdentiteCle = self.clone().into();
     //     if identite_cle.verifier(cle)? != true {
     //         warn!("maitredescles_common.CleSecreteRechiffrage Erreur verifier identite commande, signature invalide pour cle {}", self.hachage_bytes);
@@ -599,14 +612,14 @@ impl CleSecreteRechiffrage {
     //     Ok(())
     // }
 
-    pub fn get_cle_ref(&self) -> Result<String, Box<dyn Error>> {
+    pub fn get_cle_ref(&self) -> Result<String, Error> {
         let cle_secrete = self.get_cle_secrete()?;
         let cle_info = CleRefData::from(self);
         Ok(calculer_cle_ref(cle_info, &cle_secrete)?)
     }
 
     /// Rechiffre la cle secrete dechiffree.
-    pub fn rechiffrer_cle(&self, handler_rechiffrage: &HandlerCleRechiffrage) -> Result<(String, CleInterneChiffree), Box<dyn Error>> {
+    pub fn rechiffrer_cle(&self, handler_rechiffrage: &HandlerCleRechiffrage) -> Result<(String, CleInterneChiffree), Error> {
         let cle_secrete = self.get_cle_secrete()?;
 
         // // Verifier identite. Lance exception si invalide.
@@ -627,6 +640,33 @@ impl CleSecreteRechiffrage {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CommandeRechiffrerBatch {
     pub cles: Vec<CleSecreteRechiffrage>
+}
+
+#[derive(Clone, Deserialize)]
+pub struct RowClePartitionRef<'a> {
+    // Identite
+    pub hachage_bytes: &'a str,
+    pub domaine: &'a str,
+    pub identificateurs_document: HashMap<&'a str, &'a str>,
+    // pub signature_identite: String,
+
+    // Cle chiffree
+    pub cle: &'a str,
+
+    // Dechiffrage contenu
+    pub format: FormatChiffrage,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iv: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tag: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub header: Option<&'a str>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub partition: Option<&'a str>,
+
+    #[serde(rename(deserialize="_mg-creation"), deserialize_with="epochseconds::deserialize")]
+    pub date_creation: DateTime<Utc>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -653,6 +693,27 @@ pub struct TransactionCle {
     pub partition: Option<String>,
 }
 
+impl From<RowClePartitionRef<'_>> for TransactionCle {
+    fn from(value: RowClePartitionRef) -> Self {
+        let mut map_iddocs = HashMap::new();
+        for (k, v) in value.identificateurs_document {
+            map_iddocs.insert(k.to_string(), v.to_string());
+        }
+
+        Self {
+            hachage_bytes: value.hachage_bytes.to_string(),
+            domaine: value.domaine.to_string(),
+            identificateurs_document: map_iddocs,
+            cle: value.cle.to_string(),
+            format: value.format,
+            iv: match value.iv { Some(inner) => Some(inner.to_string()), None => None },
+            tag: match value.tag { Some(inner) => Some(inner.to_string()), None => None },
+            header: match value.header { Some(inner) => Some(inner.to_string()), None => None },
+            partition: match value.partition { Some(inner) => Some(inner.to_string()), None => None },
+        }
+    }
+}
+
 // impl Into<IdentiteCle> for TransactionCle {
 //     fn into(self) -> IdentiteCle {
 //         IdentiteCle {
@@ -666,7 +727,7 @@ pub struct TransactionCle {
 
 impl TransactionCle {
     pub fn new_from_commande(commande: &CommandeSauvegarderCle, fingerprint: &str)
-        -> Result<Self, Box<dyn Error>>
+        -> Result<Self, Error>
     {
         let cle = match commande.cles.get(fingerprint) {
             Some(c) => c,
@@ -918,7 +979,7 @@ impl<'a> From<&'a CleSecreteRechiffrage> for CleRefData<'a> {
 }
 
 /// Calcule la cle_ref a partir du hachage et cle_secret d'une cle recue (commande/transaction)
-pub fn calculer_cle_ref(info: CleRefData, cle_secrete: &CleSecrete) -> Result<String, String>
+pub fn calculer_cle_ref(info: CleRefData, cle_secrete: &CleSecreteX25519) -> Result<String, String>
 {
     let hachage_bytes_str = info.hachage_bytes;
     let mut hachage_src_bytes: Vec<u8> = match multibase::decode(hachage_bytes_str) {
@@ -967,13 +1028,13 @@ pub fn calculer_cle_ref(info: CleRefData, cle_secrete: &CleSecrete) -> Result<St
 /// Rechiffre une cle secrete
 // pub fn rechiffrer_cle(cle: &mut DocumentClePartition, privee: &EnveloppePrivee, certificat_destination: &EnveloppeCertificat)
 pub fn rechiffrer_cle(cle: &mut DocumentClePartition, handler_rechiffrage: &HandlerCleRechiffrage, certificat_destination: &EnveloppeCertificat)
-    -> Result<(), Box<dyn Error>>
+    -> Result<(), Error>
 {
-    if certificat_destination.verifier_exchanges(vec![Securite::L4Secure, Securite::L3Protege, Securite::L2Prive, Securite::L1Public]) {
+    if certificat_destination.verifier_exchanges(vec![Securite::L4Secure, Securite::L3Protege, Securite::L2Prive, Securite::L1Public])? {
         // Ok, certificat de composant avec acces MQ
-    } else if certificat_destination.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+    } else if certificat_destination.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
         // Ok, acces global,
-    } else if certificat_destination.verifier_roles(vec![RolesCertificats::ComptePrive]) {
+    } else if certificat_destination.verifier_roles(vec![RolesCertificats::ComptePrive])? {
         // ComptePrive : certificats sont verifies par le domaine (relai de permission)
     } else {
         Err(format!("maitredescles_partition.rechiffrer_cle Certificat sans user_id ni L4Secure, acces refuse"))?
@@ -984,7 +1045,7 @@ pub fn rechiffrer_cle(cle: &mut DocumentClePartition, handler_rechiffrage: &Hand
 
     // let cle_originale = cle.cle.as_str();
     // let cle_privee = privee.cle_privee();
-    let cle_publique = certificat_destination.certificat().public_key()?;
+    let cle_publique = certificat_destination.certificat.public_key()?;
     // let cle_rechiffree = rechiffrer_asymetrique_multibase(cle_privee, &cle_publique, cle_originale)?;
     let cle_rechiffree = chiffrer_asymetrique_multibase(cle_secrete, &cle_publique)?;
 
@@ -1023,11 +1084,11 @@ pub struct CommandeCleSymmetrique {
 }
 
 /// Emettre une demande de rechiffrage de cle symmetrique par un tiers
-pub async fn emettre_demande_cle_symmetrique<M,S>(middleware: &M, cle_ca: S) -> Result<(), Box<dyn Error>>
+pub async fn emettre_demande_cle_symmetrique<M,S>(middleware: &M, cle_ca: S) -> Result<(), Error>
     where M: GenerateurMessages, S: AsRef<str>
 {
     let cle_privee = middleware.get_enveloppe_signature();
-    let instance_id = cle_privee.enveloppe.get_common_name()?;
+    let instance_id = cle_privee.enveloppe_pub.get_common_name()?;
 
     debug!("emettre_demande_cle_symmetrique Demander la cle symmetrique pour instance_id : {}", instance_id);
 
@@ -1036,8 +1097,7 @@ pub async fn emettre_demande_cle_symmetrique<M,S>(middleware: &M, cle_ca: S) -> 
     });
 
     let routage = RoutageMessageAction::builder(
-        DOMAINE_NOM, EVENEMENT_DEMANDE_CLE_SYMMETRIQUE)
-        .exchanges(vec![Securite::L3Protege])
+        DOMAINE_NOM, EVENEMENT_DEMANDE_CLE_SYMMETRIQUE, vec![Securite::L3Protege])
         .correlation_id(EVENEMENT_DEMANDE_CLE_SYMMETRIQUE)
         .build();
 
@@ -1054,8 +1114,8 @@ pub struct MessageListeCles {
 /// Genere une commande de sauvegarde de cles pour tous les certificats maitre des cles connus
 /// incluant le certificat de millegrille
 pub fn rechiffrer_pour_maitredescles_ca<M>(middleware: &M, handler: &HandlerCleRechiffrage, cle: DocumentClePartition)
-    -> Result<CommandeSauvegarderCle, Box<dyn Error>>
-    where M: GenerateurMessages + CleChiffrageHandler
+    -> Result<CommandeSauvegarderCle, Error>
+    where M: GenerateurMessages
 {
     let enveloppe_privee = middleware.get_enveloppe_signature();
     // let fingerprint_local = enveloppe_privee.fingerprint().as_str();
@@ -1074,12 +1134,12 @@ pub fn rechiffrer_pour_maitredescles_ca<M>(middleware: &M, handler: &HandlerCleR
     {
         let cle_interne = CleInterneChiffree::try_from(cle.clone())?;
         let cle_secrete = handler.dechiffer_cle_secrete(cle_interne)?;
-        let cle_publique_ca = &enveloppe_privee.enveloppe_ca.cle_publique;
+        let cle_publique_ca = &enveloppe_privee.enveloppe_ca.certificat.public_key()?;
 
         let cle_rechiffree = chiffrer_asymmetrique_ed25519(&cle_secrete.0[..], cle_publique_ca)?;
         let cle_ca_str = multibase::encode(Base::Base64, cle_rechiffree);
-        let cle_ca_fingerprint = enveloppe_privee.enveloppe_ca.fingerprint.as_str();
-        commande_transfert.cles.insert(cle_ca_fingerprint.to_owned(), cle_ca_str);
+        let cle_ca_fingerprint = enveloppe_privee.enveloppe_ca.fingerprint()?;
+        commande_transfert.cles.insert(cle_ca_fingerprint, cle_ca_str);
     };
 
     // Cles rechiffrees
@@ -1109,8 +1169,8 @@ pub fn rechiffrer_pour_maitredescles_ca<M>(middleware: &M, handler: &HandlerCleR
 }
 
 // /// Dechiffre le message kind:8 d'une batch
-// pub fn dechiffrer_batch<M>(middleware: &M, m: MessageValideAction) -> Result<CommandeRechiffrerBatch, Box<dyn Error>>
-// pub fn dechiffrer_batch<M>(middleware: &M, m: MessageValideAction) -> Result<CommandeRechiffrerBatch, Box<dyn Error>>
+// pub fn dechiffrer_batch<M>(middleware: &M, m: MessageValide) -> Result<CommandeRechiffrerBatch, Error>
+// pub fn dechiffrer_batch<M>(middleware: &M, m: MessageValide) -> Result<CommandeRechiffrerBatch, Error>
 //     where M: GenerateurMessages + CleChiffrageHandler
 // {
 //     // Dechiffrer la cle asymmetrique pour certificat local

@@ -11,7 +11,7 @@ use millegrilles_common_rust::constantes::RolesCertificats;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::futures::stream::FuturesUnordered;
 use millegrilles_common_rust::generateur_messages::GenerateurMessages;
-use millegrilles_common_rust::middleware::Middleware;
+use millegrilles_common_rust::middleware::{charger_certificats_chiffrage, Middleware};
 use millegrilles_common_rust::middleware_db::{MiddlewareDb, preparer_middleware_db};
 use millegrilles_common_rust::mongo_dao::MongoDao;
 use millegrilles_common_rust::rabbitmq_dao::{Callback, EventMq, NamedQueue, QueueType};
@@ -22,6 +22,7 @@ use millegrilles_common_rust::tokio::task::JoinHandle;
 use millegrilles_common_rust::tokio::time::sleep;
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::transactions::resoumettre_transactions;
+use millegrilles_common_rust::error::Error;
 
 use crate::maitredescles_ca::GestionnaireMaitreDesClesCa;
 use crate::maitredescles_commun::{emettre_cles_symmetriques, GestionnaireRessources};
@@ -68,16 +69,16 @@ pub async fn run() {
     executer(futures).await
 }
 
-fn preprarer_handler_rechiffrage() -> HandlerCleRechiffrage {
+fn preprarer_handler_rechiffrage() -> Result<HandlerCleRechiffrage, Error> {
     // Charger une version simplifiee de la configuration - on veut le certificat associe a l'enveloppe privee
     let config = charger_configuration().expect("config");
     let enveloppe_privee = config.get_configuration_pki().get_enveloppe_privee();
-    let certificat = enveloppe_privee.enveloppe.clone();
+    let certificat = enveloppe_privee.enveloppe_pub.clone();
 
-    if certificat.verifier_roles(vec![RolesCertificats::MaitreDesCles]) {
+    if certificat.verifier_roles(vec![RolesCertificats::MaitreDesCles])? {
         // On a un certificat MaitreDesCles, utiliser directement
-        HandlerCleRechiffrage::with_certificat(enveloppe_privee)
-    } else if certificat.verifier_roles(vec![RolesCertificats::MaitreDesClesConnexion]) {
+        Ok(HandlerCleRechiffrage::with_certificat(enveloppe_privee))
+    } else if certificat.verifier_roles(vec![RolesCertificats::MaitreDesClesConnexion])? {
         // HandlerCleRechiffrage::new_volatil_memoire().expect("HandlerCleRechiffrageCle")
         panic!("Mode volatil obsolete");
     } else {
@@ -99,12 +100,6 @@ fn charger_gestionnaire_ca() -> Option<GestionnaireMaitreDesClesCa> {
 
     // Charger une version simplifiee de la configuration - on veut le certificat associe a l'enveloppe privee
     let config = charger_configuration().expect("config");
-    let enveloppe_privee = config.get_configuration_pki().get_enveloppe_privee();
-    let certificat = enveloppe_privee.enveloppe.clone();
-
-    // Trouver fingerprints cert leaf (partition) et root (CA)
-    let pem_vec = certificat.get_pem_vec();
-    let mut pem_iter = pem_vec.iter();
 
     // Root - dernier certificat
     let validateur = config.get_configuration_pki().get_validateur();
@@ -129,7 +124,7 @@ fn charger_gestionnaire() -> Option<TypeGestionnaire> {
     // let fp_leaf = pem_iter.next().expect("leaf");
     // let partition = fp_leaf.fingerprint.as_str();
 
-    let handler_rechiffrage = preprarer_handler_rechiffrage();
+    let handler_rechiffrage = preprarer_handler_rechiffrage().expect("handler_rechiffrage");
 
     info!("Configuration du maitre des cles avec rechiffreur");
 
@@ -256,14 +251,19 @@ async fn entretien<M>(middleware: Arc<M>)
         middleware.entretien_validateur().await;
 
         if prochain_chargement_certificats_autres < maintenant {
-            let enveloppe_privee = middleware.get_enveloppe_privee().clone();
-            let enveloppe_certificat = enveloppe_privee.enveloppe.clone();
-            match middleware.charger_certificats_chiffrage(middleware.as_ref()).await {
+            match charger_certificats_chiffrage(middleware.as_ref()).await {
                 Ok(()) => {
                     prochain_chargement_certificats_autres = maintenant + intervalle_entretien;
+                    debug!("domaines_maitredescles.entretien Prochain chargement cert maitredescles: {:?}", prochain_chargement_certificats_autres);
                 },
-                Err(e) => info!("Erreur chargement certificats de maitre des cles tiers : {:?}", e)
+                Err(e) => warn!("domaines_maitredescles.entretien Erreur chargement certificats de maitre des cles : {:?}", e)
             }
+            // match middleware.charger_certificats_chiffrage(middleware.as_ref()).await {
+            //     Ok(()) => {
+            //         prochain_chargement_certificats_autres = maintenant + intervalle_entretien;
+            //     },
+            //     Err(e) => info!("Erreur chargement certificats de maitre des cles tiers : {:?}", e)
+            // }
         }
 
         if prochain_entretien_transactions < maintenant {

@@ -1,29 +1,31 @@
 use std::collections::HashSet;
-use std::error::Error;
 use std::sync::Arc;
 
 use log::{debug, error, info, trace, warn};
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{DateTime, doc, Document};
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
-use millegrilles_common_rust::chiffrage::extraire_cle_secrete;
 use millegrilles_common_rust::chiffrage_cle::CommandeSauvegarderCle;
+use millegrilles_common_rust::{chrono, get_domaine_action, serde_json};
 use millegrilles_common_rust::chrono::Utc;
 use millegrilles_common_rust::constantes::*;
+use millegrilles_common_rust::db_structs::TransactionValide;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
-use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::messages_generiques::MessageCedule;
 use millegrilles_common_rust::middleware::{Middleware, sauvegarder_traiter_transaction};
+use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::{MessageMilleGrillesBufferDefault};
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, MongoDao};
 use millegrilles_common_rust::mongodb::options::{CountOptions, FindOptions, Hint, UpdateOptions};
-use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange, QueueType};
-use millegrilles_common_rust::recepteur_messages::MessageValideAction;
+use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange, QueueType, TypeMessageOut};
+use millegrilles_common_rust::recepteur_messages::MessageValide;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::json;
 use millegrilles_common_rust::tokio_stream::StreamExt;
-use millegrilles_common_rust::transactions::{TraiterTransaction, Transaction, TransactionImpl};
-use millegrilles_common_rust::verificateur::VerificateurMessage;
+use millegrilles_common_rust::transactions::{TraiterTransaction, Transaction};
+use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::optionepochseconds;
+use millegrilles_common_rust::error::Error;
+use millegrilles_common_rust::millegrilles_cryptographie::deser_message_buffer;
 
 use crate::maitredescles_commun::*;
 
@@ -48,7 +50,8 @@ pub struct GestionnaireMaitreDesClesCa {
 
 #[async_trait]
 impl TraiterTransaction for GestionnaireMaitreDesClesCa {
-    async fn appliquer_transaction<M>(&self, middleware: &M, transaction: TransactionImpl) -> Result<Option<MessageMilleGrille>, String>
+    async fn appliquer_transaction<M>(&self, middleware: &M, transaction: TransactionValide)
+        -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
         where M: ValidateurX509 + GenerateurMessages + MongoDao
     {
         aiguillage_transaction(middleware, transaction).await
@@ -61,37 +64,37 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesCa {
 
     fn get_collection_transactions(&self) -> Option<String> { Some(String::from(NOM_COLLECTION_TRANSACTIONS)) }
 
-    fn get_collections_documents(&self) -> Vec<String> { vec![String::from(NOM_COLLECTION_CLES)] }
+    fn get_collections_documents(&self) -> Result<Vec<String>, Error> { Ok(vec![String::from(NOM_COLLECTION_CLES)]) }
 
-    fn get_q_transactions(&self) -> Option<String> { Some(String::from(NOM_Q_TRANSACTIONS)) }
+    fn get_q_transactions(&self) -> Result<Option<String>, Error> { Ok(Some(String::from(NOM_Q_TRANSACTIONS))) }
 
-    fn get_q_volatils(&self) -> Option<String> { Some(String::from(NOM_Q_VOLATILS)) }
+    fn get_q_volatils(&self) -> Result<Option<String>, Error> { Ok(Some(String::from(NOM_Q_VOLATILS))) }
 
-    fn get_q_triggers(&self) -> Option<String> { Some(String::from(NOM_Q_TRIGGERS)) }
+    fn get_q_triggers(&self) -> Result<Option<String>, Error> { Ok(Some(String::from(NOM_Q_TRIGGERS))) }
 
-    fn preparer_queues(&self) -> Vec<QueueType> { preparer_queues() }
+    fn preparer_queues(&self) -> Result<Vec<QueueType>, Error> { Ok(preparer_queues()) }
 
     fn chiffrer_backup(&self) -> bool {
         false
     }
 
-    async fn preparer_database<M>(&self, middleware: &M) -> Result<(), String> where M: Middleware + 'static {
+    async fn preparer_database<M>(&self, middleware: &M) -> Result<(), Error> where M: Middleware + 'static {
         preparer_index_mongodb_custom(middleware, NOM_COLLECTION_CLES, true).await
     }
 
-    async fn consommer_requete<M>(&self, middleware: &M, message: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>> where M: Middleware + 'static {
+    async fn consommer_requete<M>(&self, middleware: &M, message: MessageValide) -> Result<Option<MessageMilleGrillesBufferDefault>, Error> where M: Middleware + 'static {
         consommer_requete(middleware, message, &self).await
     }
 
-    async fn consommer_commande<M>(&self, middleware: &M, message: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>> where M: Middleware + 'static {
+    async fn consommer_commande<M>(&self, middleware: &M, message: MessageValide) -> Result<Option<MessageMilleGrillesBufferDefault>, Error> where M: Middleware + 'static {
         consommer_commande(middleware, message, &self).await
     }
 
-    async fn consommer_transaction<M>(&self, middleware: &M, message: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>> where M: Middleware + 'static {
+    async fn consommer_transaction<M>(&self, middleware: &M, message: MessageValide) -> Result<Option<MessageMilleGrillesBufferDefault>, Error> where M: Middleware + 'static {
         consommer_transaction(middleware, message, self).await
     }
 
-    async fn consommer_evenement<M>(self: &'static Self, middleware: &M, message: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>> where M: Middleware + 'static {
+    async fn consommer_evenement<M>(self: &'static Self, middleware: &M, message: MessageValide) -> Result<Option<MessageMilleGrillesBufferDefault>, Error> where M: Middleware + 'static {
         consommer_evenement(middleware, message).await
     }
 
@@ -99,11 +102,14 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesCa {
         entretien(middleware).await
     }
 
-    async fn traiter_cedule<M>(self: &'static Self, middleware: &M, trigger: &MessageCedule) -> Result<(), Box<dyn Error>> where M: Middleware + 'static {
+    async fn traiter_cedule<M>(self: &'static Self, middleware: &M, trigger: &MessageCedule) -> Result<(), Error> where M: Middleware + 'static {
         traiter_cedule(middleware, trigger).await
     }
 
-    async fn aiguillage_transaction<M, T>(&self, middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String> where M: ValidateurX509 + GenerateurMessages + MongoDao, T: Transaction {
+    async fn aiguillage_transaction<M>(&self, middleware: &M, transaction: TransactionValide)
+        -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
+        where M: ValidateurX509 + GenerateurMessages + MongoDao
+    {
         aiguillage_transaction(middleware, transaction).await
     }
 }
@@ -201,139 +207,146 @@ pub fn preparer_queues() -> Vec<QueueType> {
     queues
 }
 
-async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesCa) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage
+async fn consommer_requete<M>(middleware: &M, message: MessageValide, gestionnaire: &GestionnaireMaitreDesClesCa) -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
+    where M: ValidateurX509 + GenerateurMessages + MongoDao
 {
-    debug!("Consommer requete {} : {:?}", message.action, message.correlation_id);
+    debug!("Consommer requete {:?}", message.type_message);
 
     // Autorisation : On accepte les requetes de 3.protege ou 4.secure
-    match message.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+    match message.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
         true => (),
-        false => match message.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure]) {
+        false => match message.certificat.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure])? {
             true => (),
-            false => Err(format!("Trigger cedule autorisation invalide (pas d'un exchange reconnu)"))?,
+            false => Err(Error::Str("Trigger cedule autorisation invalide (pas d'un exchange reconnu)"))?,
         }
     }
 
-    match message.domaine.as_str() {
+    let (domaine, action) = get_domaine_action!(message.type_message);
+
+    match domaine.as_str() {
         DOMAINE_NOM => {
-            match message.action.as_str() {
+            match action.as_str() {
                 REQUETE_COMPTER_CLES_NON_DECHIFFRABLES => requete_compter_cles_non_dechiffrables(middleware, message, gestionnaire).await,
                 REQUETE_CLES_NON_DECHIFFRABLES => requete_cles_non_dechiffrables(middleware, message, gestionnaire).await,
                 REQUETE_SYNCHRONISER_CLES => requete_synchronizer_cles(middleware, message, gestionnaire).await,
                 _ => {
-                    error!("Message requete/action inconnue : '{}'. Message dropped.", message.action);
+                    error!("Message requete/action inconnue : '{}'. Message dropped.", action);
                     Ok(None)
                 },
             }
         },
         _ => {
-            error!("Message requete/domaine inconnu : '{}'. Message dropped.", message.domaine);
+            error!("Message requete/domaine inconnu : '{}'. Message dropped.", domaine);
             Ok(None)
         },
     }
 }
 
-async fn consommer_evenement<M>(middleware: &M, m: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+async fn consommer_evenement<M>(middleware: &M, m: MessageValide) -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
 where
     M: ValidateurX509 + GenerateurMessages + MongoDao,
 {
-    debug!("maitredescles_ca.consommer_evenement Consommer evenement {} : {:?}", m.action, m.correlation_id);
+    debug!("maitredescles_ca.consommer_evenement Consommer evenement {:?}", m.type_message);
 
     // Autorisation : doit etre de niveau 3.protege ou 4.secure
-    match m.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure]) {
+    match m.certificat.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure])? {
         true => Ok(()),
         false => Err(format!("maitredescles_ca.consommer_evenement: Evenement invalide (pas 3.protege ou 4.secure)")),
     }?;
 
-    match m.action.as_str() {
+    let (_, action) = get_domaine_action!(m.type_message);
+
+    match action.as_str() {
         EVENEMENT_CLES_MANQUANTES_PARTITION => evenement_cle_manquante(middleware, &m).await,
         EVENEMENT_CLE_RECUE_PARTITION => evenement_cle_recue_partition(middleware, &m).await,
-        _ => Err(format!("maitredescles_ca.consommer_transaction: Mauvais type d'action pour une transaction : {}", m.action))?,
+        _ => Err(format!("maitredescles_ca.consommer_transaction: Mauvais type d'action pour une transaction : {}", action))?,
     }
 }
 
 
-async fn consommer_transaction<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireMaitreDesClesCa) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+async fn consommer_transaction<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireMaitreDesClesCa) -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
 where
-    M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage
+    M: ValidateurX509 + GenerateurMessages + MongoDao
 {
-    debug!("maitredescles_ca.consommer_transaction Consommer transaction {} : {:?}", m.action, m.correlation_id);
+    debug!("maitredescles_ca.consommer_transaction Consommer transaction {:?}", m.type_message);
 
     // Autorisation : doit etre de niveau 3.protege ou 4.secure
-    match m.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure]) {
+    match m.certificat.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure])? {
         true => Ok(()),
         false => Err(format!("maitredescles_ca.consommer_transaction: Trigger cedule autorisation invalide (pas 4.secure)")),
     }?;
 
-    match m.action.as_str() {
+    let (_, action) = get_domaine_action!(m.type_message);
+
+    match action.as_str() {
         TRANSACTION_CLE  => {
             Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
         },
-        _ => Err(format!("maitredescles_ca.consommer_transaction: Mauvais type d'action pour une transaction : {}", m.action))?,
+        _ => Err(format!("maitredescles_ca.consommer_transaction: Mauvais type d'action pour une transaction : {}", action))?,
     }
 }
 
-async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionnaire_ca: &GestionnaireMaitreDesClesCa)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage
+async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnaire_ca: &GestionnaireMaitreDesClesCa)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
+    where M: GenerateurMessages + MongoDao
 {
-    debug!("consommer_commande {} : {:?}", m.action, m.correlation_id);
+    debug!("consommer_commande {:?}", m.type_message);
 
-    let user_id = m.get_user_id();
-    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+    let user_id = m.certificat.get_user_id()?;
+    let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
 
-    if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+    let (_, action) = get_domaine_action!(m.type_message);
+
+    if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
         // Delegation proprietaire
-        match m.action.as_str() {
+        match action.as_str() {
             // Commandes standard
             COMMANDE_SAUVEGARDER_CLE => commande_sauvegarder_cle(middleware, m, gestionnaire_ca).await,
             COMMANDE_RESET_NON_DECHIFFRABLE => commande_reset_non_dechiffrable(middleware, m, gestionnaire_ca).await,
 
             // Commandes inconnues
-            _ => Err(format!("maitredescles_ca.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
+            _ => Err(format!("maitredescles_ca.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, action))?,
         }
-    } else if m.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure]) {
+    } else if m.certificat.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure])? {
         // Exchanges, serveur protege
-        match m.action.as_str() {
+        match action.as_str() {
             // Commandes standard
             COMMANDE_SAUVEGARDER_CLE => commande_sauvegarder_cle(middleware, m, gestionnaire_ca).await,
             COMMANDE_CONFIRMER_CLES_SUR_CA => commande_confirmer_cles_sur_ca(middleware, m, gestionnaire_ca).await,
 
             // Commandes inconnues
-            _ => Err(format!("maitredescles_ca.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
+            _ => Err(format!("maitredescles_ca.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, action))?,
         }
-    } else if m.verifier_exchanges(vec![Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure]) {
+    } else if m.certificat.verifier_exchanges(vec![Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure])? {
         // Tous exchanges, serveur
-        match m.action.as_str() {
+        match action.as_str() {
             // Commandes standard
             COMMANDE_SAUVEGARDER_CLE => commande_sauvegarder_cle(middleware, m, gestionnaire_ca).await,
 
             // Commandes inconnues
-            _ => Err(format!("maitredescles_ca.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
+            _ => Err(format!("maitredescles_ca.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, action))?,
         }
     } else if role_prive == true && user_id.is_some() {
         // Usagers prives
-        match m.action.as_str() {
+        match action.as_str() {
             // Commandes standard
             COMMANDE_SAUVEGARDER_CLE => commande_sauvegarder_cle(middleware, m, gestionnaire_ca).await,
 
             // Commandes inconnues
-            _ => Err(format!("maitredescles_ca.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
+            _ => Err(format!("maitredescles_ca.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, action))?,
         }
     } else {
-        Err(format!("maitredescles_ca.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?
+        Err(format!("maitredescles_ca.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, action))?
     }
 
 }
 
-async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, gestionnaire_ca: &GestionnaireMaitreDesClesCa)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValide, gestionnaire_ca: &GestionnaireMaitreDesClesCa)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages + MongoDao,
 {
-    debug!("commande_sauvegarder_cle Consommer commande : {:?}", & m.correlation_id);
-    let commande: CommandeSauvegarderCle = m.message.get_msg().map_contenu()?;
-    debug!("Commande sauvegarder cle parsed domaine {} hachage_bytes {}", commande.domaine, commande.hachage_bytes);
+    debug!("commande_sauvegarder_cle Consommer commande : {:?}", & m.type_message);
+    let commande: CommandeSauvegarderCle = deser_message_buffer!(m.message);
 
     // // Valider identite
     // {
@@ -357,8 +370,9 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
         None => {
             let message = format!("maitredescles_ca.commande_sauvegarder_cle: Erreur validation - commande sauvegarder cles ne contient pas la cle CA ({}) : {:?}", fingerprint, commande);
             warn!("{}", message);
-            let reponse_err = json!({"ok": false, "err": message});
-            return Ok(Some(middleware.formatter_reponse(&reponse_err, None)?));
+            // let reponse_err = json!({"ok": false, "err": message});
+            // return Ok(Some(middleware.formatter_reponse(&reponse_err, None)?));
+            return Ok(Some(middleware.reponse_err(None, None, Some(message.as_str()))?))
         }
     };
 
@@ -386,18 +400,18 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValideAction, ges
     if let Some(uid) = resultat.upserted_id {
         debug!("commande_sauvegarder_cle Nouvelle cle insere _id: {}, generer transaction", uid);
         let transaction = TransactionCle::new_from_commande(&commande, fingerprint)?;
-        let routage = RoutageMessageAction::builder(DOMAINE_NOM, TRANSACTION_CLE)
-            .exchanges(vec![Securite::L4Secure])
+        let routage = RoutageMessageAction::builder(DOMAINE_NOM, TRANSACTION_CLE, vec![Securite::L4Secure])
+            .blocking(false)
             .build();
-        middleware.soumettre_transaction(routage, &transaction, false).await?;
+        middleware.soumettre_transaction(routage, &transaction).await?;
     }
 
-    Ok(middleware.reponse_ok()?)
+    Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
 /// Reset toutes les cles a non_dechiffrable=true
-async fn commande_reset_non_dechiffrable<M>(middleware: &M, m: MessageValideAction, _gestionnaire_ca: &GestionnaireMaitreDesClesCa)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+async fn commande_reset_non_dechiffrable<M>(middleware: &M, m: MessageValide, _gestionnaire_ca: &GestionnaireMaitreDesClesCa)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages + MongoDao,
 {
     debug!("commande_reset_non_dechiffrable Consommer commande : {:?}", & m.message);
@@ -412,35 +426,38 @@ async fn commande_reset_non_dechiffrable<M>(middleware: &M, m: MessageValideActi
     let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
     collection.update_many(filtre, ops, None).await?;
 
-    Ok(middleware.reponse_ok()?)
+    Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-async fn aiguillage_transaction<M, T>(middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
-    where
-        M: ValidateurX509 + GenerateurMessages + MongoDao,
-        T: Transaction
+async fn aiguillage_transaction<M>(middleware: &M, transaction: TransactionValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
+    where M: ValidateurX509 + GenerateurMessages + MongoDao
 {
-    let action = match transaction.get_routage().action.as_ref() {
+    let routage = match transaction.transaction.routage.as_ref() {
+        Some(inner) => inner,
+        None => Err(Error::Str("aiguillage_transaction Transaction sans routage"))?
+    };
+
+    let action = match routage.action.as_ref() {
         Some(inner) => inner.as_str(),
-        None => Err(format!("core_backup.aiguillage_transaction: Transaction {} n'a pas d'action", transaction.get_uuid_transaction()))?
+        None => Err(format!("core_backup.aiguillage_transaction: Transaction {:?} n'a pas d'action", routage))?
     };
 
     match action {
         TRANSACTION_CLE => transaction_cle(middleware, transaction).await,
-        _ => Err(format!("maitredescles.aiguillage_transaction: Transaction {} est de type non gere : {}", transaction.get_uuid_transaction(), action)),
+        _ => Err(Error::String(format!("maitredescles.aiguillage_transaction: Transaction {} est de type non gere : {}", transaction.transaction.id, action))),
     }
 }
 
-async fn transaction_cle<M, T>(middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
-    where
-        M: GenerateurMessages + MongoDao,
-        T: Transaction
+async fn transaction_cle<M>(middleware: &M, transaction: TransactionValide) -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
+    where M: GenerateurMessages + MongoDao
 {
-    debug!("transaction_catalogue_horaire Consommer transaction : {:?}", &transaction);
-    let transaction_cle: TransactionCle = match transaction.clone().convertir::<TransactionCle>() {
-        Ok(t) => t,
-        Err(e) => Err(format!("maitredescles_ca.transaction_cle Erreur conversion transaction : {:?}", e))?
-    };
+    debug!("transaction_catalogue_horaire Consommer transaction : {:?}", transaction.transaction.routage);
+    let transaction_cle: TransactionCle = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+    // let transaction_cle: TransactionCle = match transaction.clone().convertir::<TransactionCle>() {
+    //     Ok(t) => t,
+    //     Err(e) => Err(format!("maitredescles_ca.transaction_cle Erreur conversion transaction : {:?}", e))?
+    // };
 
     // // Valider identite
     // {
@@ -477,9 +494,9 @@ async fn transaction_cle<M, T>(middleware: &M, transaction: T) -> Result<Option<
     Ok(None)
 }
 
-async fn requete_compter_cles_non_dechiffrables<M>(middleware: &M, m: MessageValideAction, _gestionnaire: &GestionnaireMaitreDesClesCa)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+async fn requete_compter_cles_non_dechiffrables<M>(middleware: &M, m: MessageValide, _gestionnaire: &GestionnaireMaitreDesClesCa)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
+    where M: GenerateurMessages + MongoDao
 {
     debug!("requete_compter_cles_non_dechiffrables Consommer commande : {:?}", & m.message);
     // let requete: RequeteDechiffrage = m.message.get_msg().map_contenu(None)?;
@@ -496,22 +513,19 @@ async fn requete_compter_cles_non_dechiffrables<M>(middleware: &M, m: MessageVal
     let compte = collection.count_documents(filtre, opts).await?;
 
     let reponse = json!({ "compte": compte });
-    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+    Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
-async fn requete_cles_non_dechiffrables<M>(middleware: &M, m: MessageValideAction, _gestionnaire: &GestionnaireMaitreDesClesCa)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+async fn requete_cles_non_dechiffrables<M>(middleware: &M, m: MessageValide, _gestionnaire: &GestionnaireMaitreDesClesCa)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
+    where M: GenerateurMessages + MongoDao
 {
-    debug!("requete_cles_non_dechiffrables Consommer commande : {:?}", m.correlation_id);
-    let requete: RequeteClesNonDechiffrable = m.message.get_msg().map_contenu()?;
+    debug!("requete_cles_non_dechiffrables Consommer commande : {:?}", m.type_message);
+    let requete: RequeteClesNonDechiffrable = deser_message_buffer!(m.message);
     // debug!("requete_cles_non_dechiffrables cle parsed : {:?}", requete);
 
     let mut curseur = {
-        let limite_docs = match requete.limite {
-            Some(l) => l,
-            None => 1000 as u64
-        };
+        let limite_docs = requete.limite.unwrap_or_else(|| 1000 as u64);
 
         let (skip_docs, mut filtre) = match requete.skip {
             Some(inner) => {
@@ -520,13 +534,13 @@ async fn requete_cles_non_dechiffrables<M>(middleware: &M, m: MessageValideActio
             },
             None => {
                 let filtre = doc! {CHAMP_NON_DECHIFFRABLE: true};
-                (0 as u64, filtre)
+                (0u64, filtre)
             }
         };
 
         match requete.date_creation_min {
             Some(d) => {
-                filtre.insert(CHAMP_CREATION, doc!{"$gte": d.get_datetime()});
+                filtre.insert(CHAMP_CREATION, doc!{"$gte": d});
             },
             None => ()
         }
@@ -550,34 +564,25 @@ async fn requete_cles_non_dechiffrables<M>(middleware: &M, m: MessageValideActio
             .limit(Some(limite_docs as i64))
             .build();
         debug!("requete_cles_non_dechiffrables filtre cles a rechiffrer : filtre {:?} opts {:?}", filtre, opts);
-        let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
+        let collection = middleware.get_collection_typed::<RowClePartitionRef>(NOM_COLLECTION_CLES)?;
         collection.find(filtre, opts).await?
     };
 
     let mut cles = Vec::new();
     let mut date_creation = None;
-    while let Some(d) = curseur.next().await {
-        match d {
-            Ok(doc_cle) => {
-                // Conserver date de creation
-                match doc_cle.get(CHAMP_CREATION) {
-                    Some(c) => {
-                        if let Some(date) = c.as_datetime() {
-                            date_creation = Some(DateEpochSeconds::from_i64(date.timestamp_millis()/1000));
-                        }
-                    },
-                    None => ()
-                };
-                let rep_cle: TransactionCle = convertir_bson_deserializable(doc_cle)?;
-                cles.push(rep_cle);
-            },
-            Err(e) => error!("requete_cles_non_dechiffrables Erreur lecture doc cle : {:?}", e)
-        }
+    while curseur.advance().await? {
+        let cle = curseur.deserialize_current()?;
+
+        // Conserver date de creation - On est juste interesse en la derniere date (plus recente).
+        date_creation = Some(cle.date_creation.clone());
+
+        let cle: TransactionCle = cle.into();  // Version owned
+        cles.push(cle);
     }
 
     let reponse = json!({ "cles": cles, "date_creation_max": date_creation.as_ref() });
     debug!("requete_cles_non_dechiffrables Reponse cles rechiffrable : {:?}", reponse);
-    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+    Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -585,16 +590,17 @@ struct RequeteClesNonDechiffrable {
     limite: Option<u64>,
     // page: Option<u64>,
     skip: Option<u64>,
-    date_creation_min: Option<DateEpochSeconds>,
+    #[serde(default, skip_serializing_if="Option::is_none", with="optionepochseconds")]
+    date_creation_min: Option<chrono::DateTime<Utc>>,
     exclude_hachage_bytes: Option<Vec<String>>
 }
 
-async fn requete_synchronizer_cles<M>(middleware: &M, m: MessageValideAction, _gestionnaire: &GestionnaireMaitreDesClesCa)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+async fn requete_synchronizer_cles<M>(middleware: &M, m: MessageValide, _gestionnaire: &GestionnaireMaitreDesClesCa)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
+    where M: GenerateurMessages + MongoDao
 {
-    debug!("requete_synchronizer_cles Consommer requete : {:?}", m.correlation_id);
-    let requete: RequeteSynchroniserCles = m.message.get_msg().map_contenu()?;
+    debug!("requete_synchronizer_cles Consommer requete : {:?}", m.type_message);
+    let requete: RequeteSynchroniserCles = deser_message_buffer!(m.message);
     // debug!("requete_synchronizer_cles cle parsed : {:?}", requete);
 
     let mut curseur = {
@@ -636,14 +642,14 @@ async fn requete_synchronizer_cles<M>(middleware: &M, m: MessageValideAction, _g
     }
 
     let reponse = ReponseSynchroniserCles { liste_cles: cles };
-    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+    Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
-async fn evenement_cle_manquante<M>(middleware: &M, m: &MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+async fn evenement_cle_manquante<M>(middleware: &M, m: &MessageValide) -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: ValidateurX509 + GenerateurMessages + MongoDao,
 {
-    debug!("evenement_cle_manquante Marquer cles comme non dechiffrables correlation_id : {:?}", m.correlation_id);
-    let event_non_dechiffrables: ReponseSynchroniserCles = m.message.get_msg().map_contenu()?;
+    debug!("evenement_cle_manquante Marquer cles comme non dechiffrables correlation_id : {:?}", m.type_message);
+    let event_non_dechiffrables: ReponseSynchroniserCles = deser_message_buffer!(m.message);
 
     // let filtre = doc! { CHAMP_HACHAGE_BYTES: { "$in": event_non_dechiffrables.liste_hachage_bytes }};
     let filtre = doc! { "$or": CleSynchronisation::get_bson_filter(&event_non_dechiffrables.liste_cles)? };
@@ -660,11 +666,11 @@ async fn evenement_cle_manquante<M>(middleware: &M, m: &MessageValideAction) -> 
 }
 
 /// Marquer les cles existantes comme recues (implique dechiffrable) par au moins une partition
-async fn evenement_cle_recue_partition<M>(middleware: &M, m: &MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+async fn evenement_cle_recue_partition<M>(middleware: &M, m: &MessageValide) -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: ValidateurX509 + GenerateurMessages + MongoDao,
 {
-    debug!("evenement_cle_recue_partition Marquer cle comme confirmee (dechiffrable) par la partition {:?}", m.correlation_id);
-    let event_cles_recues: ReponseSynchroniserCles = m.message.get_msg().map_contenu()?;
+    debug!("evenement_cle_recue_partition Marquer cle comme confirmee (dechiffrable) par la partition {:?}", m.type_message);
+    let event_cles_recues: ReponseSynchroniserCles = deser_message_buffer!(m.message);
 
     // let filtre = doc! { CHAMP_HACHAGE_BYTES: { "$in": event_cles_recues.liste_hachage_bytes }};
     let filtre = doc! { "$or": CleSynchronisation::get_bson_filter(&event_cles_recues.liste_cles)? };
@@ -680,12 +686,12 @@ async fn evenement_cle_recue_partition<M>(middleware: &M, m: &MessageValideActio
     Ok(None)
 }
 
-async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValideAction, _gestionnaire: &GestionnaireMaitreDesClesCa)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValide, _gestionnaire: &GestionnaireMaitreDesClesCa)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
+    where M: GenerateurMessages + MongoDao
 {
-    debug!("commande_confirmer_cles_sur_ca Consommer commande : {:?}", & m.correlation_id);
-    let requete: ReponseSynchroniserCles = m.message.get_msg().map_contenu()?;
+    debug!("commande_confirmer_cles_sur_ca Consommer commande : {:?}", m.type_message);
+    let requete: ReponseSynchroniserCles = deser_message_buffer!(m.message);
     // debug!("requete_synchronizer_cles cle parsed : {:?}", requete);
 
     let mut cles_manquantes = HashSet::new();
@@ -734,7 +740,7 @@ async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValideActio
     debug!("commande_confirmer_cles_sur_ca Demander {} cles manquantes sur CA", cles_manquantes.len());
     vec_cles_manquantes.extend(cles_manquantes);
     let reponse = ReponseConfirmerClesSurCa { cles_manquantes: vec_cles_manquantes };
-    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+    Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
 // #[cfg(test)]
@@ -764,7 +770,7 @@ async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValideActio
 //         futures.push(tokio::spawn(async move {
 //
 //             let contenu = json!({});
-//             let message_mg = MessageMilleGrille::new_signer(
+//             let message_mg = MessageMilleGrillesBufferDefault::new_signer(
 //                 enveloppe_privee.as_ref(),
 //                 &contenu,
 //                 DOMAINE_NOM.into(),
@@ -777,7 +783,7 @@ async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValideActio
 //             // Injecter certificat utilise pour signer
 //             message.certificat = Some(enveloppe_privee.enveloppe.clone());
 //
-//             let mva = MessageValideAction::new(
+//             let mva = MessageValide::new(
 //                 message, "dummy_q", "routing_key", "domaine", "action", TypeMessageOut::Requete);
 //
 //             let reponse = requete_compter_cles_non_dechiffrables(middleware.as_ref(), mva, &gestionnaire).await.expect("dechiffrage");
@@ -802,7 +808,7 @@ async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValideActio
 //                 "limite": 5,
 //                 "page": 0,
 //             });
-//             let message_mg = MessageMilleGrille::new_signer(
+//             let message_mg = MessageMilleGrillesBufferDefault::new_signer(
 //                 enveloppe_privee.as_ref(),
 //                 &contenu,
 //                 DOMAINE_NOM.into(),
@@ -815,7 +821,7 @@ async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValideActio
 //             // Injecter certificat utilise pour signer
 //             message.certificat = Some(enveloppe_privee.enveloppe.clone());
 //
-//             let mva = MessageValideAction::new(
+//             let mva = MessageValide::new(
 //                 message, "dummy_q", "routing_key", "domaine", "action", TypeMessageOut::Requete);
 //
 //             let reponse = requete_cles_non_dechiffrables(middleware.as_ref(), mva, &gestionnaire).await.expect("dechiffrage");
@@ -840,7 +846,7 @@ async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValideActio
 //                 "limite": 5,
 //                 "page": 0,
 //             });
-//             let message_mg = MessageMilleGrille::new_signer(
+//             let message_mg = MessageMilleGrillesBufferDefault::new_signer(
 //                 enveloppe_privee.as_ref(),
 //                 &contenu,
 //                 DOMAINE_NOM.into(),
@@ -853,7 +859,7 @@ async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValideActio
 //             // Injecter certificat utilise pour signer
 //             message.certificat = Some(enveloppe_privee.enveloppe.clone());
 //
-//             let mva = MessageValideAction::new(
+//             let mva = MessageValide::new(
 //                 message, "dummy_q", "routing_key", "domaine", "action", TypeMessageOut::Requete);
 //
 //             let reponse = requete_synchronizer_cles(middleware.as_ref(), mva, &gestionnaire).await.expect("dechiffrage");

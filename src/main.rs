@@ -5,6 +5,8 @@ mod maitredescles_commun;
 //mod maitredescles_redis;  // Obsolete
 mod maitredescles_sqlite;
 mod maitredescles_volatil;
+mod messages;
+mod chiffrage_cles;
 
 use log::{info};
 use millegrilles_common_rust::tokio as tokio;
