@@ -183,11 +183,12 @@ pub async fn emettre_certificat_maitredescles<M>(middleware: &M, m: Option<Messa
     match m {
         Some(demande) => {
             let reply_to = match demande.type_message {
-                TypeMessageOut::Requete(r) => match r.reply_to {
+                TypeMessageOut::Requete(r) |
+                TypeMessageOut::Commande(r) => match r.reply_to {
                     Some(inner) => inner,
                     None => Err(Error::Str("emettre_certificat_maitredescles Message sans reply_to"))?
                 },
-                _ => Err(Error::Str("emettre_certificat_maitredescles Mauvais type de message, doit etre requete"))?
+                _ => Err(Error::Str("emettre_certificat_maitredescles Mauvais type de message, doit etre requete/commande"))?
             };
 
             // On utilise une correlation fixe pour permettre au demandeur de recevoir les

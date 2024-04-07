@@ -555,8 +555,9 @@ impl DocumentRechiffrage {
     }
 }
 
+/// Helper pour mapper une ErreurMaitreDesClesSqlite vers CommonError
 fn map_error(e: ErreurMaitreDesClesSqlite) -> Error {
-    Error::String(format!("consommer Erreur : {:?}", e))
+    e.into()
 }
 
 async fn consommer_requete<M>(middleware: &M, message: MessageValide, gestionnaire: &GestionnaireMaitreDesClesSQLite)
