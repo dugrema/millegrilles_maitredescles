@@ -28,7 +28,7 @@ use millegrilles_common_rust::serde_json::json;
 use millegrilles_common_rust::error::Error;
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_cles::CleChiffrageHandler;
 use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
-use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::epochseconds;
+use millegrilles_common_rust::millegrilles_cryptographie::{messages_structs::epochseconds, chiffrage::formatchiffragestr};
 
 use crate::chiffrage_cles::chiffrer_asymetrique_multibase;
 use crate::domaines_maitredescles::TypeGestionnaire;
@@ -183,12 +183,11 @@ pub async fn emettre_certificat_maitredescles<M>(middleware: &M, m: Option<Messa
     match m {
         Some(demande) => {
             let reply_to = match demande.type_message {
-                TypeMessageOut::Reponse(r) => {
-                    r.reply_to
+                TypeMessageOut::Requete(r) => match r.reply_to {
+                    Some(inner) => inner,
+                    None => Err(Error::Str("emettre_certificat_maitredescles Message sans reply_to"))?
                 },
-                _ => {
-                    Err(Error::Str("emettre_certificat_maitredescles Mauvais type de message, doit etre reponse"))?
-                }
+                _ => Err(Error::Str("emettre_certificat_maitredescles Mauvais type de message, doit etre requete"))?
             };
 
             // On utilise une correlation fixe pour permettre au demandeur de recevoir les
@@ -794,6 +793,7 @@ pub struct DocumentClePartition {
     pub nonce_symmetrique: Option<String>,
 
     // Dechiffrage contenu
+    #[serde(with="formatchiffragestr")]
     pub format: FormatChiffrage,
     pub iv: Option<String>,
     pub tag: Option<String>,
