@@ -954,13 +954,16 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, mut m: MessageValide, gest
         },
         _ => Err(Error::Str("commande_rechiffrer_batch Mavauis type de message - doit etre commande"))?
     };
-    let message_chiffre: MessageReponseChiffree = message_ref.contenu()?.deserialize()?;
-    let message_dechiffre = message_chiffre.dechiffrer(middleware)?;
-    let commande: CommandeRechiffrerBatch = serde_json::from_slice(&message_dechiffre.data_dechiffre[..])?;
+
+    let enveloppe_privee = middleware.get_enveloppe_signature();
+    let commande: CommandeRechiffrerBatch = message_ref.dechiffrer(enveloppe_privee.as_ref())?;
+
+    // let message_chiffre: MessageReponseChiffree = message_ref.contenu()?.deserialize()?;
+    // let message_dechiffre = message_chiffre.dechiffrer(middleware)?;
+    // let commande: CommandeRechiffrerBatch = serde_json::from_slice(&message_dechiffre.data_dechiffre[..])?;
 
     debug!("commande_rechiffrer_batch Commande parsed : {:?}", commande);
 
-    let enveloppe_privee = middleware.get_enveloppe_signature();
     let fingerprint_ca = enveloppe_privee.enveloppe_ca.fingerprint()?;
     let fingerprint = enveloppe_privee.enveloppe_pub.fingerprint()?;
 

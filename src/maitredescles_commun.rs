@@ -15,11 +15,11 @@ use millegrilles_common_rust::tokio::{sync::mpsc::Sender, time::{Duration, sleep
 use millegrilles_common_rust::certificats::ordered_map;
 use millegrilles_common_rust::common_messages::{DataChiffre, ReponseSignatureCertificat, RequeteDechiffrage};
 use millegrilles_common_rust::{multibase, multibase::Base, serde_json};
-use millegrilles_common_rust::bson::{Bson, bson, doc, Document};
+use millegrilles_common_rust::bson::{Bson, bson, doc, Document, serde_helpers::chrono_datetime_as_bson_datetime};
 use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::hachages::hacher_bytes;
-use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::{CleSecrete, FormatChiffrage};
+use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::{CleSecrete, FormatChiffrage, formatchiffragestr};
 use millegrilles_common_rust::millegrilles_cryptographie::x25519::{chiffrer_asymmetrique_ed25519, CleSecreteX25519};
 use millegrilles_common_rust::millegrilles_cryptographie::x509::EnveloppeCertificat;
 use millegrilles_common_rust::multibase::Base::Base58Btc;
@@ -28,7 +28,8 @@ use millegrilles_common_rust::serde_json::json;
 use millegrilles_common_rust::error::Error;
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_cles::CleChiffrageHandler;
 use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
-use millegrilles_common_rust::millegrilles_cryptographie::{messages_structs::epochseconds, chiffrage::formatchiffragestr};
+use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::epochseconds;
+use millegrilles_common_rust::bson;
 
 use crate::chiffrage_cles::chiffrer_asymetrique_multibase;
 use crate::domaines_maitredescles::TypeGestionnaire;
@@ -654,6 +655,7 @@ pub struct RowClePartitionRef<'a> {
     pub cle: &'a str,
 
     // Dechiffrage contenu
+    #[serde(with = "formatchiffragestr")]
     pub format: FormatChiffrage,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub iv: Option<&'a str>,
@@ -665,7 +667,9 @@ pub struct RowClePartitionRef<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub partition: Option<&'a str>,
 
-    #[serde(rename(deserialize="_mg-creation"), deserialize_with="epochseconds::deserialize")]
+    #[serde(rename(deserialize="_mg-creation"),
+    serialize_with="epochseconds::serialize",
+    deserialize_with="bson::serde_helpers::chrono_datetime_as_bson_datetime::deserialize")]
     pub date_creation: DateTime<Utc>,
 }
 
@@ -681,6 +685,7 @@ pub struct TransactionCle {
     pub cle: String,
 
     // Dechiffrage contenu
+    #[serde(with = "formatchiffragestr")]
     pub format: FormatChiffrage,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub iv: Option<String>,
