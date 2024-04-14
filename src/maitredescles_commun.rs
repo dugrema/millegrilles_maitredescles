@@ -21,12 +21,12 @@ use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::hachages::hacher_bytes;
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::{CleSecrete, FormatChiffrage, formatchiffragestr};
 use millegrilles_common_rust::millegrilles_cryptographie::x25519::{chiffrer_asymmetrique_ed25519, CleSecreteX25519};
-use millegrilles_common_rust::millegrilles_cryptographie::x509::EnveloppeCertificat;
+use millegrilles_common_rust::millegrilles_cryptographie::x509::{EnveloppeCertificat, EnveloppePrivee};
 use millegrilles_common_rust::multibase::Base::Base58Btc;
 use millegrilles_common_rust::multihash::Code;
 use millegrilles_common_rust::serde_json::json;
 use millegrilles_common_rust::error::Error;
-use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_cles::CleChiffrageHandler;
+use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_cles::{CleChiffrageHandler, CleSecreteSerialisee};
 use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::epochseconds;
 use millegrilles_common_rust::bson;
@@ -51,6 +51,7 @@ pub const NOM_Q_DECHIFFRAGE: &str = "MaitreDesCles/dechiffrage";
 
 pub const REQUETE_SYNCHRONISER_CLES: &str = "synchroniserCles";
 pub const REQUETE_DECHIFFRAGE: &str = "dechiffrage";
+pub const REQUETE_DECHIFFRAGE_V2: &str = "dechiffrageV2";
 pub const REQUETE_VERIFIER_PREUVE: &str = "verifierPreuve";
 
 // pub const COMMANDE_SAUVEGARDER_CLE: &str = "sauvegarderCle";
@@ -879,6 +880,36 @@ impl DocumentClePartition {
         // })
     }
 
+    pub fn to_cle_secrete_serialisee(self, rechiffrage_handler: &HandlerCleRechiffrage)
+                                     -> Result<CleSecreteSerialisee, Error>
+    {
+        let cle_interne = match self.cle_symmetrique {
+            Some(cle) => {
+                match self.nonce_symmetrique.as_ref() {
+                    Some(nonce) => Ok(CleInterneChiffree { cle, nonce: nonce.clone() }),
+                    None => Err(Error::Str("to_cle_secrete_serializee nonce manquant"))
+                }
+            },
+            None => Err(Error::Str("to_cle_secrete_serializee cle_symmetrique manquante"))
+        }?;
+
+        let cle_secrete = rechiffrage_handler.dechiffer_cle_secrete(cle_interne)?;
+
+        let cle_id = self.hachage_bytes.clone();
+
+        let nonce = match self.iv {
+            Some(inner) => Some(inner),
+            None => match self.header {
+                Some(inner) => Some(inner),
+                None => None
+            }
+        };
+
+        let verification = self.tag.unwrap_or_else(|| self.hachage_bytes);
+
+        Ok(CleSecreteSerialisee::from_cle_secrete(cle_secrete, Some(cle_id), self.format, nonce, Some(verification))?)
+    }
+
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1239,3 +1270,85 @@ pub fn rechiffrer_pour_maitredescles_ca<M>(middleware: &M, handler: &HandlerCleR
 //
 //     Ok(commande)
 // }
+
+#[derive(Debug)]
+pub struct ErrorPermissionRefusee {
+    pub code: usize,
+    pub err: String,
+}
+
+pub enum ErreurPermissionRechiffrage { Refuse(ErrorPermissionRefusee), Error(Error) }
+
+impl<E> From<E> for ErreurPermissionRechiffrage where E: std::error::Error {
+    fn from(value: E) -> Self {
+        let err = Error::String(format!("ErreurPermissionRechiffrage {:?}", value));
+        Self::Error(err)
+    }
+}
+
+pub async fn verifier_permission_rechiffrage<M>(middleware: &M, m: &MessageValide, requete: &RequeteDechiffrage)
+                                                -> Result<(Arc<EnveloppeCertificat>, bool), ErreurPermissionRechiffrage>
+    where M: MongoDao + GenerateurMessages + ValidateurX509
+{
+    debug!("requete_dechiffrage cle parsed : {:?}", requete);
+    let certificat_requete = m.certificat.as_ref();
+
+    let extensions = certificat_requete.extensions()?;
+    let domaines_permis = extensions.domaines;
+
+    // Trouver le certificat de rechiffrage
+    let certificat = match requete.certificat_rechiffrage.as_ref() {
+        Some(cr) => {
+            debug!("requete_dechiffrage Utilisation certificat dans la requete de dechiffrage");
+            middleware.charger_enveloppe(cr, None, None).await?
+        },
+        None => m.certificat.clone()
+    };
+
+    let certificat_valide = middleware.valider_chaine(certificat.as_ref(), None, true).unwrap_or_else(|e| {
+        error!("requete_dechiffrage Erreur de validation du certificat : {:?}", e);
+        false
+    });
+    if !certificat_valide {
+        // let refuse = json!({"ok": false, "err": "Autorisation refusee - certificat de rechiffrage n'est pas presentement valide", "acces": "0.refuse", "code": 0});
+        // return Ok(Some(middleware.build_reponse(&refuse)?.0))
+        Err(ErreurPermissionRechiffrage::Refuse(ErrorPermissionRefusee { code: 0, err: "Autorisation refusee - certificat de rechiffrage n'est pas presentement valide".to_string() }) )?
+    }
+
+    // Verifier si on a une autorisation de dechiffrage global
+    let requete_autorisee_globalement = if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
+        debug!("verifier_autorisation_dechiffrage Certificat delegation globale proprietaire - toujours autorise");
+        true
+    } else {
+        false
+    };
+
+    // Rejeter si global false et permission absente
+    // if ! requete_autorisee_globalement && permission.is_none() && domaines_permis.is_none() {
+    if !requete_autorisee_globalement && domaines_permis.is_none() {
+        debug!("requete_dechiffrage Requete {:?} de dechiffrage {:?} refusee, permission manquante ou aucuns domaines inclus dans le certificat",
+            m.type_message, requete.liste_hachage_bytes);
+        // let refuse = json!({"ok": false, "err": "Autorisation refusee - permission manquante", "acces": "0.refuse", "code": 0});
+        // return Ok(Some(middleware.build_reponse(&refuse)?.0))
+        Err(ErreurPermissionRechiffrage::Refuse(ErrorPermissionRefusee { code: 0, err: "Autorisation refusee - permission manquante".to_string() }) )?
+    }
+
+    if let Some(domaines_permis) = domaines_permis {
+        // S'assurer que le domaine demande et inclus dans la liste des domaines permis
+        let mut permis = false;
+        for domaine in domaines_permis {
+            if requete.domaine.as_str() == domaine.as_str() {
+                permis = true;
+                break;
+            }
+        }
+        if permis == false {
+            debug!("requete_dechiffrage Requete {:?} de dechiffrage refusee, domaine n'est pas autorise", m.type_message);
+            // let refuse = json!({"ok": false, "err": "Autorisation refusee - domaine non autorise", "acces": "0.refuse", "code": 0});
+            // return Ok(Some(middleware.build_reponse(&refuse)?.0))
+            Err(ErreurPermissionRechiffrage::Refuse(ErrorPermissionRefusee { code: 0, err: "Autorisation refusee - domaine non autorise".to_string() }) )?
+        }
+    }
+
+    Ok((certificat, requete_autorisee_globalement))
+}

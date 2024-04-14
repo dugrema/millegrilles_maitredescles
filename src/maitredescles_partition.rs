@@ -1,7 +1,7 @@
 use std::alloc::handle_alloc_error;
 use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
-use std::fmt::{Debug, Formatter, Write};
+use std::fmt::{Debug, Display, Formatter, Write};
 use std::fs::read_dir;
 use std::sync::{Arc, Mutex};
 
@@ -14,7 +14,6 @@ use millegrilles_common_rust::chiffrage_cle::{CleChiffrageCache, CommandeSauvega
 use millegrilles_common_rust::chrono::{Duration, Utc};
 use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::constantes::*;
-use millegrilles_common_rust::constantes::Securite::L3Protege;
 use millegrilles_common_rust::common_messages::{DataChiffre, RequeteDechiffrage};
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::futures_util::stream::FuturesUnordered;
@@ -27,7 +26,7 @@ use millegrilles_common_rust::mongodb::{Collection, Cursor};
 use millegrilles_common_rust::mongodb::options::{FindOptions, InsertOneOptions, UpdateOptions};
 use millegrilles_common_rust::{get_domaine_action, multibase, serde_json};
 use millegrilles_common_rust::db_structs::TransactionValide;
-use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_cles::CleChiffrageHandler;
+use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_cles::{CleChiffrageHandler, CleSecreteSerialisee};
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
 use millegrilles_common_rust::millegrilles_cryptographie::x509::{EnveloppeCertificat, EnveloppePrivee};
 use millegrilles_common_rust::multihash::Code;
@@ -195,6 +194,7 @@ impl GestionnaireMaitreDesClesPartition {
 
             if dechiffrer {
                 rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE), exchange: sec.clone() });
+                rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE_V2), exchange: sec.clone() });
                 rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_VERIFIER_PREUVE), exchange: sec.clone() });
                 // rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}.{}", DOMAINE_NOM, nom_partition, REQUETE_VERIFIER_PREUVE), exchange: sec.clone() });
             }
@@ -238,7 +238,7 @@ impl GestionnaireMaitreDesClesPartition {
             COMMANDE_VERIFIER_CLE_SYMMETRIQUE,
         ];
         for commande in commandes_protegees {
-            rk_volatils.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, commande), exchange: L3Protege });
+            rk_volatils.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, commande), exchange: Securite::L3Protege });
         }
 
         // Queue de messages dechiffrage - taches partagees entre toutes les partitions
@@ -556,6 +556,7 @@ async fn consommer_requete<M>(middleware: &M, message: MessageValide, gestionnai
             match action.as_str() {
                 REQUETE_CERTIFICAT_MAITREDESCLES => requete_certificat_maitredescles(middleware, message).await,
                 REQUETE_DECHIFFRAGE => requete_dechiffrage(middleware, message, gestionnaire).await,
+                REQUETE_DECHIFFRAGE_V2 => requete_dechiffrage_v2(middleware, message, gestionnaire).await,
                 REQUETE_VERIFIER_PREUVE => requete_verifier_preuve(middleware, message, gestionnaire).await,
                 EVENEMENT_CLES_MANQUANTES_PARTITION => evenement_cle_manquante(middleware, message, gestionnaire).await,
                 _ => {
@@ -1071,69 +1072,23 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValide, gestionnaire: 
             return Ok(Some(middleware.reponse_err(None, None, Some(format!("Erreur mapping requete : {:?}", e).as_str()))?))
         }
     };
-    debug!("requete_dechiffrage cle parsed : {:?}", requete);
+
+    // Verifier que la requete est autorisee
+    let (certificat, requete_autorisee_globalement) = match verifier_permission_rechiffrage(middleware, &m, &requete).await {
+        Ok(inner) => inner,
+        Err(ErreurPermissionRechiffrage::Refuse(e)) => {
+            let refuse = json!({"ok": false, "err": e.err, "acces": "0.refuse", "code": e.code});
+            return Ok(Some(middleware.build_reponse(&refuse)?.0))
+        },
+        Err(ErreurPermissionRechiffrage::Error(e)) => Err(e)?
+    };
 
     let enveloppe_privee = middleware.get_enveloppe_signature();
     let fingerprint = enveloppe_privee.fingerprint()?;
-    let certificat_requete = m.certificat.as_ref();
-
-    let extensions = certificat_requete.extensions()?;
-    let domaines_permis = extensions.domaines;
-
-    // Trouver le certificat de rechiffrage
-    let certificat = match requete.certificat_rechiffrage.as_ref() {
-        Some(cr) => {
-            debug!("requete_dechiffrage Utilisation certificat dans la requete de dechiffrage");
-            middleware.charger_enveloppe(cr, None, None).await?
-        },
-        None => m.certificat.clone()
-    };
-
-    let certificat_valide = middleware.valider_chaine(certificat.as_ref(), None, true).unwrap_or_else(|e| {
-        error!("requete_dechiffrage Erreur de validation du certificat : {:?}", e);
-        false
-    });
-    if ! certificat_valide {
-        let refuse = json!({"ok": false, "err": "Autorisation refusee - certificat de rechiffrage n'est pas presentement valide", "acces": "0.refuse", "code": 0});
-        return Ok(Some(middleware.build_reponse(&refuse)?.0))
-    }
-
-    // Verifier si on a une autorisation de dechiffrage global
-    let requete_autorisee_globalement = verifier_autorisation_dechiffrage_global(
-        middleware, &m, &requete).await?;
-
-    // Rejeter si global false et permission absente
-    // if ! requete_autorisee_globalement && permission.is_none() && domaines_permis.is_none() {
-    if ! requete_autorisee_globalement && domaines_permis.is_none() {
-        debug!("requete_dechiffrage Requete {:?} de dechiffrage {:?} refusee, permission manquante ou aucuns domaines inclus dans le certificat",
-            m.type_message, requete.liste_hachage_bytes);
-        let refuse = json!({"ok": false, "err": "Autorisation refusee - permission manquante", "acces": "0.refuse", "code": 0});
-        return Ok(Some(middleware.build_reponse(&refuse)?.0))
-    }
-
-    if let Some(domaines_permis) = domaines_permis {
-        // S'assurer que le domaine demande et inclus dans la liste des domaines permis
-        let mut permis = false;
-        for domaine in domaines_permis {
-            if requete.domaine.as_str() == domaine.as_str() {
-                permis = true;
-                break;
-            }
-        }
-        if permis == false {
-            debug!("requete_dechiffrage Requete {:?} de dechiffrage refusee, domaine n'est pas autorise", m.type_message);
-            let refuse = json!({"ok": false, "err": "Autorisation refusee - domaine non autorise", "acces": "0.refuse", "code": 0});
-            return Ok(Some(middleware.build_reponse(&refuse)?.0))
-        }
-    }
 
     // Trouver les cles demandees et rechiffrer
-    // let mut curseur = preparer_curseur_cles(
-    //     middleware, gestionnaire, &requete, permission.as_ref(), domaines_permis.as_ref()).await?;
     let mut curseur = preparer_curseur_cles(
         middleware, gestionnaire, &requete, Some(&vec![requete.domaine.to_string()])).await?;
-    // let (cles, cles_trouvees) = rechiffrer_cles(
-    //     middleware, &m, &requete, enveloppe_privee, certificat.as_ref(), requete_autorisee_globalement, permission, &mut curseur).await?;
     let (mut cles, cles_trouvees) = rechiffrer_cles(
         middleware, gestionnaire,
         &m, &requete, enveloppe_privee.clone(), certificat.as_ref(),
@@ -1209,6 +1164,99 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValide, gestionnaire: 
 
         // Retourner cle inconnu a l'usager
         let inconnu = json!({"ok": false, "err": "Cles inconnues", "acces": CHAMP_ACCES_CLE_INCONNUE, "code": 4});
+        middleware.build_reponse(&inconnu)?.0
+    };
+
+    Ok(Some(reponse))
+}
+
+#[derive(Serialize, Deserialize)]
+struct ReponseRequeteDechiffrageV2 {
+    ok: bool,
+    code: usize,
+    cles: Option<Vec<CleSecreteSerialisee>>,
+    err: Option<String>,
+}
+
+async fn requete_dechiffrage_v2<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireMaitreDesClesPartition)
+                                -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
+    where M: GenerateurMessages + MongoDao + ValidateurX509 + CleChiffrageHandler
+{
+    debug!("requete_dechiffrage_v2 Consommer requete : {:?}", & m.message);
+    let message_ref = m.message.parse()?;
+    let requete: RequeteDechiffrage = match message_ref.contenu()?.deserialize() {
+        Ok(inner) => inner,
+        Err(e) => {
+            info!("requete_dechiffrage_v2 Erreur mapping ParametresGetPermissionMessages : {:?}", e);
+            // return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": format!("Erreur mapping requete : {:?}", e)}), None)?))
+            return Ok(Some(middleware.reponse_err(None, None, Some(format!("Erreur mapping requete : {:?}", e).as_str()))?))
+        }
+    };
+
+    // Verifier que la requete est autorisee
+    let (certificat, requete_autorisee_globalement) = match verifier_permission_rechiffrage(middleware, &m, &requete).await {
+        Ok(inner) => inner,
+        Err(ErreurPermissionRechiffrage::Refuse(e)) => {
+            let refuse = json!({"ok": false, "err": e.err, "acces": "0.refuse", "code": e.code});
+            return Ok(Some(middleware.build_reponse(&refuse)?.0))
+        },
+        Err(ErreurPermissionRechiffrage::Error(e)) => Err(e)?
+    };
+
+    let enveloppe_privee = middleware.get_enveloppe_signature();
+    let fingerprint = enveloppe_privee.fingerprint()?;
+
+    // Recuperer les cles et dechiffrer
+    let mut cles = Vec::new();
+
+    let nom_collection = match gestionnaire.get_collection_cles()? {
+        Some(inner) => inner, None => Err(Error::Str("Nom de collection pour les cles est manquant"))?
+    };
+    let mut filtre = doc! {CHAMP_HACHAGE_BYTES: {"$in": &requete.liste_hachage_bytes}};
+    filtre.insert("domaine", doc!{"$in": vec![&requete.domaine]});
+    let collection = middleware.get_collection_typed::<DocumentClePartition>(nom_collection.as_str())?;
+    let mut curseur = collection.find(filtre, None).await?;
+    while let Some(row) = curseur.next().await {
+        match row {
+            Ok(inner) => {
+                match inner.to_cle_secrete_serialisee(gestionnaire.handler_rechiffrage.as_ref()) {
+                    Ok(inner) => cles.push(inner),
+                    Err(e) => {
+                        warn!("Erreur mapping / dechiffrage cle - SKIP : {:?}", e);
+                        continue
+                    }
+                }
+            },
+            Err(e) => {
+                warn!("requete_dechiffrage_v2 Erreur mapping cle, SKIP : {:?}", e);
+                continue
+            }
+        }
+    }
+
+    // Verifier si on a des cles inconnues
+    if cles.len() < requete.liste_hachage_bytes.len() {
+        debug!("requete_dechiffrage_v2 Cles manquantes, on a {} trouvees sur {} demandees", cles.len(), requete.liste_hachage_bytes.len());
+        todo!("fix me")
+    }
+
+    // Preparer la reponse
+    // Verifier si on a au moins une cle dans la reponse
+    let reponse = if cles.len() > 0 {
+        let reponse = ReponseRequeteDechiffrageV2 { ok: true, code: 1, cles: Some(cles), err: None };
+        middleware.build_reponse_chiffree(reponse, enveloppe_privee.as_ref(), certificat.as_ref())?.0
+    } else {
+        // On n'a pas trouve de cles
+        debug!("requete_dechiffrage_v2 Requete {:?} de dechiffrage {:?}, cles inconnues", m.type_message, &requete.liste_hachage_bytes);
+
+        // Retourner cle inconnu a l'usager
+        let inconnu = json!({"ok": false, "err": "Cles inconnues", "acces": CHAMP_ACCES_CLE_INCONNUE, "code": 4});
+        let reponse = ReponseRequeteDechiffrageV2 {
+            ok: false,
+            code: 4,
+            cles: None,
+            err: Some("Cles inconnues".to_string())
+        };
         middleware.build_reponse(&inconnu)?.0
     };
 
@@ -1429,69 +1477,69 @@ async fn preparer_curseur_cles<M>(
 
 /// Verifier si la requete de dechiffrage est valide (autorisee) de maniere globale
 /// Les certificats 4.secure et delegations globales proprietaire donnent acces a toutes les cles
-async fn verifier_autorisation_dechiffrage_global<M>(middleware: &M, m: &MessageValide, requete: &RequeteDechiffrage)
-    // -> Result<(bool, Option<EnveloppePermission>), Error>
-    -> Result<bool, Error>
-    where M:  ValidateurX509
-{
-    // Verifier si le certificat est une delegation globale
-    if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
-        debug!("verifier_autorisation_dechiffrage Certificat delegation globale proprietaire - toujours autorise");
-        return Ok(true)
-    }
-
-    Ok(false)
-
-    // Acces global refuse.
-    // On verifie la presence et validite d'une permission
-
-    // let mut permission: Option<EnveloppePermission> = None;
-    // if let Some(p) = &requete.permission {
-    //     debug!("verifier_autorisation_dechiffrage_global On a une permission, valider le message {:?}", p);
-    //     let mut ms = match MessageSerialise::from_parsed(p.to_owned()) {
-    //         Ok(ms) => Ok(ms),
-    //         Err(e) => Err(format!("verifier_autorisation_dechiffrage_global Erreur verification permission (2), refuse: {:?}", e))
-    //     }?;
-    //
-    //     // Charger le certificat dans ms
-    //     let resultat = ms.valider(middleware, None).await?;
-    //     if ! resultat.valide() {
-    //         Err(format!("verifier_autorisation_dechiffrage_global Erreur verification certificat permission (1), refuse: certificat invalide"))?
-    //     }
-    //
-    //     match ms.parsed.map_contenu::<PermissionDechiffrage>(None) {
-    //         Ok(contenu_permission) => {
-    //             // Verifier la date d'expiration de la permission
-    //             let estampille = &ms.get_entete().estampille.get_datetime().timestamp();
-    //             let duree_validite = contenu_permission.permission_duree as i64;
-    //             let ts_courant = Utc::now().timestamp();
-    //             if estampille + duree_validite > ts_courant {
-    //                 debug!("Permission encore valide (duree {}), on va l'utiliser", duree_validite);
-    //                 // Note : conserver permission "localement" pour return false global
-    //                 permission = Some(EnveloppePermission {
-    //                     enveloppe: ms.certificat.clone().expect("cert"),
-    //                     permission: contenu_permission
-    //                 });
-    //             }
-    //         },
-    //         Err(e) => info!("verifier_autorisation_dechiffrage_global Erreur verification permission (1), refuse: {:?}", e)
-    //     }
-    // }
-    //
-    // match permission {
-    //     Some(p) => {
-    //         // Verifier si le certificat de permission est une delegation globale
-    //         if p.enveloppe.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
-    //             debug!("verifier_autorisation_dechiffrage Certificat delegation globale proprietaire - toujours autorise");
-    //             return Ok((true, Some(p)))
-    //         }
-    //         // Utiliser regles de la permission
-    //         Ok((false, Some(p)))
-    //     },
-    //     None => Ok((false, None))
-    // }
-
-}
+// async fn verifier_autorisation_dechiffrage_global<M>(middleware: &M, m: &MessageValide, requete: &RequeteDechiffrage)
+//     // -> Result<(bool, Option<EnveloppePermission>), Error>
+//     -> Result<bool, Error>
+//     where M:  ValidateurX509
+// {
+//     // Verifier si le certificat est une delegation globale
+//     if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
+//         debug!("verifier_autorisation_dechiffrage Certificat delegation globale proprietaire - toujours autorise");
+//         return Ok(true)
+//     }
+//
+//     Ok(false)
+//
+//     // Acces global refuse.
+//     // On verifie la presence et validite d'une permission
+//
+//     // let mut permission: Option<EnveloppePermission> = None;
+//     // if let Some(p) = &requete.permission {
+//     //     debug!("verifier_autorisation_dechiffrage_global On a une permission, valider le message {:?}", p);
+//     //     let mut ms = match MessageSerialise::from_parsed(p.to_owned()) {
+//     //         Ok(ms) => Ok(ms),
+//     //         Err(e) => Err(format!("verifier_autorisation_dechiffrage_global Erreur verification permission (2), refuse: {:?}", e))
+//     //     }?;
+//     //
+//     //     // Charger le certificat dans ms
+//     //     let resultat = ms.valider(middleware, None).await?;
+//     //     if ! resultat.valide() {
+//     //         Err(format!("verifier_autorisation_dechiffrage_global Erreur verification certificat permission (1), refuse: certificat invalide"))?
+//     //     }
+//     //
+//     //     match ms.parsed.map_contenu::<PermissionDechiffrage>(None) {
+//     //         Ok(contenu_permission) => {
+//     //             // Verifier la date d'expiration de la permission
+//     //             let estampille = &ms.get_entete().estampille.get_datetime().timestamp();
+//     //             let duree_validite = contenu_permission.permission_duree as i64;
+//     //             let ts_courant = Utc::now().timestamp();
+//     //             if estampille + duree_validite > ts_courant {
+//     //                 debug!("Permission encore valide (duree {}), on va l'utiliser", duree_validite);
+//     //                 // Note : conserver permission "localement" pour return false global
+//     //                 permission = Some(EnveloppePermission {
+//     //                     enveloppe: ms.certificat.clone().expect("cert"),
+//     //                     permission: contenu_permission
+//     //                 });
+//     //             }
+//     //         },
+//     //         Err(e) => info!("verifier_autorisation_dechiffrage_global Erreur verification permission (1), refuse: {:?}", e)
+//     //     }
+//     // }
+//     //
+//     // match permission {
+//     //     Some(p) => {
+//     //         // Verifier si le certificat de permission est une delegation globale
+//     //         if p.enveloppe.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+//     //             debug!("verifier_autorisation_dechiffrage Certificat delegation globale proprietaire - toujours autorise");
+//     //             return Ok((true, Some(p)))
+//     //         }
+//     //         // Utiliser regles de la permission
+//     //         Ok((false, Some(p)))
+//     //     },
+//     //     None => Ok((false, None))
+//     // }
+//
+// }
 
 /// Rechiffre une cle secrete
 // fn rechiffrer_cle(cle: &mut DocumentClePartition, rechiffreur: &HandlerCleRechiffrage, certificat_destination: &EnveloppeCertificat)
