@@ -57,6 +57,7 @@ pub const REQUETE_VERIFIER_PREUVE: &str = "verifierPreuve";
 // pub const COMMANDE_SAUVEGARDER_CLE: &str = "sauvegarderCle";
 pub const COMMANDE_CONFIRMER_CLES_SUR_CA: &str = "confirmerClesSurCa";
 pub const COMMANDE_CLE_SYMMETRIQUE: &str = "cleSymmetrique";
+pub const COMMANDE_AJOUTER_CLE_DOMAINES: &str = "ajouterCleDomaines";
 
 pub const TRANSACTION_CLE: &str = "cle";
 

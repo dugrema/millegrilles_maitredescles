@@ -10,7 +10,7 @@ use millegrilles_common_rust::multibase::Base;
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{doc, Document};
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
-use millegrilles_common_rust::chiffrage_cle::{CleChiffrageCache, CommandeSauvegarderCle};
+use millegrilles_common_rust::chiffrage_cle::{CleChiffrageCache, CommandeAjouterCleDomaine, CommandeSauvegarderCle};
 use millegrilles_common_rust::chrono::{Duration, Utc};
 use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::constantes::*;
@@ -26,7 +26,7 @@ use millegrilles_common_rust::mongodb::{Collection, Cursor};
 use millegrilles_common_rust::mongodb::options::{FindOptions, InsertOneOptions, UpdateOptions};
 use millegrilles_common_rust::{get_domaine_action, multibase, serde_json};
 use millegrilles_common_rust::db_structs::TransactionValide;
-use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_cles::{CleChiffrageHandler, CleSecreteSerialisee};
+use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_cles::{CleChiffrageHandler, CleDechiffrage, CleSecreteSerialisee};
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
 use millegrilles_common_rust::millegrilles_cryptographie::x509::{EnveloppeCertificat, EnveloppePrivee};
 use millegrilles_common_rust::multihash::Code;
@@ -209,6 +209,9 @@ impl GestionnaireMaitreDesClesPartition {
                 rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.*.{}", DOMAINE_NOM, commande), exchange: sec.clone() });
             }
         }
+
+        // Sauvegarde cleDomaine sur exchange public
+        rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_AJOUTER_CLE_DOMAINES), exchange: Securite::L1Public });
 
         // Commande sauvegarder cle 4.secure pour redistribution des cles
         rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE), exchange: Securite::L4Secure });
@@ -708,6 +711,7 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnaire: &
             COMMANDE_ROTATION_CERTIFICAT => commande_rotation_certificat(middleware, m, gestionnaire).await,
             COMMANDE_CLE_SYMMETRIQUE => commande_cle_symmetrique(middleware, m, gestionnaire).await,
             COMMANDE_DECHIFFRER_CLE => commande_dechiffrer_cle(middleware, m, gestionnaire).await,
+            COMMANDE_AJOUTER_CLE_DOMAINES => commande_ajouter_cle_domaines(middleware, m, gestionnaire).await,
             // Commandes inconnues
             _ => Err(format!("maitredescles_partition.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, action))?,
         }
@@ -797,6 +801,35 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValide, gestionna
         // Cle sauvegardee mais aucune reponse requise
         Ok(None)
     }
+}
+
+async fn commande_ajouter_cle_domaines<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireMaitreDesClesPartition)
+                                          -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
+    where M: GenerateurMessages + MongoDao + CleChiffrageHandler
+{
+    debug!("commande_ajouter_cle_domaines Consommer commande : {:?}", & m.type_message);
+    let commande: CommandeAjouterCleDomaine = deser_message_buffer!(m.message);
+
+    let enveloppe_signature = middleware.get_enveloppe_signature();
+    let fingerprint_ca = enveloppe_signature.enveloppe_ca.fingerprint()?;
+
+    // Dechiffrer la cle - confirme qu'elle est valide et qu'on peut y acceder.
+    let cle_dechiffrage = commande.cles.to_cle_dechiffrage(enveloppe_signature.as_ref())?;
+    let cle_secrete = match cle_dechiffrage.cle_secrete() {
+        Some(inner) => inner,
+        None => {
+            info!("commande_ajouter_cle_domaines Cle non dechiffrable (cle_secrete() = None)");
+            return Ok(Some(middleware.reponse_err(1, None, Some("Cle non dechiffrable"))?))
+        }
+    };
+
+    // Valider la signature des domaines.
+    if let Err(e) = commande.verifier_signature(fingerprint_ca, cle_secrete.0) {
+        warn!("commande_ajouter_cle_domaines Signature domaines invalide : {:?}", e);
+        return Ok(Some(middleware.reponse_err(2, None, Some("Signature domaines invalide"))?))
+    }
+
+    todo!("fix me")
 }
 
 async fn sauvegarder_cle<M, S>(
