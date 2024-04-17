@@ -2133,7 +2133,7 @@ dependencies = [
 [[package]]
 name = "millegrilles_cryptographie"
 version = "2024.3.1"
-source = "git+https://github.com/dugrema/millegrilles_cryptographie.git?branch=2024.3#291f1873191dff98f5c4e788434ab6f211d3ee1b"
+source = "git+https://github.com/dugrema/millegrilles_cryptographie.git?branch=2024.3#c462d6d680fbbba1df3a40b90251f9810fb1e255"
 dependencies = [
  "base64 0.22.0",
  "blake2",

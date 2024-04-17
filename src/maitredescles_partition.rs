@@ -686,6 +686,7 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnaire: &
         match action.as_str() {
             // Commandes standard
             COMMANDE_SAUVEGARDER_CLE => commande_sauvegarder_cle(middleware, m, gestionnaire).await,
+            COMMANDE_AJOUTER_CLE_DOMAINES => commande_ajouter_cle_domaines(middleware, m, gestionnaire).await,
             COMMANDE_CERT_MAITREDESCLES => {emettre_certificat_maitredescles(middleware, Some(m)).await?; Ok(None)},
 
             COMMANDE_RECHIFFRER_BATCH => commande_rechiffrer_batch(middleware, m, gestionnaire).await,
@@ -699,6 +700,7 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnaire: &
         match action.as_str() {
             // Commandes standard
             COMMANDE_SAUVEGARDER_CLE => commande_sauvegarder_cle(middleware, m, gestionnaire).await,
+            COMMANDE_AJOUTER_CLE_DOMAINES => commande_ajouter_cle_domaines(middleware, m, gestionnaire).await,
             COMMANDE_CERT_MAITREDESCLES => {emettre_certificat_maitredescles(middleware, Some(m)).await?; Ok(None)},
             // Commandes inconnues
             _ => Err(format!("maitredescles_partition.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, action))?,
@@ -707,11 +709,11 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnaire: &
         match action.as_str() {
             // Commandes standard
             COMMANDE_SAUVEGARDER_CLE => commande_sauvegarder_cle(middleware, m, gestionnaire).await,
+            COMMANDE_AJOUTER_CLE_DOMAINES => commande_ajouter_cle_domaines(middleware, m, gestionnaire).await,
             COMMANDE_CERT_MAITREDESCLES => {emettre_certificat_maitredescles(middleware, Some(m)).await?; Ok(None)},
             COMMANDE_ROTATION_CERTIFICAT => commande_rotation_certificat(middleware, m, gestionnaire).await,
             COMMANDE_CLE_SYMMETRIQUE => commande_cle_symmetrique(middleware, m, gestionnaire).await,
             COMMANDE_DECHIFFRER_CLE => commande_dechiffrer_cle(middleware, m, gestionnaire).await,
-            COMMANDE_AJOUTER_CLE_DOMAINES => commande_ajouter_cle_domaines(middleware, m, gestionnaire).await,
             // Commandes inconnues
             _ => Err(format!("maitredescles_partition.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, action))?,
         }
@@ -807,27 +809,41 @@ async fn commande_ajouter_cle_domaines<M>(middleware: &M, m: MessageValide, gest
                                           -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages + MongoDao + CleChiffrageHandler
 {
-    debug!("commande_ajouter_cle_domaines Consommer commande : {:?}", & m.type_message);
+    debug!("commande_ajouter_cle_domaines Consommer commande : {:?}", &m.type_message);
     let commande: CommandeAjouterCleDomaine = deser_message_buffer!(m.message);
 
     let enveloppe_signature = middleware.get_enveloppe_signature();
-    let fingerprint_ca = enveloppe_signature.enveloppe_ca.fingerprint()?;
 
     // Dechiffrer la cle - confirme qu'elle est valide et qu'on peut y acceder.
-    let cle_dechiffrage = commande.cles.to_cle_dechiffrage(enveloppe_signature.as_ref())?;
-    let cle_secrete = match cle_dechiffrage.cle_secrete() {
-        Some(inner) => inner,
-        None => {
-            info!("commande_ajouter_cle_domaines Cle non dechiffrable (cle_secrete() = None)");
-            return Ok(Some(middleware.reponse_err(1, None, Some("Cle non dechiffrable"))?))
-        }
-    };
+    let cle_secrete = commande.get_cle_secrete(enveloppe_signature.as_ref())?;
 
     // Valider la signature des domaines.
-    if let Err(e) = commande.verifier_signature(fingerprint_ca, cle_secrete.0) {
+    if let Err(e) = commande.verifier_signature(cle_secrete.0) {
         warn!("commande_ajouter_cle_domaines Signature domaines invalide : {:?}", e);
         return Ok(Some(middleware.reponse_err(2, None, Some("Signature domaines invalide"))?))
     }
+
+    if let Err(e) = sauvegarder_cle_domaine(middleware, gestionnaire, commande).await {
+        warn!("commande_ajouter_cle_domaines Erreur sauvegarde cle : {:?}", e);
+        return Ok(Some(middleware.reponse_err(3, None, Some("Erreur sauvegarde cle"))?))
+    }
+
+    // On ne retourne pas de confirmation - les transactions de cles sont sauvegardees et
+    // confirmees par le CA.
+    Ok(None)
+}
+
+async fn sauvegarder_cle_domaine<M>(
+    middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition,
+    commande: CommandeAjouterCleDomaine
+)
+    -> Result<(), Error>
+    where M: GenerateurMessages + MongoDao
+{
+    let nom_collection_cles = match gestionnaire.get_collection_cles()? {
+        Some(c) => c,
+        None => Err(Error::Str("maitredescles_partition.commande_sauvegarder_cle Gestionnaire sans partition/certificat"))?
+    };
 
     todo!("fix me")
 }
