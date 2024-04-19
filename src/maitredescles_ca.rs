@@ -1,11 +1,12 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::str::from_utf8;
 use std::sync::Arc;
 
 use log::{debug, error, info, trace, warn};
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{DateTime, doc, Document};
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
-use millegrilles_common_rust::chiffrage_cle::CommandeSauvegarderCle;
+use millegrilles_common_rust::chiffrage_cle::{CommandeAjouterCleDomaine, CommandeSauvegarderCle};
 use millegrilles_common_rust::{chrono, get_domaine_action, serde_json};
 use millegrilles_common_rust::chrono::Utc;
 use millegrilles_common_rust::constantes::*;
@@ -13,10 +14,10 @@ use millegrilles_common_rust::db_structs::TransactionValide;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::messages_generiques::MessageCedule;
-use millegrilles_common_rust::middleware::{Middleware, sauvegarder_traiter_transaction};
+use millegrilles_common_rust::middleware::{Middleware, sauvegarder_traiter_transaction, sauvegarder_traiter_transaction_serializable};
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::{MessageMilleGrillesBufferDefault};
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, MongoDao};
-use millegrilles_common_rust::mongodb::options::{CountOptions, FindOptions, Hint, UpdateOptions};
+use millegrilles_common_rust::mongodb::options::{CountOptions, FindOneOptions, FindOptions, Hint, UpdateOptions};
 use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange, QueueType, TypeMessageOut};
 use millegrilles_common_rust::recepteur_messages::MessageValide;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
@@ -25,7 +26,9 @@ use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::transactions::{TraiterTransaction, Transaction};
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::optionepochseconds;
 use millegrilles_common_rust::error::Error;
-use millegrilles_common_rust::millegrilles_cryptographie::deser_message_buffer;
+use millegrilles_common_rust::millegrilles_cryptographie::{deser_message_buffer, heapless};
+use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::{FormatChiffrage, optionformatchiffragestr};
+use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::{SignatureDomaines, SignatureDomainesVersion};
 
 use crate::maitredescles_commun::*;
 
@@ -151,6 +154,9 @@ pub fn preparer_queues() -> Vec<QueueType> {
     for sec in [Securite::L1Public, Securite::L2Prive] {
         rk_sauvegarder_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.*.{}", DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE), exchange: sec });
     }
+    // Nouvelle methode de sauvegarde de cle
+    rk_sauvegarder_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_AJOUTER_CLE_DOMAINES), exchange: Securite::L1Public });
+    rk_sauvegarder_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_TRANSFERT_CLE), exchange: Securite::L3Protege });
 
     for sec in [Securite::L3Protege, Securite::L4Secure] {
         // Conserver sauver cle pour
@@ -288,7 +294,7 @@ where
 
 async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnaire_ca: &GestionnaireMaitreDesClesCa)
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
-    where M: GenerateurMessages + MongoDao
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
     debug!("consommer_commande {:?}", m.type_message);
 
@@ -302,6 +308,7 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnaire_ca
         match action.as_str() {
             // Commandes standard
             COMMANDE_SAUVEGARDER_CLE => commande_sauvegarder_cle(middleware, m, gestionnaire_ca).await,
+            COMMANDE_AJOUTER_CLE_DOMAINES => commande_ajouter_cle_domaines(middleware, m, gestionnaire_ca).await,
             COMMANDE_RESET_NON_DECHIFFRABLE => commande_reset_non_dechiffrable(middleware, m, gestionnaire_ca).await,
 
             // Commandes inconnues
@@ -312,16 +319,19 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnaire_ca
         match action.as_str() {
             // Commandes standard
             COMMANDE_SAUVEGARDER_CLE => commande_sauvegarder_cle(middleware, m, gestionnaire_ca).await,
+            COMMANDE_AJOUTER_CLE_DOMAINES => commande_ajouter_cle_domaines(middleware, m, gestionnaire_ca).await,
             COMMANDE_CONFIRMER_CLES_SUR_CA => commande_confirmer_cles_sur_ca(middleware, m, gestionnaire_ca).await,
+            COMMANDE_TRANSFERT_CLE => commande_transfert_cle(middleware, m, gestionnaire_ca).await,
 
             // Commandes inconnues
             _ => Err(format!("maitredescles_ca.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, action))?,
         }
-    } else if m.certificat.verifier_exchanges(vec![Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure])? {
+    } else if m.certificat.verifier_exchanges(vec![Securite::L1Public, Securite::L2Prive])? {
         // Tous exchanges, serveur
         match action.as_str() {
             // Commandes standard
             COMMANDE_SAUVEGARDER_CLE => commande_sauvegarder_cle(middleware, m, gestionnaire_ca).await,
+            COMMANDE_AJOUTER_CLE_DOMAINES => commande_ajouter_cle_domaines(middleware, m, gestionnaire_ca).await,
 
             // Commandes inconnues
             _ => Err(format!("maitredescles_ca.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, action))?,
@@ -331,6 +341,7 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnaire_ca
         match action.as_str() {
             // Commandes standard
             COMMANDE_SAUVEGARDER_CLE => commande_sauvegarder_cle(middleware, m, gestionnaire_ca).await,
+            COMMANDE_AJOUTER_CLE_DOMAINES => commande_ajouter_cle_domaines(middleware, m, gestionnaire_ca).await,
 
             // Commandes inconnues
             _ => Err(format!("maitredescles_ca.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, action))?,
@@ -343,18 +354,10 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnaire_ca
 
 async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValide, gestionnaire_ca: &GestionnaireMaitreDesClesCa)
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
-    where M: GenerateurMessages + MongoDao,
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
     debug!("commande_sauvegarder_cle Consommer commande : {:?}", & m.type_message);
     let commande: CommandeSauvegarderCle = deser_message_buffer!(m.message);
-
-    // // Valider identite
-    // {
-    //     let cle_secrete = extraire_cle_secrete(middleware.get_enveloppe_privee().cle_privee(), cle)?;
-    //     if commande.verifier_identite(&cle_secrete)? != true {
-    //         Err(format!("maitredescles_partition.commande_sauvegarder_cle Erreur verifier identite commande, signature invalide"))?
-    //     }
-    // }
 
     let fingerprint = gestionnaire_ca.fingerprint.as_str();
     let mut doc_bson: Document = commande.clone().into();
@@ -400,13 +403,111 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValide, gestionna
     if let Some(uid) = resultat.upserted_id {
         debug!("commande_sauvegarder_cle Nouvelle cle insere _id: {}, generer transaction", uid);
         let transaction = TransactionCle::new_from_commande(&commande, fingerprint)?;
-        let routage = RoutageMessageAction::builder(DOMAINE_NOM, TRANSACTION_CLE, vec![Securite::L4Secure])
-            .blocking(false)
-            .build();
-        middleware.soumettre_transaction(routage, &transaction).await?;
+        // let routage = RoutageMessageAction::builder(DOMAINE_NOM, TRANSACTION_CLE, vec![Securite::L4Secure])
+        //     .blocking(false)
+        //     .build();
+        // middleware.soumettre_transaction(routage, &transaction).await?;
+        sauvegarder_traiter_transaction_serializable(
+            middleware, &transaction, gestionnaire_ca, DOMAINE_NOM, TRANSACTION_CLE).await?;
     }
 
     Ok(Some(middleware.reponse_ok(None, None)?))
+}
+
+async fn commande_ajouter_cle_domaines<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireMaitreDesClesCa)
+                                          -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
+{
+    debug!("commande_ajouter_cle_domaines Consommer commande : {:?}", &m.type_message);
+    let commande: CommandeAjouterCleDomaine = deser_message_buffer!(m.message);
+
+    // Verifier si on a deja la cle - sinon, creer une nouvelle transaction
+    let cle_id = commande.signature.get_cle_ref()?.to_string();
+
+    let filtre = doc! { CHAMP_CLE_ID: &cle_id };
+    let options = FindOneOptions::builder()
+        .hint(Hint::Name("index_cle_id".to_string()))
+        .projection(doc!{CHAMP_CLE_ID: 1})
+        .build();
+    let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
+    let resultat = collection.find_one(filtre, options).await?;
+
+    if resultat.is_none() {
+        let transaction_cle = TransactionCleV2 { signature: commande.signature };
+        debug!("commande_ajouter_cle_domaines Sauvegarder transaction nouvelle cle {}", cle_id);
+        sauvegarder_traiter_transaction_serializable(
+            middleware, &transaction_cle, gestionnaire, DOMAINE_NOM, TRANSACTION_CLE_V2).await?;
+    }
+
+    // Confirmer le traitement de la cle
+    Ok(Some(middleware.reponse_ok(None, None)?))
+}
+
+async fn commande_transfert_cle<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireMaitreDesClesCa)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
+{
+    debug!("commande_transfert_cle Consommer commande : {:?}", &m.type_message);
+    if !m.certificat.verifier_exchanges(vec![Securite::L3Protege])? ||
+        !m.certificat.verifier_roles(vec![RolesCertificats::MaitreDesCles])?
+    {
+        Err(Error::Str("commande_transfert_cle Exchange/Role non autorise"))?
+    }
+    let commande: CommandeTransfertCle = deser_message_buffer!(m.message);
+
+    // Verifier si on a deja la cle - sinon, creer une nouvelle transaction
+    let cle_id = commande.signature.get_cle_ref()?.to_string();
+
+    let filtre = doc! { CHAMP_CLE_ID: &cle_id };
+    let options = FindOneOptions::builder()
+        .hint(Hint::Name("index_cle_id".to_string()))
+        .projection(doc!{CHAMP_CLE_ID: 1})
+        .build();
+    let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
+    let resultat = collection.find_one(filtre, options).await?;
+
+    if resultat.is_none() {
+        match commande.signature.version {
+            SignatureDomainesVersion::NonSigne => {
+                // Ancienne version
+                let cle_id = commande.signature.signature.to_string();
+
+                let cle_ca = match commande.signature.ca {
+                    Some(inner) => format!("m{}", inner),  // Ajoute 'm' multibase base64 no pad
+                    None => Err(Error::Str("commande_transfert_cle Cle pour le CA manquante"))?
+                };
+
+                let domaine = match commande.signature.domaines.get(0) {
+                    Some(inner) => inner.to_string(),
+                    None => Err(Error::Str("Domaine manquant"))?
+                };
+
+                debug!("commande_transfert_cle Sauvegarder cle transferee {}", cle_id);
+                let transaction_cle = TransactionCle {
+                    hachage_bytes: cle_id,
+                    domaine,
+                    identificateurs_document: Default::default(),
+                    cle: cle_ca,
+                    format: commande.format,
+                    iv: commande.iv,
+                    tag: commande.tag,
+                    header: commande.header,
+                    partition: None,
+                };
+                sauvegarder_traiter_transaction_serializable(
+                    middleware, &transaction_cle, gestionnaire, DOMAINE_NOM, TRANSACTION_CLE).await?;
+            },
+            _ => {
+                // Version courante
+                let transaction_cle = TransactionCleV2 { signature: commande.signature };
+                debug!("commande_ajouter_cle_domaines Sauvegarder transaction nouvelle cle {}", cle_id);
+                sauvegarder_traiter_transaction_serializable(
+                    middleware, &transaction_cle, gestionnaire, DOMAINE_NOM, TRANSACTION_CLE_V2).await?;
+            }
+        }
+    }
+
+    Ok(None)
 }
 
 /// Reset toutes les cles a non_dechiffrable=true
@@ -445,41 +546,66 @@ async fn aiguillage_transaction<M>(middleware: &M, transaction: TransactionValid
 
     match action {
         TRANSACTION_CLE => transaction_cle(middleware, transaction).await,
+        TRANSACTION_CLE_V2 => transaction_cle_v2(middleware, transaction).await,
         _ => Err(Error::String(format!("maitredescles.aiguillage_transaction: Transaction {} est de type non gere : {}", transaction.transaction.id, action))),
     }
 }
 
+/// Transaction cle Version 1 (obsolete)
 async fn transaction_cle<M>(middleware: &M, transaction: TransactionValide) -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages + MongoDao
 {
-    debug!("transaction_catalogue_horaire Consommer transaction : {:?}", transaction.transaction.routage);
+    debug!("transaction_cle Consommer transaction : {:?}", transaction.transaction.routage);
     let transaction_cle: TransactionCle = serde_json::from_str(transaction.transaction.contenu.as_str())?;
-    // let transaction_cle: TransactionCle = match transaction.clone().convertir::<TransactionCle>() {
-    //     Ok(t) => t,
-    //     Err(e) => Err(format!("maitredescles_ca.transaction_cle Erreur conversion transaction : {:?}", e))?
-    // };
 
-    // // Valider identite
-    // {
-    //     let cle_secrete = extraire_cle_secrete(middleware.get_enveloppe_privee().cle_privee(), cle)?;
-    //     if transaction_cle.verifier_identite(&cle_secrete)? != true {
-    //         Err(format!("maitredescles_partition.commande_sauvegarder_cle Erreur verifier identite commande, signature invalide"))?
-    //     }
-    // }
+    let hachage_bytes = transaction_cle.hachage_bytes.as_str();
 
-    let hachage_bytes = transaction_cle.hachage_bytes.clone();
-    let mut doc_bson_transaction = match convertir_to_bson(transaction_cle) {
-        Ok(inner) => inner,
-        Err(e) => Err(format!("maitredescles_ca.transaction_cle Erreur convertir_to_bson : {:?}", e))?
+    let filtre = doc! {"cle_id": hachage_bytes};
+    let format: Option<&str> = match transaction_cle.format.clone() { Some(inner) => Some(inner.into()), None => None };
+
+    let mut domaines = heapless::Vec::new();
+    domaines.push(
+        transaction_cle.domaine.as_str().try_into()
+            .map_err(|_|Error::Str("transaction_cle Erreur mapping domaine to heapless::String"))?
+    ).map_err(|_|Error::Str("transaction_cle Erreur ajout domaine to heapless::Vec"))?;
+
+    // Convertir la cle dans le nouveau format de SignatureDomaine
+    // Retirer le marqueur 'm' multibase pour obtenir base64 no pad.
+    let cle_str = &transaction_cle.cle.as_str()[1..];
+    let cle_heapless = cle_str.try_into().map_err(|_|Error::Str("transaction_cle Erreur mapping cle to heapless::String"))?;
+
+    let signature = SignatureDomaines {
+        domaines,
+        version: SignatureDomainesVersion::NonSigne,
+        ca: Some(cle_heapless),
+        signature: hachage_bytes.try_into().map_err(|_|Error::Str("transaction_cle Erreur mapping hachage_bytes to heapless::String"))?,
     };
 
-    doc_bson_transaction.insert(CHAMP_NON_DECHIFFRABLE, true);  // Flag non-dechiffrable par defaut (setOnInsert seulement)
-    doc_bson_transaction.insert(CHAMP_CREATION, DateTime::now());  // Flag non-dechiffrable par defaut (setOnInsert seulement)
+    let mut set_on_insert = doc! {
+        // CHAMP_HACHAGE_BYTES: hachage_bytes,
+        // "domaine": &transaction_cle.domaine,
+        // "cle": &transaction_cle.cle,
+        "signature": convertir_to_bson(signature)?,
+        CHAMP_NON_DECHIFFRABLE: true,
+        CHAMP_CREATION: Utc::now(),
+    };
 
-    let filtre = doc! {CHAMP_HACHAGE_BYTES: hachage_bytes};
+    if let Some(inner) = transaction_cle.iv { set_on_insert.insert("iv", inner); }
+    if let Some(inner) = transaction_cle.tag { set_on_insert.insert("tag", inner); }
+    if let Some(inner) = transaction_cle.header { set_on_insert.insert("header", inner); }
+    if let Some(inner) = format { set_on_insert.insert("format", inner); }
+
+    // let mut doc_bson_transaction = match convertir_to_bson(transaction_cle) {
+    //     Ok(inner) => inner,
+    //     Err(e) => Err(format!("maitredescles_ca.transaction_cle Erreur convertir_to_bson : {:?}", e))?
+    // };
+    // doc_bson_transaction.insert(CHAMP_NON_DECHIFFRABLE, true);  // Flag non-dechiffrable par defaut (setOnInsert seulement)
+    // doc_bson_transaction.insert(CHAMP_CREATION, DateTime::now());  // Flag non-dechiffrable par defaut (setOnInsert seulement)
+
+    // let filtre = doc! {CHAMP_HACHAGE_BYTES: hachage_bytes};
     let ops = doc! {
         "$set": {"dirty": false},
-        "$setOnInsert": doc_bson_transaction,
+        "$setOnInsert": set_on_insert,
         "$currentDate": {CHAMP_MODIFICATION: true}
     };
     let opts = UpdateOptions::builder().upsert(true).build();
@@ -487,7 +613,41 @@ async fn transaction_cle<M>(middleware: &M, transaction: TransactionValide) -> R
     debug!("transaction_cle update ops : {:?}", ops);
     let resultat = match collection.update_one(filtre, ops, opts).await {
         Ok(r) => r,
-        Err(e) => Err(format!("maitredescles_ca.transaction_cle Erreur update_one sur transcation : {:?}", e))?
+        Err(e) => Err(format!("maitredescles_ca.transaction_cle Erreur update_one sur transaction : {:?}", e))?
+    };
+    debug!("transaction_cle Resultat transaction update : {:?}", resultat);
+
+    Ok(None)
+}
+
+async fn transaction_cle_v2<M>(middleware: &M, transaction: TransactionValide) -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
+    where M: GenerateurMessages + MongoDao
+{
+    debug!("transaction_cle Consommer transaction : {:?}\n{}", transaction.transaction.routage,
+        transaction.transaction.contenu.as_str());
+    let transaction_cle: TransactionCleV2 = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+
+    let signature = transaction_cle.signature;
+    let cle_id = signature.get_cle_ref()?.to_string();
+
+    let mut set_on_insert = doc! {
+        "signature": convertir_to_bson(signature)?,
+        CHAMP_NON_DECHIFFRABLE: true,
+        CHAMP_CREATION: Utc::now(),
+    };
+
+    let filtre = doc! {"cle_id": cle_id};
+    let ops = doc! {
+        "$set": {"dirty": false},
+        "$setOnInsert": set_on_insert,
+        "$currentDate": {CHAMP_MODIFICATION: true}
+    };
+    let opts = UpdateOptions::builder().upsert(true).build();
+    let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
+    debug!("transaction_cle update ops : {:?}", ops);
+    let resultat = match collection.update_one(filtre, ops, opts).await {
+        Ok(r) => r,
+        Err(e) => Err(format!("maitredescles_ca.transaction_cle Erreur update_one sur transaction : {:?}", e))?
     };
     debug!("transaction_cle Resultat transaction update : {:?}", resultat);
 
@@ -498,7 +658,7 @@ async fn requete_compter_cles_non_dechiffrables<M>(middleware: &M, m: MessageVal
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages + MongoDao
 {
-    debug!("requete_compter_cles_non_dechiffrables Consommer commande : {:?}", & m.message);
+    debug!("requete_compter_cles_non_dechiffrables Consommer commande : {:?}", & m.type_message);
     // let requete: RequeteDechiffrage = m.message.get_msg().map_contenu(None)?;
     // debug!("requete_compter_cles_non_dechiffrables cle parsed : {:?}", requete);
 
@@ -514,6 +674,34 @@ async fn requete_compter_cles_non_dechiffrables<M>(middleware: &M, m: MessageVal
 
     let reponse = json!({ "compte": compte });
     Ok(Some(middleware.build_reponse(&reponse)?.0))
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RecupererCleCa {
+    signature: SignatureDomaines,
+
+    // Valeurs dechiffrage contenu V1 (obsolete)
+    #[serde(default, skip_serializing_if="Option::is_none", with="optionformatchiffragestr")]
+    pub format: Option<FormatChiffrage>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub iv: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub tag: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub header: Option<String>,
+}
+
+impl<'a> TryFrom<RowClePartitionRef<'a>> for RecupererCleCa {
+    type Error = Error;
+    fn try_from(value: RowClePartitionRef<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            signature: value.signature.try_into()?,
+            format: value.format,
+            iv: match value.iv { Some(inner) => Some(inner.to_string()), None => None },
+            tag: match value.tag { Some(inner) => Some(inner.to_string()), None => None },
+            header: match value.header { Some(inner) => Some(inner.to_string()), None => None },
+        })
+    }
 }
 
 async fn requete_cles_non_dechiffrables<M>(middleware: &M, m: MessageValide, _gestionnaire: &GestionnaireMaitreDesClesCa)
@@ -576,12 +764,12 @@ async fn requete_cles_non_dechiffrables<M>(middleware: &M, m: MessageValide, _ge
         // Conserver date de creation - On est juste interesse en la derniere date (plus recente).
         date_creation = Some(cle.date_creation.clone());
 
-        let cle: TransactionCle = cle.into();  // Version owned
+        let cle: RecupererCleCa = cle.try_into()?;  // Version owned
         cles.push(cle);
     }
 
     let reponse = json!({ "cles": cles, "date_creation_max": date_creation.as_ref() });
-    debug!("requete_cles_non_dechiffrables Reponse cles rechiffrable : {:?}", reponse);
+    debug!("requete_cles_non_dechiffrables Reponse {} cles rechiffrable", cles.len());
     Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
@@ -611,7 +799,7 @@ async fn requete_synchronizer_cles<M>(middleware: &M, m: MessageValide, _gestion
         let filtre = doc! {};
         let hint = Hint::Keys(doc!{"_id": 1});  // Index _id
         //let sort_doc = doc! {"_id": 1};
-        let projection = doc!{CHAMP_HACHAGE_BYTES: 1, CHAMP_DOMAINE: 1};
+        let projection = doc!{CHAMP_CLE_ID: 1};
         let opts = FindOptions::builder()
             .hint(hint)
             //.sort(sort_doc)
@@ -630,7 +818,7 @@ async fn requete_synchronizer_cles<M>(middleware: &M, m: MessageValide, _gestion
             Ok(doc_cle) => {
                 match convertir_bson_deserializable::<CleSynchronisation>(doc_cle) {
                     Ok(h) => {
-                        cles.push(h.to_owned());
+                        cles.push(h.cle_id);
                     },
                     Err(e) => {
                         info!("requete_synchronizer_cles Erreur mapping CleSynchronisation : {:?}", e);
@@ -641,7 +829,7 @@ async fn requete_synchronizer_cles<M>(middleware: &M, m: MessageValide, _gestion
         }
     }
 
-    let reponse = ReponseSynchroniserCles { liste_cles: cles };
+    let reponse = ReponseSynchroniserCles { liste_cle_id: cles };
     Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
@@ -652,7 +840,7 @@ async fn evenement_cle_manquante<M>(middleware: &M, m: &MessageValide) -> Result
     let event_non_dechiffrables: ReponseSynchroniserCles = deser_message_buffer!(m.message);
 
     // let filtre = doc! { CHAMP_HACHAGE_BYTES: { "$in": event_non_dechiffrables.liste_hachage_bytes }};
-    let filtre = doc! { "$or": CleSynchronisation::get_bson_filter(&event_non_dechiffrables.liste_cles)? };
+    let filtre = doc! {"cle_id": { "$in": &event_non_dechiffrables.liste_cle_id } };
 
     let ops = doc! {
         "$set": { CHAMP_NON_DECHIFFRABLE: true },
@@ -670,10 +858,12 @@ async fn evenement_cle_recue_partition<M>(middleware: &M, m: &MessageValide) -> 
     where M: ValidateurX509 + GenerateurMessages + MongoDao,
 {
     debug!("evenement_cle_recue_partition Marquer cle comme confirmee (dechiffrable) par la partition {:?}", m.type_message);
+    debug!("evenement_cle_recue_partition Contenu\n{}", from_utf8(&m.message.buffer)?);
     let event_cles_recues: ReponseSynchroniserCles = deser_message_buffer!(m.message);
 
     // let filtre = doc! { CHAMP_HACHAGE_BYTES: { "$in": event_cles_recues.liste_hachage_bytes }};
-    let filtre = doc! { "$or": CleSynchronisation::get_bson_filter(&event_cles_recues.liste_cles)? };
+    // let filtre = doc! { "$or": CleSynchronisation::get_bson_filter(&event_cles_recues.liste_cle_id)? };
+    let filtre = doc! { "cle_id": {"$in": &event_cles_recues.liste_cle_id} };
 
     let ops = doc! {
         "$set": { CHAMP_NON_DECHIFFRABLE: false },
@@ -695,11 +885,12 @@ async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValide, _ge
     // debug!("requete_synchronizer_cles cle parsed : {:?}", requete);
 
     let mut cles_manquantes = HashSet::new();
-    cles_manquantes.extend(requete.liste_cles.clone());
+    cles_manquantes.extend(&requete.liste_cle_id);
 
     let filtre_update = doc! {
         // CHAMP_HACHAGE_BYTES: {"$in": &requete.liste_hachage_bytes },
-        "$or": CleSynchronisation::get_bson_filter(&requete.liste_cles)?,
+        // "$or": CleSynchronisation::get_bson_filter(&requete.liste_cle_id)?,
+        "cle_id": {"$in": &requete.liste_cle_id},
         CHAMP_NON_DECHIFFRABLE: true,
     };
 
@@ -712,9 +903,10 @@ async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValide, _ge
     let resultat_update = collection.update_many(filtre_update, ops, None).await?;
     debug!("commande_confirmer_cles_sur_ca Resultat update : {:?}", resultat_update);
 
-    let filtre = doc! { "$or": CleSynchronisation::get_bson_filter(&requete.liste_cles)? };
+    // let filtre = doc! { "$or": CleSynchronisation::get_bson_filter(&requete.liste_cle_id)? };
+    let filtre = doc! { "cle_id": {"$in": &requete.liste_cle_id } };
     debug!("commande_confirmer_cles_sur_ca Filtre cles CA: {:?}", filtre);
-    let projection = doc! { CHAMP_HACHAGE_BYTES: 1, CHAMP_DOMAINE: 1 };
+    let projection = doc! { CHAMP_CLE_ID: 1 };
     let opts = FindOptions::builder().projection(projection).build();
     let mut curseur = collection.find(filtre, opts).await?;
     while let Some(d) = curseur.next().await {
@@ -725,7 +917,7 @@ async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValide, _ge
                     Ok(c) => {
                         // Enlever la cle de la liste de cles manquantes
                         trace!("Cle CA confirmee (presente) : {:?}", c);
-                        cles_manquantes.remove(&c);
+                        cles_manquantes.remove(&c.cle_id);
                     },
                     Err(e) => {
                         info!("commande_confirmer_cles_sur_ca Erreur conversion CleSynchronisation : {:?}", e);
@@ -738,7 +930,7 @@ async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValide, _ge
 
     let mut vec_cles_manquantes = Vec::new();
     debug!("commande_confirmer_cles_sur_ca Demander {} cles manquantes sur CA", cles_manquantes.len());
-    vec_cles_manquantes.extend(cles_manquantes);
+    vec_cles_manquantes.extend(cles_manquantes.iter().map(|v| v.to_string()));
     let reponse = ReponseConfirmerClesSurCa { cles_manquantes: vec_cles_manquantes };
     Ok(Some(middleware.build_reponse(&reponse)?.0))
 }

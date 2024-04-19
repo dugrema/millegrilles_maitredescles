@@ -28,7 +28,7 @@ use crate::maitredescles_ca::GestionnaireMaitreDesClesCa;
 use crate::maitredescles_commun::{emettre_cles_symmetriques, GestionnaireRessources};
 use crate::maitredescles_partition::GestionnaireMaitreDesClesPartition;
 use crate::maitredescles_sqlite::{GestionnaireMaitreDesClesSQLite};
-use crate::maitredescles_volatil::HandlerCleRechiffrage;
+use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
 
 const DUREE_ATTENTE: u64 = 20000;
 

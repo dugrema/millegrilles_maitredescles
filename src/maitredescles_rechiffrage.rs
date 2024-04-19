@@ -11,25 +11,23 @@ use millegrilles_common_rust::error::Error;
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::CleSecrete;
 use millegrilles_common_rust::millegrilles_cryptographie::x25519::{chiffrer_asymmetrique_ed25519, CleSecreteX25519, dechiffrer_asymmetrique_ed25519};
 
-use crate::maitredescles_commun::DocumentClePartition;
+use crate::maitredescles_commun::RowClePartition;
 
 pub struct CleInterneChiffree {
     pub cle: String,
     pub nonce: String,
 }
 
-impl TryFrom<DocumentClePartition> for CleInterneChiffree {
-    type Error = String;
+impl TryFrom<RowClePartition> for CleInterneChiffree {
+    type Error = Error;
 
-    fn try_from(value: DocumentClePartition) -> Result<Self, Self::Error> {
-        match value.cle_symmetrique {
-            Some(cle) => {
-                match value.nonce_symmetrique {
-                    Some(nonce) => Ok(Self { cle, nonce }),
-                    None => Err(format!("nonce manquant"))
-                }
+    fn try_from(value: RowClePartition) -> Result<Self, Self::Error> {
+        match value.cle_symmetrique.as_ref() {
+            Some(cle) => match value.nonce_symmetrique.as_ref() {
+                Some(nonce) => Ok(CleInterneChiffree { cle: cle.clone(), nonce: nonce.clone() }),
+                None => Err(Error::Str("TryFrom<RowClePartition> cle_symmetrique manquante"))
             },
-            None => Err(format!("Cle manquante"))
+            None => Err(Error::Str("TryFrom<RowClePartition> nonce manquant"))
         }
     }
 }

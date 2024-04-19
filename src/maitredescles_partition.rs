@@ -6,6 +6,7 @@ use std::fs::read_dir;
 use std::sync::{Arc, Mutex};
 
 use log::{debug, error, info, trace, warn};
+use millegrilles_common_rust::base64::{engine::general_purpose::STANDARD_NO_PAD as base64_nopad, Engine as _};
 use millegrilles_common_rust::multibase::Base;
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{doc, Document};
@@ -20,10 +21,10 @@ use millegrilles_common_rust::futures_util::stream::FuturesUnordered;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
 use millegrilles_common_rust::hachages::hacher_bytes;
 use millegrilles_common_rust::messages_generiques::{CommandeCleRechiffree, CommandeDechiffrerCle, MessageCedule};
-use millegrilles_common_rust::middleware::{Middleware, sauvegarder_transaction};
+use millegrilles_common_rust::middleware::{Middleware, sauvegarder_traiter_transaction_serializable, sauvegarder_transaction};
 use millegrilles_common_rust::mongo_dao::{ChampIndex, convertir_bson_deserializable, convertir_to_bson, IndexOptions, MongoDao, verifier_erreur_duplication_mongo};
 use millegrilles_common_rust::mongodb::{Collection, Cursor};
-use millegrilles_common_rust::mongodb::options::{FindOptions, InsertOneOptions, UpdateOptions};
+use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOneOptions, FindOptions, Hint, InsertOneOptions, UpdateOptions};
 use millegrilles_common_rust::{get_domaine_action, multibase, serde_json};
 use millegrilles_common_rust::db_structs::TransactionValide;
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_cles::{CleChiffrageHandler, CleDechiffrage, CleSecreteSerialisee};
@@ -43,16 +44,15 @@ use millegrilles_common_rust::tokio::sync::{mpsc, mpsc::{Receiver, Sender}};
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::transactions::{EtatTransaction, marquer_transaction, TraiterTransaction, Transaction};
 use millegrilles_common_rust::error::Error;
-use millegrilles_common_rust::millegrilles_cryptographie::deser_message_buffer;
+use millegrilles_common_rust::millegrilles_cryptographie::{deser_message_buffer, heapless};
+use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::FormatChiffrage;
+use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::{SignatureDomaines, SignatureDomainesVersion};
 use millegrilles_common_rust::millegrilles_cryptographie::x25519::{chiffrer_asymmetrique_ed25519, dechiffrer_asymmetrique_ed25519};
+use crate::maitredescles_ca::{GestionnaireMaitreDesClesCa, NOM_COLLECTION_CLES};
 
 use crate::maitredescles_commun::*;
-use crate::maitredescles_volatil::{CleInterneChiffree, HandlerCleRechiffrage};
+use crate::maitredescles_rechiffrage::{CleInterneChiffree, HandlerCleRechiffrage};
 use crate::messages::{MessageReponseChiffree, RequeteVerifierPreuve};
-
-// const NOM_COLLECTION_RECHIFFRAGE: &str = "MaitreDesCles/rechiffrage";
-
-// const NOM_Q_VOLATILS_GLOBAL: &str = "MaitreDesCles/volatils";
 
 const REQUETE_CERTIFICAT_MAITREDESCLES: &str = COMMANDE_CERT_MAITREDESCLES;
 
@@ -75,7 +75,6 @@ impl Debug for GestionnaireMaitreDesClesPartition {
             Ok(fingerprint) => f.write_str(format!("GestionnaireMaitreDesClesPartition {}", fingerprint).as_str()),
             Err(_) => f.write_str("GestionnaireMaitreDesClesPartition Erreur calcul fingerprint")
         }
-        // f.write_str(format!("GestionnaireMaitreDesClesPartition {}", self.handler_rechiffrage.fingerprint()).as_str())
     }
 }
 
@@ -88,15 +87,6 @@ impl Clone for GestionnaireMaitreDesClesPartition {
     }
 }
 
-// fn nom_collection_transactions<S>(fingerprint: S) -> String
-//     where S: AsRef<str>
-// {
-//     // On utilise les 12 derniers chars du fingerprint (35..48)
-//     // let fp = fingerprint.as_ref();
-//     // format!("MaitreDesCles/{}", &fp[35..])
-//     String::from("MaitreDesCles/DUMMY")
-// }
-
 impl GestionnaireMaitreDesClesPartition {
 
     pub fn new(handler_rechiffrage: HandlerCleRechiffrage) -> Self {
@@ -108,31 +98,16 @@ impl GestionnaireMaitreDesClesPartition {
     pub fn get_partition_tronquee(&self) -> Result<Option<String>, Error> {
         let fingerprint = self.handler_rechiffrage.fingerprint()?;
         Ok(Some(String::from(&fingerprint[35..])))
-        // match self.handler_rechiffrage.fingerprint() {
-        //     Some(f) => {
-        //         // On utilise les 12 derniers chars du fingerprint (35..48)
-        //         Some(String::from(&f[35..]))
-        //     },
-        //     None => None
-        // }
     }
 
     fn get_q_sauvegarder_cle(&self) -> Result<Option<String>, Error> {
         let fingerprint = self.handler_rechiffrage.fingerprint()?;
         Ok(Some(format!("MaitreDesCles/{}/sauvegarder", fingerprint)))
-        // match self.handler_rechiffrage.fingerprint() {
-        //     Some(f) => {
-        //         Some(format!("MaitreDesCles/{}/sauvegarder", f))
-        //     },
-        //     None => None
-        // }
     }
 
     fn get_collection_cles(&self) -> Result<Option<String>, Error> {
         match self.get_partition_tronquee()? {
-            Some(p) => {
-                Ok(Some("MaitreDesCles/cles".to_string()))
-            },
+            Some(p) => Ok(Some("MaitreDesCles/cles".to_string())),
             None => Ok(None)
         }
     }
@@ -177,10 +152,6 @@ impl GestionnaireMaitreDesClesPartition {
         };
 
         let fingerprint = self.handler_rechiffrage.fingerprint()?;
-        // let fingerprint = match self.handler_rechiffrage.fingerprint() {
-        //     Some(f) => f,
-        //     None => panic!("maitredescles_partition.preparer_queues_rechiffrage Gestionnaire sans certificat/partition")
-        // };
 
         let mut queues = Vec::new();
 
@@ -212,6 +183,7 @@ impl GestionnaireMaitreDesClesPartition {
 
         // Sauvegarde cleDomaine sur exchange public
         rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_AJOUTER_CLE_DOMAINES), exchange: Securite::L1Public });
+        rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_TRANSFERT_CLE), exchange: Securite::L3Protege });
 
         // Commande sauvegarder cle 4.secure pour redistribution des cles
         rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE), exchange: Securite::L4Secure });
@@ -307,10 +279,6 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
 
     fn get_partition(&self) -> Result<Option<String>, Error> {
         Ok(Some(self.handler_rechiffrage.fingerprint()?))
-        // match self.handler_rechiffrage.fingerprint() {
-        //     Some(f) => Some(f),
-        //     None => None
-        // }
     }
 
     fn get_collection_transactions(&self) -> Option<String> {
@@ -330,34 +298,16 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
     fn get_q_transactions(&self) -> Result<Option<String>, Error> {
         let fingerprint = self.handler_rechiffrage.fingerprint()?;
         Ok(Some(format!("MaitreDesCles/{}/transactions", fingerprint)))
-        // match self.handler_rechiffrage.fingerprint() {
-        //     Some(f) => {
-        //         Some(format!("MaitreDesCles/{}/transactions", f))
-        //     },
-        //     None => None
-        // }
     }
 
     fn get_q_volatils(&self) -> Result<Option<String>, Error> {
         let fingerprint = self.handler_rechiffrage.fingerprint()?;
         Ok(Some(format!("MaitreDesCles/{}/volatils", fingerprint)))
-        // match self.handler_rechiffrage.fingerprint() {
-        //     Some(f) => {
-        //         Some(format!("MaitreDesCles/{}/volatils", f))
-        //     },
-        //     None => None
-        // }
     }
 
     fn get_q_triggers(&self) -> Result<Option<String>, Error> {
         let fingerprint = self.handler_rechiffrage.fingerprint()?;
         Ok(Some(format!("MaitreDesCles/{}/triggers", fingerprint)))
-        // match self.handler_rechiffrage.fingerprint() {
-        //     Some(f) => {
-        //         Some(format!("MaitreDesCles/{}/triggers", f))
-        //     },
-        //     None => None
-        // }
     }
 
     fn preparer_queues(&self) -> Result<Vec<QueueType>, Error> {
@@ -384,13 +334,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
             }
         ));
 
-        // Aucunes Q a l'initialisation, ajoutees
-
         Ok(queues)
-    }
-
-    fn chiffrer_backup(&self) -> bool {
-        false
     }
 
     async fn preparer_database<M>(&self, middleware: &M) -> Result<(), Error>
@@ -588,73 +532,18 @@ async fn requete_certificat_maitredescles<M>(middleware: &M, m: MessageValide)
     Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
-/// Emet le certificat de maitre des cles
-/// Le message n'a aucun contenu, c'est l'enveloppe qui permet de livrer le certificat
-/// Si message est None, emet sur evenement.MaitreDesCles.certMaitreDesCles
-// pub async fn emettre_certificat_maitredescles<M>(middleware: &M, m: Option<MessageValide>)
-//     -> Result<(), Error>
-//     where M: GenerateurMessages + MongoDao
-// {
-//     debug!("emettre_certificat_maitredescles");
-//
-//     let reponse = json!({});
-//
-//     match m {
-//         Some(demande) => {
-//             match demande.reply_q.as_ref() {
-//                 Some(reply_q) => {
-//                     // On utilise une correlation fixe pour permettre au demandeur de recevoir les
-//                     // reponses de plusieurs partitions de maitre des cles en meme temps.
-//                     let routage = RoutageMessageReponse::new(
-//                         reply_q, COMMANDE_CERT_MAITREDESCLES);
-//                     let message_reponse = middleware.formatter_reponse(&reponse, None)?;
-//                     middleware.repondre(routage, message_reponse).await?;
-//                 },
-//                 None => {
-//                     debug!("Mauvais message recu pour emettre_certificat (pas de reply_q)");
-//                 }
-//             }
-//         },
-//         None => {
-//             let routage = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_CERT_MAITREDESCLES)
-//                 .exchanges(vec![Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure])
-//                 .correlation_id(COMMANDE_CERT_MAITREDESCLES)
-//                 .build();
-//             middleware.emettre_evenement(routage, &reponse).await?;
-//         }
-//     }
-//
-//     Ok(())
-// }
-
 async fn consommer_transaction<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireMaitreDesClesPartition) -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
 where
     M: ValidateurX509 + GenerateurMessages + MongoDao,
 {
-    debug!("maitredescles_ca.consommer_transaction Consommer transaction : {:?}", &m.message);
-
-    // Autorisation : doit etre de niveau 4.secure
-    match m.certificat.verifier_exchanges(vec![Securite::L4Secure])? {
-        true => Ok(()),
-        false => Err(format!("maitredescles_ca.consommer_transaction: Trigger cedule autorisation invalide (pas 4.secure)")),
-    }?;
-
-    let (_, action) = get_domaine_action!(m.type_message);
-
-    match action.as_str() {
-        // TRANSACTION_CLE  => {
-        //     sauvegarder_transaction_recue(middleware, m, gestionnaire.get_collection_transactions().as_str()).await?;
-        //     Ok(None)
-        // },
-        _ => Err(format!("maitredescles_ca.consommer_transaction: Mauvais type d'action pour une transaction : {}", action))?,
-    }
+    Err(format!("maitredescles_ca.consommer_transaction: Aucun type de transactions n'est supporte par partition. Recu : {:?}", m.type_message))?
 }
 
 async fn consommer_evenement<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition, m: MessageValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: ValidateurX509 + GenerateurMessages + MongoDao + CleChiffrageHandler + CleChiffrageCache + ConfigMessages
 {
-    debug!("consommer_evenement Consommer evenement : {:?}", &m.message);
+    debug!("consommer_evenement Consommer evenement : {:?}", &m.type_message);
 
     // Autorisation : doit etre de niveau 3.protege ou 4.secure
     match m.certificat.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure])? {
@@ -710,6 +599,7 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnaire: &
             // Commandes standard
             COMMANDE_SAUVEGARDER_CLE => commande_sauvegarder_cle(middleware, m, gestionnaire).await,
             COMMANDE_AJOUTER_CLE_DOMAINES => commande_ajouter_cle_domaines(middleware, m, gestionnaire).await,
+            COMMANDE_TRANSFERT_CLE => commande_transfert_cle(middleware, m, gestionnaire).await,
             COMMANDE_CERT_MAITREDESCLES => {emettre_certificat_maitredescles(middleware, Some(m)).await?; Ok(None)},
             COMMANDE_ROTATION_CERTIFICAT => commande_rotation_certificat(middleware, m, gestionnaire).await,
             COMMANDE_CLE_SYMMETRIQUE => commande_cle_symmetrique(middleware, m, gestionnaire).await,
@@ -833,6 +723,76 @@ async fn commande_ajouter_cle_domaines<M>(middleware: &M, m: MessageValide, gest
     Ok(None)
 }
 
+async fn commande_transfert_cle<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireMaitreDesClesPartition)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
+    where M: GenerateurMessages + MongoDao + CleChiffrageHandler + ValidateurX509
+{
+    debug!("commande_transfert_cle Consommer commande : {:?}", &m.type_message);
+    if !m.certificat.verifier_exchanges(vec![Securite::L3Protege])? ||
+        !m.certificat.verifier_roles(vec![RolesCertificats::MaitreDesCles])?
+    {
+        Err(Error::Str("commande_transfert_cle Exchange/Role non autorise"))?
+    }
+
+    let commande: CommandeTransfertCle = deser_message_buffer!(m.message);
+
+    // Verifier si on a deja la cle - sinon, creer une nouvelle transaction
+    let cle_id = commande.signature.get_cle_ref()?.to_string();
+
+    let filtre = doc! { CHAMP_CLE_ID: &cle_id };
+    let options = FindOneOptions::builder()
+        .hint(Hint::Name("index_cle_id".to_string()))
+        .projection(doc!{CHAMP_CLE_ID: 1})
+        .build();
+    let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
+    let resultat = collection.find_one(filtre, options).await?;
+
+    if resultat.is_none() {
+        match commande.signature.version {
+            SignatureDomainesVersion::NonSigne => {
+                // Ancienne version
+                let cle_id = commande.signature.signature.to_string();
+                let domaine = match commande.signature.domaines.get(0) {
+                    Some(inner) => inner.to_string(),
+                    None => Err(Error::Str("Domaine manquant"))?
+                };
+
+                let cles: HashMap<String, String> = commande.cles.iter().map(|(k,v)| {
+                    let v = format!("m{}", v);   // Ajouter m pour multibase base64 no pad
+                    (k.to_string(), v)
+                }).collect();
+
+                debug!("commande_transfert_cle Sauvegarder cle transferee {}", cle_id);
+                let commande_cle = CommandeSauvegarderCle {
+                    hachage_bytes: cle_id,
+                    domaine,
+                    identificateurs_document: Default::default(),
+                    cles,
+                    format: commande.format.unwrap_or_else(|| FormatChiffrage::MGS4),
+                    iv: commande.iv,
+                    tag: commande.tag,
+                    header: commande.header,
+                    partition: None,
+                    fingerprint_partitions: None,
+                };
+                let nom_collection_cles = match gestionnaire.get_collection_cles()? {
+                    Some(inner) => inner,
+                    None => Err(Error::Str("commande_transfert_cle get_collection_cles est None"))?
+                };
+                sauvegarder_cle(middleware, gestionnaire, &commande_cle, nom_collection_cles).await?;
+            },
+            _ => {
+                // Version courante
+                let commande_cle = CommandeAjouterCleDomaine { cles: commande.cles, signature: commande.signature };
+                debug!("commande_transfert_cle Sauvegarder cle transferee {}", cle_id);
+                sauvegarder_cle_domaine(middleware, gestionnaire, commande_cle).await?;
+            }
+        }
+    }
+
+    Ok(None)
+}
+
 async fn sauvegarder_cle_domaine<M>(
     middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition,
     commande: CommandeAjouterCleDomaine
@@ -840,12 +800,40 @@ async fn sauvegarder_cle_domaine<M>(
     -> Result<(), Error>
     where M: GenerateurMessages + MongoDao
 {
+    let enveloppe_signature = middleware.get_enveloppe_signature();
+
+    // Dechiffrer la cle
+    let cle_secrete = commande.get_cle_secrete(enveloppe_signature.as_ref())?;
+
+    // Rechiffrer avec le handler de rechiffrage
+    let cle_rechiffree = gestionnaire.handler_rechiffrage.chiffrer_cle_secrete(&cle_secrete.0)?;
+
     let nom_collection_cles = match gestionnaire.get_collection_cles()? {
         Some(c) => c,
         None => Err(Error::Str("maitredescles_partition.commande_sauvegarder_cle Gestionnaire sans partition/certificat"))?
     };
+    let collection = middleware.get_collection(nom_collection_cles)?;
 
-    todo!("fix me")
+    let cle_id = commande.signature.get_cle_ref()?;
+
+    let filtre = doc!{"cle_id": cle_id.as_str()};
+    let set_on_insert_ops = doc!{
+        "cle_id": cle_id.as_str(),
+        "signature": convertir_to_bson(commande.signature)?,
+        "cle_symmetrique": cle_rechiffree.cle,
+        "nonce_symmetrique": cle_rechiffree.nonce,
+        CHAMP_CREATION: Utc::now(),
+        "dirty": true,
+        "confirmation_ca": false,
+    };
+    let ops = doc!{
+        "$setOnInsert": set_on_insert_ops,
+        "$currentDate": {CHAMP_MODIFICATION: true}
+    };
+    let options = UpdateOptions::builder().upsert(true).build();
+    collection.update_one(filtre, ops, options).await?;
+
+    Ok(())
 }
 
 async fn sauvegarder_cle<M, S>(
@@ -865,52 +853,58 @@ async fn sauvegarder_cle<M, S>(
     };
 
     // Valider identite, calculer cle_ref
-    let (cle_ref, cle_chiffree) = {
+    let (cle_id, signature, cle_rechiffree) = {
         let cle_bytes = multibase::decode(cle)?.1;
         let cle_secrete = dechiffrer_asymmetrique_ed25519(
             cle_bytes.as_slice(), &middleware.get_enveloppe_signature().cle_privee)?;
-        // if commande.verifier_identite(&cle_secrete)? != true {
-        //     Err(format!("maitredescles_partition.commande_sauvegarder_cle Erreur verifier identite commande, signature invalide"))?
-        // }
 
         // Chiffrer avec cle symmetrique locale
         let handler_rechiffrage = gestionnaire.handler_rechiffrage.as_ref();
         let cle_chiffree = handler_rechiffrage.chiffrer_cle_secrete(&cle_secrete.0[..])?;
 
-        let cle_info = CleRefData::from(commande);
-        let cle_ref = calculer_cle_ref(cle_info, &cle_secrete)?;
+        // Creer Signature version 0, le cle_id est le hachage bytes
+        let cle_id = commande.hachage_bytes.clone();
+        let mut domaines = heapless::Vec::new();
+        domaines.push(commande.domaine.as_str().try_into().map_err(|_| Error::Str("sauvegarder_cle Erreur conversion domaine"))?)
+            .map_err(|e| Error::String(format!("sauvegarder_cle Erreur conversion domaine : {:?}", e)))?;
+        let signature = SignatureDomaines {
+            domaines,
+            version: SignatureDomainesVersion::NonSigne,
+            ca: None,
+            signature: cle_id.as_str().try_into().map_err(|_| Error::Str("sauvegarder_cle Erreur conversion signature"))?,  // Utiliser hachage bytes
+        };
 
-        (cle_ref, cle_chiffree)
+        (cle_id, signature, cle_chiffree)
     };
 
-    let mut doc_bson: Document = commande.clone().into();
-    // Retirer cles, on re-insere la cle necessaire uniquement
-    doc_bson.remove("cles");
+    let filtre = doc!{"cle_id": &cle_id};
+    let mut set_on_insert_ops = doc!{
+        "cle_id": cle_id,
+        "signature": convertir_to_bson(signature)?,
+        "cle_symmetrique": cle_rechiffree.cle,
+        "nonce_symmetrique": cle_rechiffree.nonce,
 
-    doc_bson.insert("dirty", true);
-    doc_bson.insert("confirmation_ca", false);
-    doc_bson.insert(CHAMP_CLE_REF, &cle_ref);
-    doc_bson.insert("cle", cle);
+        // Champs pour sync
+        CHAMP_CREATION: Utc::now(),
+        "dirty": true,
+        "confirmation_ca": false,
 
-    doc_bson.insert("cle_symmetrique", cle_chiffree.cle);
-    doc_bson.insert("nonce_symmetrique", cle_chiffree.nonce);
-
-    doc_bson.insert(CHAMP_CREATION, Utc::now());
-    doc_bson.insert(CHAMP_MODIFICATION, Utc::now());
-
-    let mut ops = doc! {
-        "$setOnInsert": doc_bson,
+        // Ajouter information de dechiffrage de contenu (vieille approche)
+        "format": convertir_to_bson(&commande.format)?,
+        "iv": commande.iv.as_ref(),
+        "tag": commande.tag.as_ref(),
+        "header": commande.header.as_ref(),
     };
 
-    debug!("commande_sauvegarder_cle: Ops bson : {:?}", ops);
-
-    let filtre = doc! { CHAMP_CLE_REF: &cle_ref };
-    let opts = UpdateOptions::builder().upsert(true).build();
-
+    let ops = doc!{
+        "$setOnInsert": set_on_insert_ops,
+        "$currentDate": {CHAMP_MODIFICATION: true}
+    };
+    let options = UpdateOptions::builder().upsert(true).build();
     let collection = middleware.get_collection(nom_collection_cles)?;
-    let resultat = collection.update_one(filtre, ops, opts).await?;
-    debug!("commande_sauvegarder_cle Resultat update : {:?}", resultat);
 
+    let resultat = collection.update_one(filtre, ops, options).await?;
+    debug!("commande_sauvegarder_cle Resultat update : {:?}", resultat);
     let insere = resultat.upserted_id.is_some();
 
     Ok(insere)
@@ -997,6 +991,7 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, mut m: MessageValide, gest
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages + MongoDao + CleChiffrageHandler
 {
+    debug!("commande_rechiffrer_batch Message {:?}", m.type_message);
     let message_ref = m.message.parse()?;
     let correlation_id = match &m.type_message {
         TypeMessageOut::Commande(r) => {
@@ -1012,8 +1007,6 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, mut m: MessageValide, gest
     // let message_dechiffre = message_chiffre.dechiffrer(middleware)?;
     // let commande: CommandeRechiffrerBatch = serde_json::from_slice(&message_dechiffre.data_dechiffre[..])?;
 
-    debug!("commande_rechiffrer_batch Commande parsed : {:?}", commande);
-
     let fingerprint_ca = enveloppe_privee.enveloppe_ca.fingerprint()?;
     let fingerprint = enveloppe_privee.enveloppe_pub.fingerprint()?;
 
@@ -1025,15 +1018,16 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, mut m: MessageValide, gest
     let collection = middleware.get_collection(nom_collection_cles.as_str())?;
 
     // Traiter chaque cle individuellement
-    let liste_cles: Vec<CleSynchronisation> = commande.cles.iter().map(|c| {
-        //c.hachage_bytes.to_owned()
-        CleSynchronisation { hachage_bytes: c.hachage_bytes.clone(), domaine: c.domaine.clone() }
-    }).collect();
-    let mut liste_cle_ref: Vec<String> = Vec::new();
+    // let liste_cles: Vec<CleSynchronisation> = commande.cles.iter().map(|c| {
+    //     //c.hachage_bytes.to_owned()
+    //     //CleSynchronisation { hachage_bytes: c.hachage_bytes.clone(), domaine: c.domaine.clone() }
+    //     CleSynchronisation { cle_id: c.hachage_bytes.clone(), domaine: c.domaine.clone() }
+    // }).collect();
+    let mut liste_cle_id: Vec<String> = Vec::new();
     for cle in commande.cles {
-        let cle_ref = sauvegarder_cle_rechiffrage(
+        let cle_id = sauvegarder_cle_rechiffrage(
             middleware, &gestionnaire, nom_collection_cles.as_str(), cle).await?;
-        liste_cle_ref.push(cle_ref);
+        liste_cle_id.push(cle_id);
     }
 
     // Emettre un evenement pour confirmer le traitement.
@@ -1043,9 +1037,7 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, mut m: MessageValide, gest
         .build();
     let event_contenu = json!({
         "correlation": correlation_id,
-        CHAMP_LISTE_CLES: liste_cles,
-        // CHAMP_LISTE_HACHAGE_BYTES: liste_hachage_bytes,
-        CHAMP_LISTE_CLE_REF: liste_cle_ref,
+        CHAMP_LISTE_CLE_ID: liste_cle_id,
     });
     middleware.emettre_evenement(routage_event, &event_contenu).await?;
 
@@ -1060,33 +1052,63 @@ async fn sauvegarder_cle_rechiffrage<M>(middleware: &M,
     where M: MongoDao
 {
     let collection = middleware.get_collection(nom_collection_cles)?;
+    let (cle_id, cle_rechiffree) = cle.rechiffrer_cle(&gestionnaire.handler_rechiffrage)?;
 
-    let (cle_ref, cle_rechiffree) = cle.rechiffrer_cle(&gestionnaire.handler_rechiffrage)?;
+    let filtre = doc!{CHAMP_CLE_ID: &cle_id};
+    let mut set_on_insert = doc!{
+        "dirty": true,
+        "confirmation_ca": false,
+        CHAMP_CREATION: Utc::now(),
+        // CHAMP_CLE_ID: &cle_id,
+        CHAMP_CLE_SYMMETRIQUE: cle_rechiffree.cle,
+        CHAMP_NONCE_SYMMETRIQUE: cle_rechiffree.nonce,
+        "signature": convertir_to_bson(&cle.signature)?,
+    };
 
-    let mut doc_cle = convertir_to_bson(cle.clone())?;
-    doc_cle.remove("cleSecrete");
-    doc_cle.insert("dirty", true);
-    doc_cle.insert("confirmation_ca", false);
-    doc_cle.insert(CHAMP_CREATION, Utc::now());
-    doc_cle.insert(CHAMP_MODIFICATION, Utc::now());
-    doc_cle.insert(CHAMP_CLE_REF, cle_ref.as_str());
+    // Supporter l'ancienne version de cles
+    match cle.signature.version {
+        SignatureDomainesVersion::NonSigne => {
+            // set_on_insert.insert(CHAMP_HACHAGE_BYTES, cle.signature.signature.as_str());
+            set_on_insert.insert("format", cle.format.as_ref());
+            set_on_insert.insert("header", cle.header.as_ref());
+        },
+        _ => ()
+    }
 
-    // Retirer le champ cles
-    doc_cle.remove(CHAMP_CLES);
+    let ops = doc! {
+        "$setOnInsert": set_on_insert,
+        "$currentDate": {CHAMP_MODIFICATION: true}
+    };
 
-    // Inserer la cle pour cette partition
-    // doc_cle.insert(TRANSACTION_CLE, cle_chiffree_str);
-    doc_cle.insert(TRANSACTION_CLE, "");
-
-    doc_cle.insert(CHAMP_CLE_SYMMETRIQUE, cle_rechiffree.cle);
-    doc_cle.insert(CHAMP_NONCE_SYMMETRIQUE, cle_rechiffree.nonce);
-
-    let filtre = doc! { CHAMP_CLE_REF: cle_ref.as_str() };
-    let ops = doc! { "$setOnInsert": doc_cle };
     let opts = UpdateOptions::builder().upsert(true).build();
     collection.update_one(filtre, ops, opts).await?;
 
-    Ok(cle_ref)
+    Ok(cle_id)
+
+    // let mut doc_cle = convertir_to_bson(cle.clone())?;
+    // doc_cle.remove("cleSecrete");
+    // doc_cle.insert("dirty", true);
+    // doc_cle.insert("confirmation_ca", false);
+    // doc_cle.insert(CHAMP_CREATION, Utc::now());
+    // doc_cle.insert(CHAMP_MODIFICATION, Utc::now());
+    // doc_cle.insert(CHAMP_CLE_REF, cle_ref.as_str());
+    //
+    // // Retirer le champ cles
+    // doc_cle.remove(CHAMP_CLES);
+    //
+    // // Inserer la cle pour cette partition
+    // // doc_cle.insert(TRANSACTION_CLE, cle_chiffree_str);
+    // doc_cle.insert(TRANSACTION_CLE, "");
+    //
+    // doc_cle.insert(CHAMP_CLE_SYMMETRIQUE, cle_rechiffree.cle);
+    // doc_cle.insert(CHAMP_NONCE_SYMMETRIQUE, cle_rechiffree.nonce);
+    //
+    // let filtre = doc! { CHAMP_CLE_REF: cle_ref.as_str() };
+    // let ops = doc! { "$setOnInsert": doc_cle };
+    // let opts = UpdateOptions::builder().upsert(true).build();
+    // collection.update_one(filtre, ops, opts).await?;
+    //
+    // Ok(cle_ref)
 }
 
 async fn aiguillage_transaction<M>(middleware: &M, transaction: TransactionValide, gestionnaire: &GestionnaireMaitreDesClesPartition)
@@ -1117,8 +1139,16 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValide, gestionnaire: 
         Ok(inner) => inner,
         Err(e) => {
             info!("requete_dechiffrage Erreur mapping ParametresGetPermissionMessages : {:?}", e);
-            // return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": format!("Erreur mapping requete : {:?}", e)}), None)?))
             return Ok(Some(middleware.reponse_err(None, None, Some(format!("Erreur mapping requete : {:?}", e).as_str()))?))
+        }
+    };
+
+    // Supporter l'ancien format de requete (liste_hachage_bytes) avec le nouveau (cle_ids)
+    let cle_ids = match requete.cle_ids.as_ref() {
+        Some(inner) => inner,
+        None => match requete.liste_hachage_bytes.as_ref() {
+            Some(inner) => inner,
+            None => Err(Error::Str("Aucunes cles demandees pour le rechiffrage"))?
         }
     };
 
@@ -1149,52 +1179,55 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValide, gestionnaire: 
     };
 
     // Verifier si on a des cles inconnues
-    if cles.len() < requete.liste_hachage_bytes.len() {
-        debug!("requete_dechiffrage Cles manquantes, on a {} trouvees sur {} demandees", cles.len(), requete.liste_hachage_bytes.len());
+    if cles.len() < cle_ids.len() {
+        debug!("requete_dechiffrage Cles manquantes, on a {} trouvees sur {} demandees", cles.len(), cle_ids.len());
 
-        let cles_connues = cles.keys().map(|s|s.to_owned()).collect();
-        // emettre_cles_inconnues(middleware, requete, cles_connues).await?;
-        let cles_recues = match requete_cles_inconnues(
-            middleware, &requete, cles_connues).await
-        {
-            Ok(reponse) => {
-                debug!("Reponse cles manquantes : {:?}", reponse.cles);
-                reponse.cles
-            },
-            Err(e) => {
-                error!("requete_dechiffrage Erreur requete_cles_inconnues, skip : {:?}", e);
-                Vec::new()
-            }
-        };
+        error!("requete_dechiffrage Requete Cle non dechiffrages, fix me");  // TODO
+        // todo!("fix me")
 
-        debug!("Reponse cle manquantes recue : {:?}", cles_recues);
-        for cle in cles_recues.into_iter() {
-
-            let hachage_bytes = cle.hachage_bytes.clone();
-
-            let cle_secrete = cle.get_cle_secrete()?;
-            let (_, cle_rechiffree) = cle.rechiffrer_cle(&gestionnaire.handler_rechiffrage)?;
-
-            let mut doc_cle: DocumentClePartition = cle.try_into()?;
-            doc_cle.cle_symmetrique = Some(cle_rechiffree.cle);
-            doc_cle.nonce_symmetrique = Some(cle_rechiffree.nonce);
-
-            let cle_interne = CleSecreteRechiffrage::from_doc_cle(cle_secrete, doc_cle.clone())?;
-
-            sauvegarder_cle_rechiffrage(middleware, &gestionnaire,
-                nom_collection.as_str(),
-                cle_interne).await?;
-
-            match rechiffrer_cle(&mut doc_cle, &gestionnaire.handler_rechiffrage, certificat.as_ref()) {
-                Ok(()) => {
-                    cles.insert(hachage_bytes, doc_cle);
-                },
-                Err(e) => {
-                    error!("rechiffrer_cles Erreur rechiffrage cle {:?}", e);
-                    continue;  // Skip cette cle
-                }
-            }
-        }
+        // let cles_connues = cles.keys().map(|s|s.to_owned()).collect();
+        // // emettre_cles_inconnues(middleware, requete, cles_connues).await?;
+        // let cles_recues = match requete_cles_inconnues(
+        //     middleware, &requete, cles_connues).await
+        // {
+        //     Ok(reponse) => {
+        //         debug!("Reponse cles manquantes : {:?}", reponse.cles);
+        //         reponse.cles
+        //     },
+        //     Err(e) => {
+        //         error!("requete_dechiffrage Erreur requete_cles_inconnues, skip : {:?}", e);
+        //         Vec::new()
+        //     }
+        // };
+        //
+        // debug!("Reponse cle manquantes recue : {:?}", cles_recues);
+        // for cle in cles_recues.into_iter() {
+        //
+        //     let hachage_bytes = cle.hachage_bytes.clone();
+        //
+        //     let cle_secrete = cle.get_cle_secrete()?;
+        //     let (_, cle_rechiffree) = cle.rechiffrer_cle(&gestionnaire.handler_rechiffrage)?;
+        //
+        //     let mut doc_cle: RowClePartition = cle.try_into()?;
+        //     doc_cle.cle_symmetrique = Some(cle_rechiffree.cle);
+        //     doc_cle.nonce_symmetrique = Some(cle_rechiffree.nonce);
+        //
+        //     let cle_interne = CleSecreteRechiffrage::from_doc_cle(cle_secrete, doc_cle.clone())?;
+        //
+        //     sauvegarder_cle_rechiffrage(middleware, &gestionnaire,
+        //         nom_collection.as_str(),
+        //         cle_interne).await?;
+        //
+        //     match rechiffrer_cle(&mut doc_cle, &gestionnaire.handler_rechiffrage, certificat.as_ref()) {
+        //         Ok(()) => {
+        //             cles.insert(hachage_bytes, doc_cle);
+        //         },
+        //         Err(e) => {
+        //             error!("rechiffrer_cles Erreur rechiffrage cle {:?}", e);
+        //             continue;  // Skip cette cle
+        //         }
+        //     }
+        // }
     }
 
     // Preparer la reponse
@@ -1231,7 +1264,7 @@ async fn requete_dechiffrage_v2<M>(middleware: &M, m: MessageValide, gestionnair
                                 -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages + MongoDao + ValidateurX509 + CleChiffrageHandler
 {
-    debug!("requete_dechiffrage_v2 Consommer requete : {:?}", & m.message);
+    debug!("requete_dechiffrage_v2 Consommer requete : {:?}", & m.type_message);
     let message_ref = m.message.parse()?;
     let requete: RequeteDechiffrage = match message_ref.contenu()?.deserialize() {
         Ok(inner) => inner,
@@ -1239,6 +1272,15 @@ async fn requete_dechiffrage_v2<M>(middleware: &M, m: MessageValide, gestionnair
             info!("requete_dechiffrage_v2 Erreur mapping ParametresGetPermissionMessages : {:?}", e);
             // return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": format!("Erreur mapping requete : {:?}", e)}), None)?))
             return Ok(Some(middleware.reponse_err(None, None, Some(format!("Erreur mapping requete : {:?}", e).as_str()))?))
+        }
+    };
+
+    // Supporter l'ancien format de requete (liste_hachage_bytes) avec le nouveau (cle_ids)
+    let cle_ids = match requete.cle_ids.as_ref() {
+        Some(inner) => inner,
+        None => match requete.liste_hachage_bytes.as_ref() {
+            Some(inner) => inner,
+            None => Err(Error::Str("Aucunes cles demandees pour le rechiffrage"))?
         }
     };
 
@@ -1261,19 +1303,46 @@ async fn requete_dechiffrage_v2<M>(middleware: &M, m: MessageValide, gestionnair
     let nom_collection = match gestionnaire.get_collection_cles()? {
         Some(inner) => inner, None => Err(Error::Str("Nom de collection pour les cles est manquant"))?
     };
-    let mut filtre = doc! {CHAMP_HACHAGE_BYTES: {"$in": &requete.liste_hachage_bytes}};
-    filtre.insert("domaine", doc!{"$in": vec![&requete.domaine]});
-    let collection = middleware.get_collection_typed::<DocumentClePartition>(nom_collection.as_str())?;
+
+    let requete_cle_ids = match requete.cle_ids.as_ref() {
+        Some(inner) => inner,
+        None => match requete.liste_hachage_bytes.as_ref() {
+            Some(inner) => inner,
+            None => {
+                info!("requete_dechiffrage_v2 requete sans cle_ids ni liste_hachage_bytes");
+                return Ok(Some(middleware.reponse_err(1, None, Some("Requete sans cle_ids ni liste_hachage_bytes"))?))
+            }
+        }
+    };
+
+    let filtre = doc! {
+        CHAMP_CLE_ID: {"$in": requete_cle_ids},
+        // "signature.domaines": {"$in": vec![&requete.domaine]}
+    };
+    // filtre.insert("signature.domaines", doc!{"$in": vec![&requete.domaine]});
+    let collection = middleware.get_collection_typed::<RowClePartition>(nom_collection.as_str())?;
     let mut curseur = collection.find(filtre, None).await?;
+    let domaine: heapless::String<40> = requete.domaine.as_str().try_into()
+        .map_err(|_| Error::Str("Erreur map domain dans heapless::String<40>"))?;
+
+    // Compter les cles trouvees separement de la liste. On rejete des cles qui ont un mismatch de domaine
+    // mais elles comptent sur le total trouve.
+    let mut cles_trouvees = 0;
+
     while let Some(row) = curseur.next().await {
         match row {
             Ok(inner) => {
-                match inner.to_cle_secrete_serialisee(gestionnaire.handler_rechiffrage.as_ref()) {
-                    Ok(inner) => cles.push(inner),
-                    Err(e) => {
-                        warn!("Erreur mapping / dechiffrage cle - SKIP : {:?}", e);
-                        continue
+                cles_trouvees += 1;
+                if inner.signature.domaines.contains(&domaine) {
+                    match inner.to_cle_secrete_serialisee(gestionnaire.handler_rechiffrage.as_ref()) {
+                        Ok(inner) => cles.push(inner),
+                        Err(e) => {
+                            warn!("Erreur mapping / dechiffrage cle - SKIP : {:?}", e);
+                            continue
+                        }
                     }
+                } else {
+                    warn!("requete_dechiffrage_v2 Requete de cle rejetee, domaines {:?} ne match pas la cle {}", inner.signature.domaines, inner.cle_id);
                 }
             },
             Err(e) => {
@@ -1284,8 +1353,8 @@ async fn requete_dechiffrage_v2<M>(middleware: &M, m: MessageValide, gestionnair
     }
 
     // Verifier si on a des cles inconnues
-    if cles.len() < requete.liste_hachage_bytes.len() {
-        debug!("requete_dechiffrage_v2 Cles manquantes, on a {} trouvees sur {} demandees", cles.len(), requete.liste_hachage_bytes.len());
+    if cles_trouvees < cle_ids.len() {
+        debug!("requete_dechiffrage_v2 Cles manquantes, on a {} trouvees sur {} demandees", cles.len(), cle_ids.len());
         todo!("fix me")
     }
 
@@ -1296,7 +1365,7 @@ async fn requete_dechiffrage_v2<M>(middleware: &M, m: MessageValide, gestionnair
         middleware.build_reponse_chiffree(reponse, enveloppe_privee.as_ref(), certificat.as_ref())?.0
     } else {
         // On n'a pas trouve de cles
-        debug!("requete_dechiffrage_v2 Requete {:?} de dechiffrage {:?}, cles inconnues", m.type_message, &requete.liste_hachage_bytes);
+        debug!("requete_dechiffrage_v2 Requete {:?} de dechiffrage {:?}, cles inconnues", m.type_message, &cle_ids);
 
         // Retourner cle inconnu a l'usager
         let inconnu = json!({"ok": false, "err": "Cles inconnues", "acces": CHAMP_ACCES_CLE_INCONNUE, "code": 4});
@@ -1364,7 +1433,7 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValide, gestionnai
     };
     debug!("requete_verifier_preuve Filtre cles sur collection {} : {:?}", nom_collection, filtre);
 
-    let collection = middleware.get_collection_typed::<DocumentClePartition>(nom_collection.as_str())?;
+    let collection = middleware.get_collection_typed::<RowClePartition>(nom_collection.as_str())?;
     let mut curseur = collection.find(filtre, None).await?;
 
     let cle_privee = &enveloppe_privee.cle_privee;
@@ -1381,28 +1450,29 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValide, gestionnai
         let cle_interne_chiffree = CleInterneChiffree::try_from(cle_mongo_chiffree.clone())?;
         let cle_mongo_dechiffree = gestionnaire.handler_rechiffrage.dechiffer_cle_secrete(cle_interne_chiffree)?;
         // let cle_mongo_dechiffree = extraire_cle_secrete(cle_privee, cle_mongo_chiffree.cle.as_str())?;
-        let hachage_bytes_mongo = cle_mongo_chiffree.hachage_bytes.as_str();
-
-        debug!("requete_verifier_preuve Resultat mongo hachage_bytes {}", hachage_bytes_mongo);
-
-        if let Some(cle_preuve) = requete.preuves.get(hachage_bytes_mongo) {
-            let date_preuve = cle_preuve.date;
-            if &date_valid_min > &date_preuve || &date_valid_max < &date_preuve {
-                warn!("requete_verifier_preuve Date preuve {} invalide : {:?}", hachage_bytes_mongo, date_preuve);
-                continue;  // Skip
-            }
-
-            // Valider la preuve (hachage)
-            let valide = match cle_preuve.verifier_preuve(requete.fingerprint.as_str(), &cle_mongo_dechiffree) {
-                Ok(inner) => inner,
-                Err(e) => {
-                    error!("Erreur verification preuve : {:?}", e);
-                    false
-                }
-            };
-
-            map_validite_fuuid.insert(hachage_bytes_mongo.to_string(), valide);
-        }
+        todo!("fix me")
+        // let hachage_bytes_mongo = cle_mongo_chiffree.hachage_bytes.as_str();
+        //
+        // debug!("requete_verifier_preuve Resultat mongo hachage_bytes {}", hachage_bytes_mongo);
+        //
+        // if let Some(cle_preuve) = requete.preuves.get(hachage_bytes_mongo) {
+        //     let date_preuve = cle_preuve.date;
+        //     if &date_valid_min > &date_preuve || &date_valid_max < &date_preuve {
+        //         warn!("requete_verifier_preuve Date preuve {} invalide : {:?}", hachage_bytes_mongo, date_preuve);
+        //         continue;  // Skip
+        //     }
+        //
+        //     // Valider la preuve (hachage)
+        //     let valide = match cle_preuve.verifier_preuve(requete.fingerprint.as_str(), &cle_mongo_dechiffree) {
+        //         Ok(inner) => inner,
+        //         Err(e) => {
+        //             error!("Erreur verification preuve : {:?}", e);
+        //             false
+        //         }
+        //     };
+        //
+        //     map_validite_fuuid.insert(hachage_bytes_mongo.to_string(), valide);
+        // }
     }
 
     debug!("Resultat verification preuve : {:?}", map_validite_fuuid);
@@ -1454,10 +1524,10 @@ async fn rechiffrer_cles<M>(
     // _permission: Option<EnveloppePermission>,
     curseur: &mut Cursor<Document>
 )
-    -> Result<(HashMap<String, DocumentClePartition>, bool), Error>
+    -> Result<(HashMap<String, RowClePartition>, bool), Error>
     where M: ValidateurX509
 {
-    let mut cles: HashMap<String, DocumentClePartition> = HashMap::new();
+    let mut cles: HashMap<String, RowClePartition> = HashMap::new();
     let mut cles_trouvees = false;  // Flag pour dire qu'on a matche au moins 1 cle
 
     let rechiffreur = &gestionnaire.handler_rechiffrage;
@@ -1467,25 +1537,26 @@ async fn rechiffrer_cles<M>(
         cles_trouvees = true;  // On a trouve au moins une cle
         match rc {
             Ok(doc_cle) => {
-                let mut cle: DocumentClePartition = match convertir_bson_deserializable(doc_cle) {
+                let mut cle: RowClePartition = match convertir_bson_deserializable(doc_cle) {
                     Ok(c) => c,
                     Err(e) => {
                         error!("rechiffrer_cles Erreur conversion bson vers TransactionCle : {:?}", e);
                         continue
                     }
                 };
-                let hachage_bytes = cle.hachage_bytes.clone();
-
-                // match rechiffrer_cle(&mut cle, enveloppe_privee.as_ref(), certificat) {
-                match rechiffrer_cle(&mut cle, rechiffreur, certificat) {
-                    Ok(()) => {
-                        cles.insert(hachage_bytes, cle);
-                    },
-                    Err(e) => {
-                        error!("rechiffrer_cles Erreur rechiffrage cle {:?}", e);
-                        continue;  // Skip cette cle
-                    }
-                }
+                todo!("fix me")
+                // let hachage_bytes = cle.hachage_bytes.clone();
+                //
+                // // match rechiffrer_cle(&mut cle, enveloppe_privee.as_ref(), certificat) {
+                // match rechiffrer_cle(&mut cle, rechiffreur, certificat) {
+                //     Ok(()) => {
+                //         cles.insert(hachage_bytes, cle);
+                //     },
+                //     Err(e) => {
+                //         error!("rechiffrer_cles Erreur rechiffrage cle {:?}", e);
+                //         continue;  // Skip cette cle
+                //     }
+                // }
             },
             Err(e) => error!("rechiffrer_cles: Erreur lecture curseur cle : {:?}", e)
         }
@@ -1690,7 +1761,7 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
     let routage_evenement_manquant = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION, vec![Securite::L4Secure])
         .build();
 
-    let collection = middleware.get_collection(nom_collection.as_str())?;
+    let collection = middleware.get_collection_typed::<CleSynchronisation>(nom_collection.as_str())?;
 
     loop {
         let reponse: ReponseSynchroniserCles = match middleware.transmettre_requete(routage_sync.clone(), &requete_sync).await? {
@@ -1708,7 +1779,7 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
         };
         requete_sync.page += 1;  // Incrementer page pour prochaine requete
 
-        let liste_cles = reponse.liste_cles;
+        let liste_cles = reponse.liste_cle_id;
         if liste_cles.len() == 0 {
             debug!("Traitement sync termine");
             break
@@ -1716,42 +1787,52 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
 
         let mut cles_hashset = HashSet::new();
         for item in &liste_cles {
-            cles_hashset.insert(item);
+            cles_hashset.insert(item.as_str());
         }
 
         debug!("Recu liste_hachage_bytes a verifier : {} cles", liste_cles.len());
         // let liste_cles_bson = convertir_to_bson(&liste_cles)?;
         // let filtre_cles = doc! { CHAMP_HACHAGE_BYTES: {"$in": liste_cles_bson} };
-        let filtre_cles = doc! { "$or": CleSynchronisation::get_bson_filter(&liste_cles)? };
-        let projection = doc! { CHAMP_HACHAGE_BYTES: 1, CHAMP_DOMAINE: 1 };
+        // let filtre_cles = doc! { "$or": CleSynchronisation::get_bson_filter(&liste_cles)? };
+        let filtre_cles = doc! {"cle_id": { "$in": &liste_cles } };
+        let projection = doc! { CHAMP_CLE_ID: 1 };
         let find_options = FindOptions::builder().projection(projection).build();
         let mut cles = collection.find(filtre_cles, Some(find_options)).await?;
-        while let Some(result_cle) = cles.next().await {
-            match result_cle {
-                Ok(doc_cle) => {
-                    let cle: CleSynchronisation = match convertir_bson_deserializable(doc_cle) {
-                        Ok(d) => {
-                            cles_hashset.remove(&d);
-                            d
-                        },
-                        Err(e) => {
-                            info!("synchroniser_cles Erreur mapping cle : {:?}", e);
-                            continue
-                        }
-                    };
+        while let Some(row) = cles.next().await {
+
+            match row {
+                Ok(inner) => {
+                    cles_hashset.remove(inner.cle_id.as_str());
                 },
-                Err(e) => Err(format!("maitredescles_partition.synchroniser_cles Erreur lecture table cles : {:?}", e))?
+                Err(e) => {
+                    info!("synchroniser_cles Erreur mapping cle : {:?}", e);
+                    continue
+                }
             }
+
+            // match result_cle {
+            //     Ok(doc_cle) => {
+            //         let cle: CleSynchronisation = match convertir_bson_deserializable(doc_cle) {
+            //             Ok(d) => {
+            //                 cles_hashset.remove(d.cle_id.as_str());
+            //                 d
+            //             },
+            //             Err(e) => {
+            //                 info!("synchroniser_cles Erreur mapping cle : {:?}", e);
+            //                 continue
+            //             }
+            //         };
+            //     },
+            //     Err(e) => Err(format!("maitredescles_partition.synchroniser_cles Erreur lecture table cles : {:?}", e))?
+            // }
         }
 
         if cles_hashset.len() > 0 {
             debug!("synchroniser_cles Cles absentes localement : {} cles", cles_hashset.len());
 
             // Emettre requete pour indiquer que ces cles sont manquantes dans la partition
-            let liste_cles: Vec<CleSynchronisation> = cles_hashset.iter().map(|m| {
-                CleSynchronisation { hachage_bytes: m.hachage_bytes.clone(), domaine: m.domaine.clone() }
-            }).collect();
-            let evenement_cles_manquantes = ReponseSynchroniserCles { liste_cles };
+            let liste_cles: Vec<String> = cles_hashset.iter().map(|m| m.to_string()).collect();
+            let evenement_cles_manquantes = ReponseSynchroniserCles { liste_cle_id: liste_cles };
             let reponse = middleware.transmettre_requete(
                 routage_evenement_manquant.clone(), &evenement_cles_manquantes).await?;
 
@@ -1783,9 +1864,10 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
             debug!("Reponse {:?}", reponse.cles);
 
             for cle_rechiffree in reponse.cles.into_iter() {
-                sauvegarder_cle_rechiffrage(middleware, &gestionnaire,
-                                            nom_collection.as_str(),
-                                            cle_rechiffree).await?;
+                todo!("fix me")
+                // sauvegarder_cle_rechiffrage(middleware, &gestionnaire,
+                //                             nom_collection.as_str(),
+                //                             cle_rechiffree).await?;
             }
 
             // let liste_cles: Vec<String> = cles_hashset.iter().map(|m| String::from(m.as_str())).collect();
@@ -1834,7 +1916,7 @@ async fn confirmer_cles_ca<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
         match d {
             Ok(cle) => {
                 let cle_synchronisation: CleSynchronisation = convertir_bson_deserializable(cle)?;
-                cles.push(cle_synchronisation);
+                cles.push(cle_synchronisation.cle_id);
 
                 if cles.len() == batch_size {
                     emettre_cles_vers_ca(middleware, gestionnaire, &cles).await?;
@@ -1860,7 +1942,7 @@ async fn confirmer_cles_ca<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
 /// Marque les cles presentes sur la partition et CA comme confirmation_ca=true
 /// Rechiffre et emet vers le CA les cles manquantes
 async fn emettre_cles_vers_ca<M>(
-    middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition, liste_cles: &Vec<CleSynchronisation>)
+    middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition, liste_cles: &Vec<String>)
     -> Result<(), Error>
     where M: GenerateurMessages + MongoDao +  CleChiffrageHandler
 {
@@ -1870,7 +1952,7 @@ async fn emettre_cles_vers_ca<M>(
     // }).collect();
     debug!("emettre_cles_vers_ca Batch {:?} cles", liste_cles.len());
 
-    let commande = ReponseSynchroniserCles { liste_cles: liste_cles.to_owned() };
+    let commande = ReponseSynchroniserCles { liste_cle_id: liste_cles.clone() };
     let routage = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_CONFIRMER_CLES_SUR_CA, vec![Securite::L4Secure])
         .build();
     let option_reponse = middleware.transmettre_commande(routage, &commande).await?;
@@ -1878,10 +1960,10 @@ async fn emettre_cles_vers_ca<M>(
         Some(r) => {
             match r {
                 TypeMessage::Valide(reponse) => {
-                    debug!("emettre_cles_vers_ca Reponse confirmer cle sur CA : {:?}", reponse);
+                    debug!("emettre_cles_vers_ca Reponse confirmer cle sur CA : {:?}", reponse.type_message);
                     let reponse_cles_manquantes: ReponseConfirmerClesSurCa = deser_message_buffer!(reponse.message);
                     let cles_manquantes = reponse_cles_manquantes.cles_manquantes;
-                    traiter_cles_manquantes_ca(middleware, gestionnaire, &commande.liste_cles, &cles_manquantes).await?;
+                    traiter_cles_manquantes_ca(middleware, gestionnaire, &commande.liste_cle_id, &cles_manquantes).await?;
                 },
                 _ => Err(Error::Str("emettre_cles_vers_ca Recu mauvais type de reponse "))?
             }
@@ -1897,8 +1979,8 @@ async fn emettre_cles_vers_ca<M>(
 /// Marque les cles emises comme confirmees par le CA sauf si elles sont dans la liste de cles manquantes.
 async fn traiter_cles_manquantes_ca<M>(
     middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition,
-    cles_emises: &Vec<CleSynchronisation>,
-    cles_manquantes: &Vec<CleSynchronisation>
+    cles_emises: &Vec<String>,
+    cles_manquantes: &Vec<String>
 )
     -> Result<(), Error>
     where M: MongoDao + GenerateurMessages + CleChiffrageHandler
@@ -1907,21 +1989,22 @@ async fn traiter_cles_manquantes_ca<M>(
         Some(n) => n,
         None => Err(Error::Str("maitredescles_partition.traiter_cles_manquantes_ca Collection cles n'est pas definie"))?
     };
-    let collection = middleware.get_collection(nom_collection.as_str())?;
 
     // Marquer cles emises comme confirmees par CA si pas dans la liste de manquantes
     {
-        let cles_confirmees: Vec<&CleSynchronisation> = cles_emises.iter()
+        let cles_confirmees: Vec<&String> = cles_emises.iter()
             .filter(|c| !cles_manquantes.contains(c))
             .collect();
         debug!("traiter_cles_manquantes_ca Cles confirmees par le CA: {} cles", cles_confirmees.len());
         if ! cles_confirmees.is_empty() {
             // let filtre_confirmees = doc! {CHAMP_HACHAGE_BYTES: {"$in": cles_confirmees}};
-            let filtre_confirmees = doc! { "$or": CleSynchronisation::get_bson_filter(&cles_confirmees)? };
+            // let filtre_confirmees = doc! { "$or": CleSynchronisation::get_bson_filter(&cles_confirmees)? };
+            let filtre_confirmees = doc! { "cle_id": { "$in": &cles_confirmees } };
             let ops = doc! {
                 "$set": {CHAMP_CONFIRMATION_CA: true},
                 "$currentDate": {CHAMP_MODIFICATION: true}
             };
+            let collection = middleware.get_collection(nom_collection.as_str())?;
             let resultat_confirmees = collection.update_many(filtre_confirmees, ops, None).await?;
             debug!("traiter_cles_manquantes_ca Resultat maj cles confirmees: {:?}", resultat_confirmees);
         }
@@ -1929,37 +2012,36 @@ async fn traiter_cles_manquantes_ca<M>(
 
     // Rechiffrer et emettre les cles manquantes.
     if ! cles_manquantes.is_empty() {
-        let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE, vec![Securite::L4Secure])
+        let routage_commande = RoutageMessageAction::builder(
+            DOMAINE_NOM, COMMANDE_TRANSFERT_CLE, vec![Securite::L3Protege]
+        )
             .blocking(false)
             .build();
 
         // let filtre_manquantes = doc! { CHAMP_HACHAGE_BYTES: {"$in": cles_manquantes} };
-        let filtre_manquantes = doc! { "$or": CleSynchronisation::get_bson_filter(&cles_manquantes)? };
+        // let filtre_manquantes = doc! { "$or": CleSynchronisation::get_bson_filter(&cles_manquantes)? };
+        let filtre_manquantes = doc! { "cle_id": { "$in": &cles_manquantes } };
+        let collection = middleware.get_collection_typed::<RowClePartition>(nom_collection.as_str())?;
         let mut curseur = collection.find(filtre_manquantes, None).await?;
         while let Some(d) = curseur.next().await {
             let commande = match d {
                 Ok(cle) => {
-                    match convertir_bson_deserializable::<DocumentClePartition>(cle) {
-                        Ok(c) => {
-                            match rechiffrer_pour_maitredescles_ca(
-                                middleware, &gestionnaire.handler_rechiffrage, c) {
-                                Ok(c) => c,
-                                Err(e) => {
-                                    error!("traiter_cles_manquantes_ca Erreur traitement rechiffrage cle : {:?}", e);
-                                    continue
-                                }
-                            }
-                        },
+                    match rechiffrer_pour_maitredescles(
+                        middleware, &gestionnaire.handler_rechiffrage, cle) {
+                        Ok(c) => c,
                         Err(e) => {
-                            warn!("traiter_cles_manquantes_ca Erreur conversion document en cle : {:?}", e);
+                            error!("traiter_cles_manquantes_ca Erreur traitement rechiffrage cle : {:?}", e);
                             continue
                         }
                     }
                 },
-                Err(e) => Err(format!("maitredescles_partition.traiter_cles_manquantes_ca Erreur lecture curseur : {:?}", e))?
+                Err(e) => {
+                    warn!("traiter_cles_manquantes_ca Erreur conversion document en cle : {:?}", e);
+                    continue
+                }
             };
 
-            trace!("Emettre cles rechiffrees pour CA : {:?}", commande);
+            trace!("traiter_cles_manquantes_ca Emettre cles rechiffrees pour CA : {:?}", commande);
             middleware.transmettre_commande(routage_commande.clone(), &commande).await?;
         }
     }
@@ -2014,9 +2096,10 @@ async fn evenement_cle_manquante<M>(middleware: &M, m: MessageValide, gestionnai
         .partition(partition)
         .build();
 
-    let liste_cles = event_non_dechiffrables.liste_cles;
+    let liste_cles = event_non_dechiffrables.liste_cle_id;
     let filtre = doc! {
-        "$or": CleSynchronisation::get_bson_filter(&liste_cles)?
+        // "$or": CleSynchronisation::get_bson_filter(&liste_cles)?
+        "$in": liste_cles
     };
     trace!("evenement_cle_manquante filtre {:?}", filtre);
 
@@ -2027,20 +2110,21 @@ async fn evenement_cle_manquante<M>(middleware: &M, m: MessageValide, gestionnai
     while let Some(d) = curseur.next().await {
         let commande = match d {
             Ok(cle) => {
-                match convertir_bson_deserializable::<DocumentClePartition>(cle) {
+                match convertir_bson_deserializable::<RowClePartition>(cle) {
                     Ok(doc_cle) => {
-                        trace!("evenement_cle_manquante Rechiffrer cle {}/{}", doc_cle.domaine, doc_cle.hachage_bytes);
-                        let cle_interne = CleInterneChiffree::try_from(doc_cle.clone())?;
-                        let cle_secrete = gestionnaire.handler_rechiffrage.dechiffer_cle_secrete(cle_interne)?;
-                        CleSecreteRechiffrage::from_doc_cle(cle_secrete, doc_cle)?
+                        todo!("fix me")
+                        // trace!("evenement_cle_manquante Rechiffrer cle {}/{}", doc_cle.domaine, doc_cle.hachage_bytes);
+                        // let cle_interne = CleInterneChiffree::try_from(doc_cle.clone())?;
+                        // let cle_secrete = gestionnaire.handler_rechiffrage.dechiffer_cle_secrete(cle_interne)?;
+                        // CleSecreteRechiffrage::from_doc_cle(cle_secrete, doc_cle)?
                     },
                     Err(e) => {
-                        warn!("traiter_cles_manquantes_ca Erreur conversion document en cle : {:?}", e);
+                        warn!("evenement_cle_manquante Erreur conversion document en cle : {:?}", e);
                         continue
                     }
                 }
             },
-            Err(e) => Err(format!("maitredescles_partition.traiter_cles_manquantes_ca Erreur lecture curseur : {:?}", e))?
+            Err(e) => Err(format!("maitredescles_partition.evenement_cle_manquante Erreur lecture curseur : {:?}", e))?
         };
 
         cles.push(commande);
@@ -2092,7 +2176,7 @@ async fn evenement_cle_rechiffrage<M>(middleware: &M, m: MessageValide, gestionn
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: ValidateurX509 + GenerateurMessages + MongoDao + CleChiffrageHandler + ConfigMessages
 {
-    debug!("evenement_cle_rechiffrage Conserver cles de rechiffrage {:?}", &m.message);
+    debug!("evenement_cle_rechiffrage Conserver cles de rechiffrage {:?}", &m.type_message);
 
     let enveloppe_signature = middleware.get_enveloppe_signature();
     let fingerprint_local = enveloppe_signature.fingerprint()?;
@@ -2255,7 +2339,7 @@ pub async fn commande_dechiffrer_cle<M>(middleware: &M, m: MessageValide, gestio
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages
 {
-    debug!("commande_dechiffrer_cle Dechiffrer cle {:?}", &m.message);
+    debug!("commande_dechiffrer_cle Dechiffrer cle {:?}", &m.type_message);
     let commande: CommandeDechiffrerCle = deser_message_buffer!(m.message);
 
     let enveloppe_signature = middleware.get_enveloppe_signature();
