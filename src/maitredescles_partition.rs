@@ -15,7 +15,7 @@ use millegrilles_common_rust::chiffrage_cle::{CleChiffrageCache, CommandeAjouter
 use millegrilles_common_rust::chrono::{Duration, Utc};
 use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::constantes::*;
-use millegrilles_common_rust::common_messages::{DataChiffre, RequeteDechiffrage};
+use millegrilles_common_rust::common_messages::{DataChiffre, ReponseRequeteDechiffrageV2, RequeteDechiffrage};
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::futures_util::stream::FuturesUnordered;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
@@ -165,10 +165,10 @@ impl GestionnaireMaitreDesClesPartition {
 
             if dechiffrer {
                 rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE), exchange: sec.clone() });
-                rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE_V2), exchange: sec.clone() });
                 rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_VERIFIER_PREUVE), exchange: sec.clone() });
                 // rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}.{}", DOMAINE_NOM, nom_partition, REQUETE_VERIFIER_PREUVE), exchange: sec.clone() });
             }
+            rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE_V2), exchange: Securite::L3Protege });
 
             rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_CERTIFICAT_MAITREDESCLES), exchange: sec.clone() });
 
@@ -1252,14 +1252,6 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValide, gestionnaire: 
     Ok(Some(reponse))
 }
 
-#[derive(Serialize, Deserialize)]
-struct ReponseRequeteDechiffrageV2 {
-    ok: bool,
-    code: usize,
-    cles: Option<Vec<CleSecreteSerialisee>>,
-    err: Option<String>,
-}
-
 async fn requete_dechiffrage_v2<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireMaitreDesClesPartition)
                                 -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages + MongoDao + ValidateurX509 + CleChiffrageHandler
@@ -1355,7 +1347,7 @@ async fn requete_dechiffrage_v2<M>(middleware: &M, m: MessageValide, gestionnair
     // Verifier si on a des cles inconnues
     if cles_trouvees < cle_ids.len() {
         debug!("requete_dechiffrage_v2 Cles manquantes, on a {} trouvees sur {} demandees", cles.len(), cle_ids.len());
-        todo!("fix me")
+        error!("requete_dechiffrage_v2 TODO Cles manquantes Fix me");
     }
 
     // Preparer la reponse
