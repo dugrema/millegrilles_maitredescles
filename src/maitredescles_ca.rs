@@ -356,62 +356,64 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValide, gestionna
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    debug!("commande_sauvegarder_cle Consommer commande : {:?}", & m.type_message);
-    let commande: CommandeSauvegarderCle = deser_message_buffer!(m.message);
-
-    let fingerprint = gestionnaire_ca.fingerprint.as_str();
-    let mut doc_bson: Document = commande.clone().into();
-
-    // // Sauvegarder pour partition CA, on retire la partition recue
-    // let _ = doc_bson.remove("partition");
-
-    // Retirer cles, on re-insere la cle necessaire uniquement
-    doc_bson.remove("cles");
-
-    let cle = match commande.cles.get(fingerprint) {
-        Some(cle) => cle.as_str(),
-        None => {
-            let message = format!("maitredescles_ca.commande_sauvegarder_cle: Erreur validation - commande sauvegarder cles ne contient pas la cle CA ({}) : {:?}", fingerprint, commande);
-            warn!("{}", message);
-            // let reponse_err = json!({"ok": false, "err": message});
-            // return Ok(Some(middleware.formatter_reponse(&reponse_err, None)?));
-            return Ok(Some(middleware.reponse_err(None, None, Some(message.as_str()))?))
-        }
-    };
-
-    doc_bson.insert("dirty", true);
-    doc_bson.insert("cle", cle);
-    doc_bson.insert(CHAMP_CREATION, Utc::now());
-    doc_bson.insert(CHAMP_MODIFICATION, Utc::now());
-
-    let nb_cles = commande.cles.len();
-    let non_dechiffrable = nb_cles < 2;
-    debug!("commande_sauvegarder_cle: On a recu {} cles, non-dechiffables (presume) : {}", nb_cles, non_dechiffrable);
-    doc_bson.insert("non_dechiffrable", non_dechiffrable);
-
-    let mut ops = doc! { "$setOnInsert": doc_bson };
-
-    debug!("commande_sauvegarder_cle: Ops bson : {:?}", ops);
-
-    let filtre = doc! { "hachage_bytes": &commande.hachage_bytes, "domaine": &commande.domaine };
-    let opts = UpdateOptions::builder().upsert(true).build();
-
-    let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
-    let resultat = collection.update_one(filtre, ops, opts).await?;
-    debug!("commande_sauvegarder_cle Resultat update : {:?}", resultat);
-
-    if let Some(uid) = resultat.upserted_id {
-        debug!("commande_sauvegarder_cle Nouvelle cle insere _id: {}, generer transaction", uid);
-        let transaction = TransactionCle::new_from_commande(&commande, fingerprint)?;
-        // let routage = RoutageMessageAction::builder(DOMAINE_NOM, TRANSACTION_CLE, vec![Securite::L4Secure])
-        //     .blocking(false)
-        //     .build();
-        // middleware.soumettre_transaction(routage, &transaction).await?;
-        sauvegarder_traiter_transaction_serializable(
-            middleware, &transaction, gestionnaire_ca, DOMAINE_NOM, TRANSACTION_CLE).await?;
-    }
-
-    Ok(Some(middleware.reponse_ok(None, None)?))
+    error!("sauvegarder_cle Recu cle ancien format, **REJETE**\n{}", from_utf8(m.message.buffer.as_slice())?);
+    Ok(Some(middleware.reponse_err(99, None, Some("Commande sauvegarderCle obsolete et retiree"))?))
+    // debug!("commande_sauvegarder_cle Consommer commande : {:?}", & m.type_message);
+    // let commande: CommandeSauvegarderCle = deser_message_buffer!(m.message);
+    //
+    // let fingerprint = gestionnaire_ca.fingerprint.as_str();
+    // let mut doc_bson: Document = commande.clone().into();
+    //
+    // // // Sauvegarder pour partition CA, on retire la partition recue
+    // // let _ = doc_bson.remove("partition");
+    //
+    // // Retirer cles, on re-insere la cle necessaire uniquement
+    // doc_bson.remove("cles");
+    //
+    // let cle = match commande.cles.get(fingerprint) {
+    //     Some(cle) => cle.as_str(),
+    //     None => {
+    //         let message = format!("maitredescles_ca.commande_sauvegarder_cle: Erreur validation - commande sauvegarder cles ne contient pas la cle CA ({}) : {:?}", fingerprint, commande);
+    //         warn!("{}", message);
+    //         // let reponse_err = json!({"ok": false, "err": message});
+    //         // return Ok(Some(middleware.formatter_reponse(&reponse_err, None)?));
+    //         return Ok(Some(middleware.reponse_err(None, None, Some(message.as_str()))?))
+    //     }
+    // };
+    //
+    // doc_bson.insert("dirty", true);
+    // doc_bson.insert("cle", cle);
+    // doc_bson.insert(CHAMP_CREATION, Utc::now());
+    // doc_bson.insert(CHAMP_MODIFICATION, Utc::now());
+    //
+    // let nb_cles = commande.cles.len();
+    // let non_dechiffrable = nb_cles < 2;
+    // debug!("commande_sauvegarder_cle: On a recu {} cles, non-dechiffables (presume) : {}", nb_cles, non_dechiffrable);
+    // doc_bson.insert("non_dechiffrable", non_dechiffrable);
+    //
+    // let mut ops = doc! { "$setOnInsert": doc_bson };
+    //
+    // debug!("commande_sauvegarder_cle: Ops bson : {:?}", ops);
+    //
+    // let filtre = doc! { "hachage_bytes": &commande.hachage_bytes, "domaine": &commande.domaine };
+    // let opts = UpdateOptions::builder().upsert(true).build();
+    //
+    // let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
+    // let resultat = collection.update_one(filtre, ops, opts).await?;
+    // debug!("commande_sauvegarder_cle Resultat update : {:?}", resultat);
+    //
+    // if let Some(uid) = resultat.upserted_id {
+    //     debug!("commande_sauvegarder_cle Nouvelle cle insere _id: {}, generer transaction", uid);
+    //     let transaction = TransactionCle::new_from_commande(&commande, fingerprint)?;
+    //     // let routage = RoutageMessageAction::builder(DOMAINE_NOM, TRANSACTION_CLE, vec![Securite::L4Secure])
+    //     //     .blocking(false)
+    //     //     .build();
+    //     // middleware.soumettre_transaction(routage, &transaction).await?;
+    //     sauvegarder_traiter_transaction_serializable(
+    //         middleware, &transaction, gestionnaire_ca, DOMAINE_NOM, TRANSACTION_CLE).await?;
+    // }
+    //
+    // Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
 async fn commande_ajouter_cle_domaines<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireMaitreDesClesCa)

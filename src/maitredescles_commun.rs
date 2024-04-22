@@ -14,7 +14,7 @@ use millegrilles_common_rust::recepteur_messages::{MessageValide, TypeMessage};
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::tokio::{sync::mpsc::Sender, time::{Duration, sleep}};
 use millegrilles_common_rust::certificats::ordered_map;
-use millegrilles_common_rust::common_messages::{DataChiffre, ReponseSignatureCertificat, RequeteDechiffrage};
+use millegrilles_common_rust::common_messages::{ReponseSignatureCertificat, RequeteDechiffrage};
 use millegrilles_common_rust::{multibase, multibase::Base, serde_json};
 use millegrilles_common_rust::bson::{Bson, bson, doc, Document, serde_helpers::chrono_datetime_as_bson_datetime};
 use millegrilles_common_rust::chrono::{DateTime, Utc};
@@ -99,23 +99,6 @@ pub const CHAMP_ACCES_CLE_INCONNUE: &str = "4.inconnue";
 pub async fn preparer_index_mongodb_custom<M>(middleware: &M, nom_collection_cles: &str, ca: bool) -> Result<(), Error>
     where M: MongoDao + ConfigMessages
 {
-    // Index cle_id (unique)
-    if ca == false {
-        let options_unique_cle_ref = IndexOptions {
-            nom_index: Some(String::from(INDEX_CLE_ID)),
-            unique: true
-        };
-        let champs_index_unique_cle_ref = vec!(
-            ChampIndex { nom_champ: String::from(CHAMP_CLE_ID), direction: 1 },
-        );
-        middleware.create_index(
-            middleware,
-            nom_collection_cles,
-            champs_index_unique_cle_ref,
-            Some(options_unique_cle_ref)
-        ).await?;
-    }
-
     // Index cle_id
     let options_cle_id = IndexOptions {
         nom_index: Some(String::from(INDEX_CLE_ID)),

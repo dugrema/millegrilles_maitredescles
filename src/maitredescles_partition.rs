@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::fmt::{Debug, Display, Formatter, Write};
 use std::fs::read_dir;
+use std::str::from_utf8;
 use std::sync::{Arc, Mutex};
 
 use log::{debug, error, info, trace, warn};
@@ -15,7 +16,7 @@ use millegrilles_common_rust::chiffrage_cle::{CleChiffrageCache, CommandeAjouter
 use millegrilles_common_rust::chrono::{Duration, Utc};
 use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::constantes::*;
-use millegrilles_common_rust::common_messages::{DataChiffre, ReponseRequeteDechiffrageV2, RequeteDechiffrage};
+use millegrilles_common_rust::common_messages::{ReponseRequeteDechiffrageV2, RequeteDechiffrage};
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::futures_util::stream::FuturesUnordered;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
@@ -616,83 +617,86 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValide, gestionna
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages + MongoDao + CleChiffrageHandler
 {
-    debug!("commande_sauvegarder_cle Consommer commande : {:?}", & m.type_message);
-    let commande: CommandeSauvegarderCle = deser_message_buffer!(m.message);
+    error!("sauvegarder_cle Recu cle ancien format, **REJETE**\n{}", from_utf8(m.message.buffer.as_slice())?);
+    Ok(Some(middleware.reponse_err(99, None, Some("Commande sauvegarderCle obsolete et retiree"))?))
 
-    // let partition_message = m.get_partition();
-    let partition_message = match m.type_message {
-        TypeMessageOut::Commande(r) => r.partition.clone(),
-        _ => Err(Error::Str("commande_sauvegarder_cle Mauvais type de message, doit etre commande"))?
-    };
-
-    // let fingerprint = match gestionnaire.handler_rechiffrage.fingerprint() {
-    //     Some(f) => f,
-    //     None => Err(format!("maitredescles_partition.commande_sauvegarder_cle Gestionnaire sans partition/certificat"))?
+    // debug!("commande_sauvegarder_cle Consommer commande : {:?}", & m.type_message);
+    // let commande: CommandeSauvegarderCle = deser_message_buffer!(m.message);
+    //
+    // // let partition_message = m.get_partition();
+    // let partition_message = match m.type_message {
+    //     TypeMessageOut::Commande(r) => r.partition.clone(),
+    //     _ => Err(Error::Str("commande_sauvegarder_cle Mauvais type de message, doit etre commande"))?
     // };
-    let fingerprint = gestionnaire.handler_rechiffrage.fingerprint()?;
-    let nom_collection_cles = match gestionnaire.get_collection_cles()? {
-        Some(c) => c,
-        None => Err(Error::Str("maitredescles_partition.commande_sauvegarder_cle Gestionnaire sans partition/certificat"))?
-    };
-
+    //
+    // // let fingerprint = match gestionnaire.handler_rechiffrage.fingerprint() {
+    // //     Some(f) => f,
+    // //     None => Err(format!("maitredescles_partition.commande_sauvegarder_cle Gestionnaire sans partition/certificat"))?
+    // // };
+    // let fingerprint = gestionnaire.handler_rechiffrage.fingerprint()?;
+    // let nom_collection_cles = match gestionnaire.get_collection_cles()? {
+    //     Some(c) => c,
+    //     None => Err(Error::Str("maitredescles_partition.commande_sauvegarder_cle Gestionnaire sans partition/certificat"))?
+    // };
+    //
+    // // let cle = match commande.cles.get(fingerprint.as_str()) {
     // let cle = match commande.cles.get(fingerprint.as_str()) {
-    let cle = match commande.cles.get(fingerprint.as_str()) {
-        Some(cle) => cle.as_str(),
-        None => {
-            // La cle locale n'est pas presente. Verifier si le message de sauvegarde etait
-            // adresse a cette partition.
-            let reponse = if Some(fingerprint) == partition_message {
-                let message = format!("maitredescles_partition.commande_sauvegarder_cle: Erreur validation - commande sauvegarder cles ne contient pas la cle CA : {:?}", commande);
-                warn!("{}", message);
-                // let reponse_err = json!({"ok": false, "err": message});
-                // Ok(Some(middleware.formatter_reponse(&reponse_err, None)?))
-                Ok(Some(middleware.reponse_err(None, None, Some(message.as_str()))?))
-            } else {
-                // Rien a faire, message ne concerne pas cette partition
-                Ok(None)
-            };
-            return reponse;
-        }
-    };
-
-    sauvegarder_cle(middleware, gestionnaire, &commande, nom_collection_cles).await?;
-
-    // if let Some(uid) = resultat.upserted_id {
-    //     debug!("commande_sauvegarder_cle Nouvelle cle insere _id: {}, generer transaction", uid);
-    //     // Detecter si on doit rechiffrer et re-emettre la cles
-    //     // Survient si on a recu une commande sur un exchange autre que 4.secure et qu'il a moins de
-    //     // cles dans la commande que le nombre de cles de rechiffrage connues (incluant cert maitre des cles)
-    //     if let Some(exchange) = m.exchange.as_ref() {
-    //         if exchange != SECURITE_4_SECURE {
-    //             let cle_len = commande.cles.len();
-    //             let cle_str = match commande.cles.get(fingerprint.as_str()) {
-    //                 Some(c) => c.to_owned(),
-    //                 None => Err(format!("maitredescles_partition.commande_sauvegarder_cle Erreur cle partition {} introuvable", fingerprint))?
-    //             };
-    //             let mut cle_transfert = DocumentClePartition::from(commande);
-    //             cle_transfert.cle = cle_str;  // Injecter la cle de cette partition
-    //
-    //             let pk_chiffrage = middleware.get_publickeys_chiffrage();
-    //             if pk_chiffrage.len() > cle_len {
-    //                 debug!("commande_sauvegarder_cle Nouvelle cle sur exchange != 4.secure, re-emettre a l'interne");
-    //                 let commande_cle_rechiffree = rechiffrer_pour_maitredescles(middleware, cle_transfert)?;
-    //                 let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
-    //                     .exchanges(vec![Securite::L4Secure])
-    //                     .build();
-    //                 middleware.transmettre_commande(routage_commande, &commande_cle_rechiffree, false).await?;
-    //             }
-    //         }
+    //     Some(cle) => cle.as_str(),
+    //     None => {
+    //         // La cle locale n'est pas presente. Verifier si le message de sauvegarde etait
+    //         // adresse a cette partition.
+    //         let reponse = if Some(fingerprint) == partition_message {
+    //             let message = format!("maitredescles_partition.commande_sauvegarder_cle: Erreur validation - commande sauvegarder cles ne contient pas la cle CA : {:?}", commande);
+    //             warn!("{}", message);
+    //             // let reponse_err = json!({"ok": false, "err": message});
+    //             // Ok(Some(middleware.formatter_reponse(&reponse_err, None)?))
+    //             Ok(Some(middleware.reponse_err(None, None, Some(message.as_str()))?))
+    //         } else {
+    //             // Rien a faire, message ne concerne pas cette partition
+    //             Ok(None)
+    //         };
+    //         return reponse;
     //     }
+    // };
     //
+    // sauvegarder_cle(middleware, gestionnaire, &commande, nom_collection_cles).await?;
+    //
+    // // if let Some(uid) = resultat.upserted_id {
+    // //     debug!("commande_sauvegarder_cle Nouvelle cle insere _id: {}, generer transaction", uid);
+    // //     // Detecter si on doit rechiffrer et re-emettre la cles
+    // //     // Survient si on a recu une commande sur un exchange autre que 4.secure et qu'il a moins de
+    // //     // cles dans la commande que le nombre de cles de rechiffrage connues (incluant cert maitre des cles)
+    // //     if let Some(exchange) = m.exchange.as_ref() {
+    // //         if exchange != SECURITE_4_SECURE {
+    // //             let cle_len = commande.cles.len();
+    // //             let cle_str = match commande.cles.get(fingerprint.as_str()) {
+    // //                 Some(c) => c.to_owned(),
+    // //                 None => Err(format!("maitredescles_partition.commande_sauvegarder_cle Erreur cle partition {} introuvable", fingerprint))?
+    // //             };
+    // //             let mut cle_transfert = DocumentClePartition::from(commande);
+    // //             cle_transfert.cle = cle_str;  // Injecter la cle de cette partition
+    // //
+    // //             let pk_chiffrage = middleware.get_publickeys_chiffrage();
+    // //             if pk_chiffrage.len() > cle_len {
+    // //                 debug!("commande_sauvegarder_cle Nouvelle cle sur exchange != 4.secure, re-emettre a l'interne");
+    // //                 let commande_cle_rechiffree = rechiffrer_pour_maitredescles(middleware, cle_transfert)?;
+    // //                 let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
+    // //                     .exchanges(vec![Securite::L4Secure])
+    // //                     .build();
+    // //                 middleware.transmettre_commande(routage_commande, &commande_cle_rechiffree, false).await?;
+    // //             }
+    // //         }
+    // //     }
+    // //
+    // // }
+    //
+    // if Some(fingerprint) == partition_message {
+    //     // Le message etait adresse a cette partition
+    //     Ok(Some(middleware.reponse_ok(None, None)?))
+    // } else {
+    //     // Cle sauvegardee mais aucune reponse requise
+    //     Ok(None)
     // }
-
-    if Some(fingerprint) == partition_message {
-        // Le message etait adresse a cette partition
-        Ok(Some(middleware.reponse_ok(None, None)?))
-    } else {
-        // Cle sauvegardee mais aucune reponse requise
-        Ok(None)
-    }
 }
 
 async fn commande_ajouter_cle_domaines<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireMaitreDesClesPartition)
@@ -878,6 +882,7 @@ async fn sauvegarder_cle<M, S>(
     };
 
     let filtre = doc!{"cle_id": &cle_id};
+    let format_str: &str = commande.format.clone().into();
     let mut set_on_insert_ops = doc!{
         "cle_id": cle_id,
         "signature": convertir_to_bson(signature)?,
@@ -890,7 +895,7 @@ async fn sauvegarder_cle<M, S>(
         "confirmation_ca": false,
 
         // Ajouter information de dechiffrage de contenu (vieille approche)
-        "format": convertir_to_bson(&commande.format)?,
+        "format": format_str,
         "iv": commande.iv.as_ref(),
         "tag": commande.tag.as_ref(),
         "header": commande.header.as_ref(),

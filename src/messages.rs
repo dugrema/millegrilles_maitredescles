@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::str::from_utf8;
 use log::{debug, error};
 use millegrilles_common_rust::chrono::{DateTime, Utc};
-use millegrilles_common_rust::common_messages::{DataChiffre, DataDechiffre};
+use millegrilles_common_rust::common_messages::DataDechiffre;
 use millegrilles_common_rust::error::Error;
 use millegrilles_common_rust::generateur_messages::GenerateurMessages;
 use millegrilles_common_rust::hachages::verifier_multihash;
