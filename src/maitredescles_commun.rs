@@ -879,10 +879,11 @@ impl RowClePartition {
 
         let cle_id = self.cle_id.clone();
 
+        // Retirer le 'm' multibase du iv/header pour convertir en format nonce
         let nonce = match self.iv {
-            Some(inner) => Some(inner),
+            Some(inner) => Some(inner.as_str()[1..].to_string()),
             None => match self.header {
-                Some(inner) => Some(inner),
+                Some(inner) => Some(inner.as_str()[1..].to_string()),
                 None => None
             }
         };
