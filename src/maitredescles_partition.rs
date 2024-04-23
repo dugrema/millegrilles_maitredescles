@@ -996,13 +996,13 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, mut m: MessageValide, gest
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages + MongoDao + CleChiffrageHandler
 {
-    debug!("commande_rechiffrer_batch Message {:?}", m.type_message);
+    debug!("commande_rechiffrer_batch Message {:?}\n{}", m.type_message, from_utf8(m.message.buffer.as_slice())?);
     let message_ref = m.message.parse()?;
     let correlation_id = match &m.type_message {
         TypeMessageOut::Commande(r) => {
             match r.correlation_id.as_ref() { Some(inner) => inner.clone(), None => message_ref.id.to_owned() }
         },
-        _ => Err(Error::Str("commande_rechiffrer_batch Mavauis type de message - doit etre commande"))?
+        _ => Err(Error::Str("commande_rechiffrer_batch Mauvais type de message - doit etre commande"))?
     };
 
     let enveloppe_privee = middleware.get_enveloppe_signature();

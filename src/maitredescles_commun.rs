@@ -912,7 +912,7 @@ pub struct RowClePartitionRef<'a> {
     //pub cle: &'a str,
 
     // Information de dechiffrage contenu (utilise avec signature version 0)
-    #[serde(skip_serializing_if = "Option::is_none", with = "optionformatchiffragestr")]
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "optionformatchiffragestr")]
     pub format: Option<FormatChiffrage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub iv: Option<&'a str>,
