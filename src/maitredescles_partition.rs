@@ -1745,20 +1745,10 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
        Err(format!("maitredescles_partition.synchroniser_cles Rechiffreur n'est pas initialise"))?
     }
 
-    let nom_collection = match gestionnaire.get_collection_cles()? {
-        Some(n) => n,
-        None => Err(format!("maitredescles_partition.synchroniser_cles Collection cles n'est pas definie"))?
-    };
-
     // Requete vers CA pour obtenir la liste des cles connues
     let mut requete_sync = RequeteSynchroniserCles {page: 0, limite: 1000};
     let routage_sync = RoutageMessageAction::builder(DOMAINE_NOM, REQUETE_SYNCHRONISER_CLES, vec![Securite::L4Secure])
         .build();
-
-    let routage_evenement_manquant = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION, vec![Securite::L4Secure])
-        .build();
-
-    let collection = middleware.get_collection_typed::<CleSynchronisation>(nom_collection.as_str())?;
 
     loop {
         let reponse: ReponseSynchroniserCles = match middleware.transmettre_requete(routage_sync.clone(), &requete_sync).await? {
@@ -1776,104 +1766,130 @@ async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreD
         };
         requete_sync.page += 1;  // Incrementer page pour prochaine requete
 
-        let liste_cles = reponse.liste_cle_id;
-        if liste_cles.len() == 0 {
+        if reponse.liste_cle_id.len() == 0 {
             debug!("Traitement sync termine");
             break
         }
 
-        let mut cles_hashset = HashSet::new();
-        for item in &liste_cles {
-            cles_hashset.insert(item.as_str());
+        if let Err(e) = traiter_batch_synchroniser_cles(middleware, gestionnaire, reponse).await {
+            error!("synchroniser_cles Erreur traitement batch cles : {:?}", e);
         }
+    }
 
-        debug!("Recu liste_hachage_bytes a verifier : {} cles", liste_cles.len());
-        // let liste_cles_bson = convertir_to_bson(&liste_cles)?;
-        // let filtre_cles = doc! { CHAMP_HACHAGE_BYTES: {"$in": liste_cles_bson} };
-        // let filtre_cles = doc! { "$or": CleSynchronisation::get_bson_filter(&liste_cles)? };
-        let filtre_cles = doc! {"cle_id": { "$in": &liste_cles } };
-        let projection = doc! { CHAMP_CLE_ID: 1 };
-        let find_options = FindOptions::builder().projection(projection).build();
-        let mut cles = collection.find(filtre_cles, Some(find_options)).await?;
-        while let Some(row) = cles.next().await {
+    debug!("synchroniser_cles Fin");
 
-            match row {
-                Ok(inner) => {
-                    cles_hashset.remove(inner.cle_id.as_str());
-                },
-                Err(e) => {
-                    info!("synchroniser_cles Erreur mapping cle : {:?}", e);
-                    continue
-                }
+    Ok(())
+}
+
+async fn traiter_batch_synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition, reponse: ReponseSynchroniserCles)
+    -> Result<(), Error>
+    where M: MongoDao + GenerateurMessages
+{
+    let liste_cles = reponse.liste_cle_id;
+
+    let mut cles_hashset = HashSet::new();
+    for item in &liste_cles {
+        cles_hashset.insert(item.as_str());
+    }
+
+    debug!("Recu liste_hachage_bytes a verifier : {} cles", liste_cles.len());
+    // let liste_cles_bson = convertir_to_bson(&liste_cles)?;
+    // let filtre_cles = doc! { CHAMP_HACHAGE_BYTES: {"$in": liste_cles_bson} };
+    // let filtre_cles = doc! { "$or": CleSynchronisation::get_bson_filter(&liste_cles)? };
+    let filtre_cles = doc! {"cle_id": { "$in": &liste_cles } };
+    let projection = doc! { CHAMP_CLE_ID: 1 };
+    let find_options = FindOptions::builder().projection(projection).build();
+
+    let nom_collection = match gestionnaire.get_collection_cles()? {
+        Some(n) => n,
+        None => Err(Error::Str("maitredescles_partition.synchroniser_cles Collection cles n'est pas definie"))?
+    };
+
+    let collection = middleware.get_collection_typed::<CleSynchronisation>(nom_collection.as_str())?;
+    let mut cles = collection.find(filtre_cles, Some(find_options)).await?;
+    while let Some(row) = cles.next().await {
+        match row {
+            Ok(inner) => {
+                cles_hashset.remove(inner.cle_id.as_str());
+            },
+            Err(e) => {
+                info!("synchroniser_cles Erreur mapping cle : {:?}", e);
+                continue
             }
-
-            // match result_cle {
-            //     Ok(doc_cle) => {
-            //         let cle: CleSynchronisation = match convertir_bson_deserializable(doc_cle) {
-            //             Ok(d) => {
-            //                 cles_hashset.remove(d.cle_id.as_str());
-            //                 d
-            //             },
-            //             Err(e) => {
-            //                 info!("synchroniser_cles Erreur mapping cle : {:?}", e);
-            //                 continue
-            //             }
-            //         };
-            //     },
-            //     Err(e) => Err(format!("maitredescles_partition.synchroniser_cles Erreur lecture table cles : {:?}", e))?
-            // }
         }
+    }
 
-        if cles_hashset.len() > 0 {
-            debug!("synchroniser_cles Cles absentes localement : {} cles", cles_hashset.len());
+    if cles_hashset.len() > 0 {
+        debug!("synchroniser_cles Cles absentes localement : {} cles", cles_hashset.len());
 
-            // Emettre requete pour indiquer que ces cles sont manquantes dans la partition
-            let liste_cles: Vec<String> = cles_hashset.iter().map(|m| m.to_string()).collect();
-            let evenement_cles_manquantes = ReponseSynchroniserCles { liste_cle_id: liste_cles };
-            let reponse = middleware.transmettre_requete(
-                routage_evenement_manquant.clone(), &evenement_cles_manquantes).await?;
+        // Emettre requete pour indiquer que ces cles sont manquantes dans la partition
+        let liste_cles: Vec<String> = cles_hashset.iter().map(|m| m.to_string()).collect();
+        let evenement_cles_manquantes = ReponseSynchroniserCles { liste_cle_id: liste_cles };
 
-            let data_reponse = match reponse {
+        let routage_evenement_manquant = RoutageMessageAction::builder(
+            DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION, vec![Securite::L4Secure])
+            .build();
+
+        let data_reponse: Option<MessageListeCles> = match middleware.transmettre_requete(
+            routage_evenement_manquant.clone(), &evenement_cles_manquantes).await
+        {
+            Ok(inner) => match inner {
                 Some(inner) => match inner {
-                    TypeMessage::Valide(mut inner) => {
+                    TypeMessage::Valide(inner) => {
                         debug!("synchroniser_cles Reponse demande cles manquantes : {:?}", inner);
                         let message_ref = inner.message.parse()?;
-                        match MessageReponseChiffree::try_from(message_ref) {
-                            Ok(inner) => inner.dechiffrer(middleware)?,
+                        let enveloppe_privee = middleware.get_enveloppe_signature();
+                        match message_ref.dechiffrer(enveloppe_privee.as_ref()) {
+                            Ok(inner) => Some(inner),
                             Err(e) => {
                                 warn!("synchroniser_cles Erreur dechiffrage reponse : {:?}", e);
-                                continue;
+                                None
                             }
                         }
                     },
                     _ => {
                         warn!("synchroniser_cles Erreur reception reponse cles manquantes, mauvais type reponse.");
-                        continue;
+                        None
                     }
                 },
                 None => {
-                    warn!("synchroniser_cles Erreur reception reponse cles manquantes, aucune reponse.");
-                    continue;
+                    warn!("synchroniser_cles Erreur reception reponse cles manquantes, resultat None");
+                    None
                 }
-            };
+            },
+            Err(e) => {
+                warn!("synchroniser_cles Erreur reception reponse cles manquantes (e.g. timeout) : {:?}", e);
+                None
+            },
+        };
 
-            let reponse: MessageListeCles = serde_json::from_slice(&data_reponse.data_dechiffre[..])?;
-            debug!("Reponse {:?}", reponse.cles);
+        if let Some(data_reponse) = data_reponse {
+            todo!("fix me")
+            // match serde_json::from_slice::<MessageListeCles>(&data_reponse.data_dechiffre[..]) {
+            //     Ok(reponse) => {
+            //         debug!("Reponse {:?}", reponse.cles);
+            //         for cle_rechiffree in reponse.cles.into_iter() {
+            //             // sauvegarder_cle_rechiffrage(middleware, &gestionnaire,
+            //             //                             nom_collection.as_str(),
+            //             //                             cle_rechiffree).await?;
+            //
+            //             // Retirer la cle de la liste non dechiffrables
+            //         }
+            //         // Verifier s'il reste encore des cles non dechiffrables
+            //     },
+            //     Err(e) => {
+            //         warn!("synchroniser_cles Aucune reponse sur cles demandees, indiquer que les cles sont non dechiffrables (Err: {:?})", e);
+            //     }
+            // }
+        }
 
-            for cle_rechiffree in reponse.cles.into_iter() {
-                todo!("fix me")
-                // sauvegarder_cle_rechiffrage(middleware, &gestionnaire,
-                //                             nom_collection.as_str(),
-                //                             cle_rechiffree).await?;
-            }
-
-            // let liste_cles: Vec<String> = cles_hashset.iter().map(|m| String::from(m.as_str())).collect();
-            // let evenement_cles_manquantes = ReponseSynchroniserCles { liste_hachage_bytes: liste_cles };
-            // middleware.emettre_evenement(routage_evenement_manquant.clone(), &evenement_cles_manquantes).await?;
+        if cles_hashset.len() > 0 {
+            info!("synchroniser_cles Il reste {} cles non dechiffrables", cles_hashset.len());
+            let liste_cles: Vec<String> = cles_hashset.iter().map(|m| m.to_string()).collect();
+            let evenement_cles_manquantes = ReponseSynchroniserCles { liste_cle_id: liste_cles };
+            middleware.emettre_evenement(routage_evenement_manquant, &evenement_cles_manquantes).await?;
         }
     }
-
-    debug!("synchroniser_cles Fin");
 
     Ok(())
 }

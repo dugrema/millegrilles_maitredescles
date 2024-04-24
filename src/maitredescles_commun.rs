@@ -1081,38 +1081,38 @@ pub fn calculer_cle_ref(info: CleRefData, cle_secrete: &CleSecreteX25519) -> Res
     Ok(cle_ref)
 }
 
-/// Rechiffre une cle secrete
-// pub fn rechiffrer_cle(cle: &mut DocumentClePartition, privee: &EnveloppePrivee, certificat_destination: &EnveloppeCertificat)
-pub fn rechiffrer_cle(cle: &mut RowClePartition, handler_rechiffrage: &HandlerCleRechiffrage, certificat_destination: &EnveloppeCertificat)
-                      -> Result<(), Error>
-{
-    if certificat_destination.verifier_exchanges(vec![Securite::L4Secure, Securite::L3Protege, Securite::L2Prive, Securite::L1Public])? {
-        // Ok, certificat de composant avec acces MQ
-    } else if certificat_destination.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
-        // Ok, acces global,
-    } else if certificat_destination.verifier_roles(vec![RolesCertificats::ComptePrive])? {
-        // ComptePrive : certificats sont verifies par le domaine (relai de permission)
-    } else {
-        Err(format!("maitredescles_partition.rechiffrer_cle Certificat sans user_id ni L4Secure, acces refuse"))?
-    }
-
-    let cle_interne = CleInterneChiffree::try_from(cle.clone())?;
-    let cle_secrete = handler_rechiffrage.dechiffer_cle_secrete(cle_interne)?;
-
-    // let cle_originale = cle.cle.as_str();
-    // let cle_privee = privee.cle_privee();
-    let cle_publique = certificat_destination.certificat.public_key()?;
-    // let cle_rechiffree = rechiffrer_asymetrique_multibase(cle_privee, &cle_publique, cle_originale)?;
-    let cle_rechiffree = chiffrer_asymetrique_multibase(cle_secrete, &cle_publique)?;
-
-    debug!("rechiffrer_cle Cle {} rechiffree : {}", cle.cle_id, cle_rechiffree);
-
-    todo!("fix me")
-    // // Remplacer cle dans message reponse
-    // cle.cle = cle_rechiffree;
-    //
-    // Ok(())
-}
+// /// Rechiffre une cle secrete
+// // pub fn rechiffrer_cle(cle: &mut DocumentClePartition, privee: &EnveloppePrivee, certificat_destination: &EnveloppeCertificat)
+// pub fn rechiffrer_cle(cle: &mut RowClePartition, handler_rechiffrage: &HandlerCleRechiffrage, certificat_destination: &EnveloppeCertificat)
+//                       -> Result<(), Error>
+// {
+//     if certificat_destination.verifier_exchanges(vec![Securite::L4Secure, Securite::L3Protege, Securite::L2Prive, Securite::L1Public])? {
+//         // Ok, certificat de composant avec acces MQ
+//     } else if certificat_destination.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
+//         // Ok, acces global,
+//     } else if certificat_destination.verifier_roles(vec![RolesCertificats::ComptePrive])? {
+//         // ComptePrive : certificats sont verifies par le domaine (relai de permission)
+//     } else {
+//         Err(format!("maitredescles_partition.rechiffrer_cle Certificat sans user_id ni L4Secure, acces refuse"))?
+//     }
+//
+//     let cle_interne = CleInterneChiffree::try_from(cle.clone())?;
+//     let cle_secrete = handler_rechiffrage.dechiffer_cle_secrete(cle_interne)?;
+//
+//     // let cle_originale = cle.cle.as_str();
+//     // let cle_privee = privee.cle_privee();
+//     let cle_publique = certificat_destination.certificat.public_key()?;
+//     // let cle_rechiffree = rechiffrer_asymetrique_multibase(cle_privee, &cle_publique, cle_originale)?;
+//     let cle_rechiffree = chiffrer_asymetrique_multibase(cle_secrete, &cle_publique)?;
+//
+//     debug!("rechiffrer_cle Cle {} rechiffree : {}", cle.cle_id, cle_rechiffree);
+//
+//     todo!("fix me")
+//     // // Remplacer cle dans message reponse
+//     // cle.cle = cle_rechiffree;
+//     //
+//     // Ok(())
+// }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DocumentCleRechiffrage {
