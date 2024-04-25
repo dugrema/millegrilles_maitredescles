@@ -455,56 +455,58 @@ async fn commande_transfert_cle<M>(middleware: &M, m: MessageValide, gestionnair
     {
         Err(Error::Str("commande_transfert_cle Exchange/Role non autorise"))?
     }
-    let commande: CommandeTransfertCle = deser_message_buffer!(m.message);
+    let commande: CommandeTransfertClesV2 = deser_message_buffer!(m.message);
 
-    // Verifier si on a deja la cle - sinon, creer une nouvelle transaction
-    let cle_id = commande.signature.get_cle_ref()?.to_string();
+    for cle in commande.cles {
+        // Verifier si on a deja la cle - sinon, creer une nouvelle transaction
+        let cle_id = cle.signature.get_cle_ref()?.to_string();
 
-    let filtre = doc! { CHAMP_CLE_ID: &cle_id };
-    let options = FindOneOptions::builder()
-        .hint(Hint::Name("index_cle_id".to_string()))
-        .projection(doc!{CHAMP_CLE_ID: 1})
-        .build();
-    let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
-    let resultat = collection.find_one(filtre, options).await?;
+        let filtre = doc! { CHAMP_CLE_ID: &cle_id };
+        let options = FindOneOptions::builder()
+            .hint(Hint::Name("index_cle_id".to_string()))
+            .projection(doc! {CHAMP_CLE_ID: 1})
+            .build();
+        let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
+        let resultat = collection.find_one(filtre, options).await?;
 
-    if resultat.is_none() {
-        match commande.signature.version {
-            SignatureDomainesVersion::NonSigne => {
-                // Ancienne version
-                let cle_id = commande.signature.signature.to_string();
+        if resultat.is_none() {
+            match cle.signature.version {
+                SignatureDomainesVersion::NonSigne => {
+                    // Ancienne version
+                    let cle_id = cle.signature.signature.to_string();
 
-                let cle_ca = match commande.signature.ca {
-                    Some(inner) => format!("m{}", inner),  // Ajoute 'm' multibase base64 no pad
-                    None => Err(Error::Str("commande_transfert_cle Cle pour le CA manquante"))?
-                };
+                    let cle_ca = match cle.signature.ca.as_ref() {
+                        Some(inner) => format!("m{}", inner),  // Ajoute 'm' multibase base64 no pad
+                        None => Err(Error::Str("commande_transfert_cle Cle pour le CA manquante"))?
+                    };
 
-                let domaine = match commande.signature.domaines.get(0) {
-                    Some(inner) => inner.to_string(),
-                    None => Err(Error::Str("Domaine manquant"))?
-                };
+                    let domaine = match cle.signature.domaines.get(0) {
+                        Some(inner) => inner.to_string(),
+                        None => Err(Error::Str("Domaine manquant"))?
+                    };
 
-                debug!("commande_transfert_cle Sauvegarder cle transferee {}", cle_id);
-                let transaction_cle = TransactionCle {
-                    hachage_bytes: cle_id,
-                    domaine,
-                    identificateurs_document: Default::default(),
-                    cle: cle_ca,
-                    format: commande.format,
-                    iv: commande.iv,
-                    tag: commande.tag,
-                    header: commande.header,
-                    partition: None,
-                };
-                sauvegarder_traiter_transaction_serializable(
-                    middleware, &transaction_cle, gestionnaire, DOMAINE_NOM, TRANSACTION_CLE).await?;
-            },
-            _ => {
-                // Version courante
-                let transaction_cle = TransactionCleV2 { signature: commande.signature };
-                debug!("commande_ajouter_cle_domaines Sauvegarder transaction nouvelle cle {}", cle_id);
-                sauvegarder_traiter_transaction_serializable(
-                    middleware, &transaction_cle, gestionnaire, DOMAINE_NOM, TRANSACTION_CLE_V2).await?;
+                    debug!("commande_transfert_cle Sauvegarder cle transferee {}", cle_id);
+                    let transaction_cle = TransactionCle {
+                        hachage_bytes: cle_id,
+                        domaine,
+                        identificateurs_document: Default::default(),
+                        cle: cle_ca,
+                        format: cle.format.clone(),
+                        iv: None,
+                        tag: cle.verification.clone(),
+                        header: cle.nonce.clone(),
+                        partition: None,
+                    };
+                    sauvegarder_traiter_transaction_serializable(
+                        middleware, &transaction_cle, gestionnaire, DOMAINE_NOM, TRANSACTION_CLE).await?;
+                },
+                _ => {
+                    // Version courante
+                    let transaction_cle = TransactionCleV2 { signature: cle.signature.clone() };
+                    debug!("commande_ajouter_cle_domaines Sauvegarder transaction nouvelle cle {}", cle_id);
+                    sauvegarder_traiter_transaction_serializable(
+                        middleware, &transaction_cle, gestionnaire, DOMAINE_NOM, TRANSACTION_CLE_V2).await?;
+                }
             }
         }
     }

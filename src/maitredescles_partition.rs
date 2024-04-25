@@ -26,7 +26,7 @@ use millegrilles_common_rust::middleware::{Middleware, sauvegarder_traiter_trans
 use millegrilles_common_rust::mongo_dao::{ChampIndex, convertir_bson_deserializable, convertir_to_bson, IndexOptions, MongoDao, verifier_erreur_duplication_mongo};
 use millegrilles_common_rust::mongodb::{Collection, Cursor};
 use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOneOptions, FindOptions, Hint, InsertOneOptions, UpdateOptions};
-use millegrilles_common_rust::{get_domaine_action, multibase, serde_json};
+use millegrilles_common_rust::{get_domaine_action, millegrilles_cryptographie, multibase, serde_json};
 use millegrilles_common_rust::db_structs::TransactionValide;
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_cles::{CleChiffrageHandler, CleDechiffrage, CleSecreteSerialisee};
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
@@ -48,7 +48,7 @@ use millegrilles_common_rust::error::Error;
 use millegrilles_common_rust::millegrilles_cryptographie::{deser_message_buffer, heapless};
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::FormatChiffrage;
 use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::{SignatureDomaines, SignatureDomainesVersion};
-use millegrilles_common_rust::millegrilles_cryptographie::x25519::{chiffrer_asymmetrique_ed25519, dechiffrer_asymmetrique_ed25519};
+use millegrilles_common_rust::millegrilles_cryptographie::x25519::{chiffrer_asymmetrique_ed25519, CleSecreteX25519, dechiffrer_asymmetrique_ed25519};
 use crate::maitredescles_ca::{GestionnaireMaitreDesClesCa, NOM_COLLECTION_CLES};
 
 use crate::maitredescles_commun::*;
@@ -170,6 +170,7 @@ impl GestionnaireMaitreDesClesPartition {
                 // rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}.{}", DOMAINE_NOM, nom_partition, REQUETE_VERIFIER_PREUVE), exchange: sec.clone() });
             }
             rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE_V2), exchange: Securite::L3Protege });
+            rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_TRANSFERT_CLES), exchange: Securite::L3Protege });
 
             rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_CERTIFICAT_MAITREDESCLES), exchange: sec.clone() });
 
@@ -190,8 +191,8 @@ impl GestionnaireMaitreDesClesPartition {
         rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE), exchange: Securite::L4Secure });
         rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_TRANSFERT_CLE), exchange: Securite::L4Secure });
 
-        rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.*.{}", DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE), exchange: Securite::L4Secure });
-        rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, COMMANDE_TRANSFERT_CLE), exchange: Securite::L4Secure });
+        // rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.*.{}", DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE), exchange: Securite::L4Secure });
+        // rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, COMMANDE_TRANSFERT_CLE), exchange: Securite::L4Secure });
 
         // Rotation des cles
         rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, COMMANDE_ROTATION_CERTIFICAT), exchange: Securite::L3Protege });
@@ -207,7 +208,7 @@ impl GestionnaireMaitreDesClesPartition {
             rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION), exchange: sec.clone() });
         }
         rk_volatils.push(ConfigRoutingExchange { routing_key: format!("evenement.{}.{}", DOMAINE_NOM, EVENEMENT_CLES_RECHIFFRAGE), exchange: Securite::L4Secure });
-        rk_volatils.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, COMMANDE_DECHIFFRER_CLE), exchange: Securite::L4Secure });
+        // rk_volatils.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, COMMANDE_DECHIFFRER_CLE), exchange: Securite::L4Secure });
 
         let commandes_protegees = vec![
             COMMANDE_RECHIFFRER_BATCH,
@@ -506,6 +507,7 @@ async fn consommer_requete<M>(middleware: &M, message: MessageValide, gestionnai
                 REQUETE_DECHIFFRAGE => requete_dechiffrage(middleware, message, gestionnaire).await,
                 REQUETE_DECHIFFRAGE_V2 => requete_dechiffrage_v2(middleware, message, gestionnaire).await,
                 REQUETE_VERIFIER_PREUVE => requete_verifier_preuve(middleware, message, gestionnaire).await,
+                REQUETE_TRANSFERT_CLES => requete_transfert_cles(middleware, message, gestionnaire).await,
                 EVENEMENT_CLES_MANQUANTES_PARTITION => evenement_cle_manquante(middleware, message, gestionnaire).await,
                 _ => {
                     error!("Message requete/action inconnue : '{}'. Message dropped.", action);
@@ -661,35 +663,6 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValide, gestionna
     //
     // sauvegarder_cle(middleware, gestionnaire, &commande, nom_collection_cles).await?;
     //
-    // // if let Some(uid) = resultat.upserted_id {
-    // //     debug!("commande_sauvegarder_cle Nouvelle cle insere _id: {}, generer transaction", uid);
-    // //     // Detecter si on doit rechiffrer et re-emettre la cles
-    // //     // Survient si on a recu une commande sur un exchange autre que 4.secure et qu'il a moins de
-    // //     // cles dans la commande que le nombre de cles de rechiffrage connues (incluant cert maitre des cles)
-    // //     if let Some(exchange) = m.exchange.as_ref() {
-    // //         if exchange != SECURITE_4_SECURE {
-    // //             let cle_len = commande.cles.len();
-    // //             let cle_str = match commande.cles.get(fingerprint.as_str()) {
-    // //                 Some(c) => c.to_owned(),
-    // //                 None => Err(format!("maitredescles_partition.commande_sauvegarder_cle Erreur cle partition {} introuvable", fingerprint))?
-    // //             };
-    // //             let mut cle_transfert = DocumentClePartition::from(commande);
-    // //             cle_transfert.cle = cle_str;  // Injecter la cle de cette partition
-    // //
-    // //             let pk_chiffrage = middleware.get_publickeys_chiffrage();
-    // //             if pk_chiffrage.len() > cle_len {
-    // //                 debug!("commande_sauvegarder_cle Nouvelle cle sur exchange != 4.secure, re-emettre a l'interne");
-    // //                 let commande_cle_rechiffree = rechiffrer_pour_maitredescles(middleware, cle_transfert)?;
-    // //                 let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
-    // //                     .exchanges(vec![Securite::L4Secure])
-    // //                     .build();
-    // //                 middleware.transmettre_commande(routage_commande, &commande_cle_rechiffree, false).await?;
-    // //             }
-    // //         }
-    // //     }
-    // //
-    // // }
-    //
     // if Some(fingerprint) == partition_message {
     //     // Le message etait adresse a cette partition
     //     Ok(Some(middleware.reponse_ok(None, None)?))
@@ -738,59 +711,44 @@ async fn commande_transfert_cle<M>(middleware: &M, m: MessageValide, gestionnair
         Err(Error::Str("commande_transfert_cle Exchange/Role non autorise"))?
     }
 
-    let commande: CommandeTransfertCle = deser_message_buffer!(m.message);
+    let message_ref = m.message.parse()?;
+    let enveloppe_privee = middleware.get_enveloppe_signature();
+    let commande: CommandeTransfertClesV2 = match message_ref.dechiffrer(enveloppe_privee.as_ref()) {
+        Ok(inner) => inner,
+        Err(e) => Err(Error::String(format!("commande_transfert_cle  Erreur dechiffrage commande, skip : {:?}", e)))?
+    };
 
-    // Verifier si on a deja la cle - sinon, creer une nouvelle transaction
-    let cle_id = commande.signature.get_cle_ref()?.to_string();
+    let enveloppe_signature = middleware.get_enveloppe_signature();
+    let fingerprint_local = enveloppe_signature.fingerprint()?;
+    if commande.fingerprint_emetteur == fingerprint_local {
+        debug!("commande_transfert_cle Commande transfert cle emise par local, on l'ignore");
+        return Ok(None)
+    }
 
-    let filtre = doc! { CHAMP_CLE_ID: &cle_id };
-    let options = FindOneOptions::builder()
-        .hint(Hint::Name("index_cle_id".to_string()))
-        .projection(doc!{CHAMP_CLE_ID: 1})
-        .build();
-    let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
-    let resultat = collection.find_one(filtre, options).await?;
+    for cle in commande.cles {
+        let cle_id = cle.signature.get_cle_ref()?.to_string();
 
-    if resultat.is_none() {
-        match commande.signature.version {
-            SignatureDomainesVersion::NonSigne => {
-                // Ancienne version
-                let cle_id = commande.signature.signature.to_string();
-                let domaine = match commande.signature.domaines.get(0) {
-                    Some(inner) => inner.to_string(),
-                    None => Err(Error::Str("Domaine manquant"))?
-                };
+        // Verifier si on a deja la cle - sinon, creer une nouvelle transaction
+        let filtre = doc! { CHAMP_CLE_ID: &cle_id };
+        let options = FindOneOptions::builder()
+            .hint(Hint::Name("index_cle_id".to_string()))
+            .projection(doc!{CHAMP_CLE_ID: 1})
+            .build();
+        let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
+        let resultat = collection.find_one(filtre, options).await?;
 
-                let cles: HashMap<String, String> = commande.cles.iter().map(|(k,v)| {
-                    let v = format!("m{}", v);   // Ajouter m pour multibase base64 no pad
-                    (k.to_string(), v)
-                }).collect();
+        if resultat.is_none() {
+            let cle_secrete_vec = base64_nopad.decode(&cle.cle_secrete_base64)?;
 
-                debug!("commande_transfert_cle Sauvegarder cle transferee {}", cle_id);
-                let commande_cle = CommandeSauvegarderCle {
-                    hachage_bytes: cle_id,
-                    domaine,
-                    identificateurs_document: Default::default(),
-                    cles,
-                    format: commande.format.unwrap_or_else(|| FormatChiffrage::MGS4),
-                    iv: commande.iv,
-                    tag: commande.tag,
-                    header: commande.header,
-                    partition: None,
-                    fingerprint_partitions: None,
-                };
-                let nom_collection_cles = match gestionnaire.get_collection_cles()? {
-                    Some(inner) => inner,
-                    None => Err(Error::Str("commande_transfert_cle get_collection_cles est None"))?
-                };
-                sauvegarder_cle(middleware, gestionnaire, &commande_cle, nom_collection_cles).await?;
-            },
-            _ => {
-                // Version courante
-                let commande_cle = CommandeAjouterCleDomaine { cles: commande.cles, signature: commande.signature };
-                debug!("commande_transfert_cle Sauvegarder cle transferee {}", cle_id);
-                sauvegarder_cle_domaine(middleware, gestionnaire, commande_cle).await?;
+            // Valider la signature
+            if let Err(e) = cle.signature.verifier_derivee(cle_secrete_vec.as_slice()) {
+                warn!("commande_transfert_cle Signature cle {} invalide, SKIP. {:?}", cle_id, e);
+                continue
             }
+
+            let mut cle_secrete = CleSecreteX25519 {0: [0u8;32]};
+            cle_secrete.0.copy_from_slice(&cle_secrete_vec[0..32]);
+            sauvegarder_cle_secrete(middleware, gestionnaire, cle.signature.clone(), &cle_secrete).await?;
         }
     }
 
@@ -809,6 +767,18 @@ async fn sauvegarder_cle_domaine<M>(
     // Dechiffrer la cle
     let cle_secrete = commande.get_cle_secrete(enveloppe_signature.as_ref())?;
 
+    sauvegarder_cle_secrete(middleware, gestionnaire, commande.signature, &cle_secrete).await?;
+
+    Ok(())
+}
+
+async fn sauvegarder_cle_secrete<M>(
+    middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition,
+    signature: SignatureDomaines, cle_secrete: &CleSecreteX25519
+)
+    -> Result<(), Error>
+    where M: MongoDao
+{
     // Rechiffrer avec le handler de rechiffrage
     let cle_rechiffree = gestionnaire.handler_rechiffrage.chiffrer_cle_secrete(&cle_secrete.0)?;
 
@@ -818,102 +788,101 @@ async fn sauvegarder_cle_domaine<M>(
     };
     let collection = middleware.get_collection(nom_collection_cles)?;
 
-    let cle_id = commande.signature.get_cle_ref()?;
+    let cle_id = signature.get_cle_ref()?;
 
-    let filtre = doc!{"cle_id": cle_id.as_str()};
-    let set_on_insert_ops = doc!{
+    let filtre = doc! {"cle_id": cle_id.as_str()};
+    let set_on_insert_ops = doc! {
         "cle_id": cle_id.as_str(),
-        "signature": convertir_to_bson(commande.signature)?,
+        "signature": convertir_to_bson(signature)?,
         "cle_symmetrique": cle_rechiffree.cle,
         "nonce_symmetrique": cle_rechiffree.nonce,
         CHAMP_CREATION: Utc::now(),
         "dirty": true,
         "confirmation_ca": false,
     };
-    let ops = doc!{
+    let ops = doc! {
         "$setOnInsert": set_on_insert_ops,
         "$currentDate": {CHAMP_MODIFICATION: true}
     };
     let options = UpdateOptions::builder().upsert(true).build();
     collection.update_one(filtre, ops, options).await?;
-
     Ok(())
 }
 
-async fn sauvegarder_cle<M, S>(
-    middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition,
-    commande: &CommandeSauvegarderCle, nom_collection_cles: S
-)
-    -> Result<bool, Error>
-    where M: GenerateurMessages + MongoDao, S: AsRef<str>
-{
-    let nom_collection_cles = nom_collection_cles.as_ref();
-
-    let enveloppe_privee = middleware.get_enveloppe_signature();
-    let fingerprint = enveloppe_privee.fingerprint()?;
-    let cle = match commande.cles.get(fingerprint.as_str()) {
-        Some(cle) => cle.as_str(),
-        None => Err(format!("sauvegarder_cle Cle non disponible pour {}", fingerprint))?
-    };
-
-    // Valider identite, calculer cle_ref
-    let (cle_id, signature, cle_rechiffree) = {
-        let cle_bytes = multibase::decode(cle)?.1;
-        let cle_secrete = dechiffrer_asymmetrique_ed25519(
-            cle_bytes.as_slice(), &middleware.get_enveloppe_signature().cle_privee)?;
-
-        // Chiffrer avec cle symmetrique locale
-        let handler_rechiffrage = gestionnaire.handler_rechiffrage.as_ref();
-        let cle_chiffree = handler_rechiffrage.chiffrer_cle_secrete(&cle_secrete.0[..])?;
-
-        // Creer Signature version 0, le cle_id est le hachage bytes
-        let cle_id = commande.hachage_bytes.clone();
-        let mut domaines = heapless::Vec::new();
-        domaines.push(commande.domaine.as_str().try_into().map_err(|_| Error::Str("sauvegarder_cle Erreur conversion domaine"))?)
-            .map_err(|e| Error::String(format!("sauvegarder_cle Erreur conversion domaine : {:?}", e)))?;
-        let signature = SignatureDomaines {
-            domaines,
-            version: SignatureDomainesVersion::NonSigne,
-            ca: None,
-            signature: cle_id.as_str().try_into().map_err(|_| Error::Str("sauvegarder_cle Erreur conversion signature"))?,  // Utiliser hachage bytes
-        };
-
-        (cle_id, signature, cle_chiffree)
-    };
-
-    let filtre = doc!{"cle_id": &cle_id};
-    let format_str: &str = commande.format.clone().into();
-    let mut set_on_insert_ops = doc!{
-        "cle_id": cle_id,
-        "signature": convertir_to_bson(signature)?,
-        "cle_symmetrique": cle_rechiffree.cle,
-        "nonce_symmetrique": cle_rechiffree.nonce,
-
-        // Champs pour sync
-        CHAMP_CREATION: Utc::now(),
-        "dirty": true,
-        "confirmation_ca": false,
-
-        // Ajouter information de dechiffrage de contenu (vieille approche)
-        "format": format_str,
-        "iv": commande.iv.as_ref(),
-        "tag": commande.tag.as_ref(),
-        "header": commande.header.as_ref(),
-    };
-
-    let ops = doc!{
-        "$setOnInsert": set_on_insert_ops,
-        "$currentDate": {CHAMP_MODIFICATION: true}
-    };
-    let options = UpdateOptions::builder().upsert(true).build();
-    let collection = middleware.get_collection(nom_collection_cles)?;
-
-    let resultat = collection.update_one(filtre, ops, options).await?;
-    debug!("commande_sauvegarder_cle Resultat update : {:?}", resultat);
-    let insere = resultat.upserted_id.is_some();
-
-    Ok(insere)
-}
+// async fn sauvegarder_cle<M, S>(
+//     middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition,
+//     commande: &CommandeSauvegarderCle, nom_collection_cles: S
+// )
+//     -> Result<bool, Error>
+//     where M: GenerateurMessages + MongoDao, S: AsRef<str>
+// {
+//     let nom_collection_cles = nom_collection_cles.as_ref();
+//
+//     let enveloppe_privee = middleware.get_enveloppe_signature();
+//     let fingerprint = enveloppe_privee.fingerprint()?;
+//     let cle = match commande.cles.get(fingerprint.as_str()) {
+//         Some(cle) => cle.as_str(),
+//         None => Err(format!("sauvegarder_cle Cle non disponible pour {}", fingerprint))?
+//     };
+//
+//     // Valider identite, calculer cle_ref
+//     let (cle_id, signature, cle_rechiffree) = {
+//         let cle_bytes = multibase::decode(cle)?.1;
+//         let cle_secrete = dechiffrer_asymmetrique_ed25519(
+//             cle_bytes.as_slice(), &middleware.get_enveloppe_signature().cle_privee)?;
+//
+//         // Chiffrer avec cle symmetrique locale
+//         let handler_rechiffrage = gestionnaire.handler_rechiffrage.as_ref();
+//         let cle_chiffree = handler_rechiffrage.chiffrer_cle_secrete(&cle_secrete.0[..])?;
+//
+//         // Creer Signature version 0, le cle_id est le hachage bytes
+//         let cle_id = commande.hachage_bytes.clone();
+//         let mut domaines = heapless::Vec::new();
+//         domaines.push(commande.domaine.as_str().try_into().map_err(|_| Error::Str("sauvegarder_cle Erreur conversion domaine"))?)
+//             .map_err(|e| Error::String(format!("sauvegarder_cle Erreur conversion domaine : {:?}", e)))?;
+//         let signature = SignatureDomaines {
+//             domaines,
+//             version: SignatureDomainesVersion::NonSigne,
+//             ca: None,
+//             signature: cle_id.as_str().try_into().map_err(|_| Error::Str("sauvegarder_cle Erreur conversion signature"))?,  // Utiliser hachage bytes
+//         };
+//
+//         (cle_id, signature, cle_chiffree)
+//     };
+//
+//     let filtre = doc!{"cle_id": &cle_id};
+//     let format_str: &str = commande.format.clone().into();
+//     let mut set_on_insert_ops = doc!{
+//         "cle_id": cle_id,
+//         "signature": convertir_to_bson(signature)?,
+//         "cle_symmetrique": cle_rechiffree.cle,
+//         "nonce_symmetrique": cle_rechiffree.nonce,
+//
+//         // Champs pour sync
+//         CHAMP_CREATION: Utc::now(),
+//         "dirty": true,
+//         "confirmation_ca": false,
+//
+//         // Ajouter information de dechiffrage de contenu (vieille approche)
+//         "format": format_str,
+//         "iv": commande.iv.as_ref(),
+//         "tag": commande.tag.as_ref(),
+//         "header": commande.header.as_ref(),
+//     };
+//
+//     let ops = doc!{
+//         "$setOnInsert": set_on_insert_ops,
+//         "$currentDate": {CHAMP_MODIFICATION: true}
+//     };
+//     let options = UpdateOptions::builder().upsert(true).build();
+//     let collection = middleware.get_collection(nom_collection_cles)?;
+//
+//     let resultat = collection.update_one(filtre, ops, options).await?;
+//     debug!("commande_sauvegarder_cle Resultat update : {:?}", resultat);
+//     let insere = resultat.upserted_id.is_some();
+//
+//     Ok(insere)
+// }
 
 async fn commande_rotation_certificat<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireMaitreDesClesPartition)
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
@@ -1359,7 +1328,7 @@ async fn requete_dechiffrage_v2<M>(middleware: &M, m: MessageValide, gestionnair
     // Verifier si on a au moins une cle dans la reponse
     let reponse = if cles.len() > 0 {
         let reponse = ReponseRequeteDechiffrageV2 { ok: true, code: 1, cles: Some(cles), err: None };
-        middleware.build_reponse_chiffree(reponse, enveloppe_privee.as_ref(), certificat.as_ref())?.0
+        middleware.build_reponse_chiffree(reponse, certificat.as_ref())?.0
     } else {
         // On n'a pas trouve de cles
         debug!("requete_dechiffrage_v2 Requete {:?} de dechiffrage {:?}, cles inconnues", m.type_message, &cle_ids);
@@ -1376,6 +1345,114 @@ async fn requete_dechiffrage_v2<M>(middleware: &M, m: MessageValide, gestionnair
     };
 
     Ok(Some(reponse))
+}
+
+/// Methode qui repond a un maitre des cles avec la liste complete des cles demandees. Si la liste
+/// ne peut etre completee, une commande de transfert de cles emets la liste partielle chiffrees
+/// pour tous les maitre des cles.
+async fn requete_transfert_cles<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireMaitreDesClesPartition)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
+    where M: GenerateurMessages + MongoDao + ValidateurX509 + CleChiffrageHandler
+{
+    debug!("requete_transfert_cles Consommer requete : {:?}", & m.type_message);
+
+    // Verifier que la requete provient d'un maitre des cles
+    if ! m.certificat.verifier_roles(vec![RolesCertificats::MaitreDesCles])? {
+        Err(Error::Str("requete_transfert_cles Requete qui ne provient pas d'un maitre des cles (role), SKIP"))?
+    }
+    if ! m.certificat.verifier_domaines(vec![DOMAINE_NOM.to_string()])? {
+        Err(Error::Str("requete_transfert_cles Requete qui ne provient pas d'un maitre des cles (domaine), SKIP"))?
+    }
+    if ! m.certificat.verifier_exchanges(vec![Securite::L3Protege])? {
+        Err(Error::Str("requete_transfert_cles Requete qui ne provient pas d'un certificat 3.protege, SKIP"))?
+    }
+
+    let message_ref = m.message.parse()?;
+    let requete: RequeteTransfert = match message_ref.contenu()?.deserialize() {
+        Ok(inner) => inner,
+        Err(e) => {
+            error!("requete_transfert_cles Erreur mapping RequeteTransfert : {:?}", e);
+            return Ok(Some(middleware.reponse_err(None, None, Some(format!("requete_transfert_cles Erreur mapping requete : {:?}", e).as_str()))?))
+        }
+    };
+
+    // Verifier si on a emis cette requete de transfert (localement)
+    let enveloppe_privee = middleware.get_enveloppe_signature();
+    let fingerprint = enveloppe_privee.fingerprint()?;
+    if requete.fingerprint.as_str() == fingerprint.as_str() {
+        debug!("requete_transfert_cles Requete emise par le maitre de cle local (c'est notre requete), on l'ignore");
+        return Ok(None)
+    }
+
+    // Recuperer les cles et dechiffrer
+    let mut cles = Vec::new();
+
+    let nom_collection = match gestionnaire.get_collection_cles()? {
+        Some(inner) => inner, None => Err(Error::Str("requete_transfert_cles Nom de collection pour les cles est manquant"))?
+    };
+
+    let filtre = doc! { CHAMP_CLE_ID: {"$in": &requete.cle_ids} };
+    let collection = middleware.get_collection_typed::<RowClePartition>(nom_collection.as_str())?;
+    let mut curseur = collection.find(filtre, None).await?;
+
+    while let Some(row) = curseur.next().await {
+        match row {
+            Ok(row_cle) => {
+                let signature = row_cle.signature.clone();
+                match row_cle.to_cle_secrete_serialisee(gestionnaire.handler_rechiffrage.as_ref()) {
+                    Ok(inner) => {
+                        let cle = CleTransfert {
+                            cle_secrete_base64: inner.cle_secrete_base64.to_string(),
+                            signature,
+                            format: inner.format.clone(),
+                            nonce: match inner.nonce.as_ref() { Some(inner) => Some(inner.to_string()), None => None },
+                            verification: match inner.verification.as_ref() { Some(inner) => Some(inner.to_string()), None => None },
+                        };
+                        cles.push(cle)
+                    },
+                    Err(e) => {
+                        warn!("requete_transfert_cles Erreur mapping / dechiffrage cle - SKIP : {:?}", e);
+                        continue
+                    }
+                }
+            },
+            Err(e) => {
+                warn!("requete_transfert_cles Erreur mapping cle, SKIP : {:?}", e);
+                continue
+            }
+        }
+    }
+
+    // Verifier si on a des cles inconnues
+    let toujours_repondre = requete.toujours_repondre.unwrap_or_else(||false);
+    let nombre_cles_trouvees = cles.len();
+    let toutes_cles_trouvees = nombre_cles_trouvees == requete.cle_ids.len();
+    let repondre = toujours_repondre || toutes_cles_trouvees;
+
+    let reponse = CommandeTransfertClesV2 {
+        fingerprint_emetteur: fingerprint,
+        cles,
+    };
+
+    if repondre {
+        // On a la liste complete ou on doit toujours repondre.
+        info!("requete_transfert_cles Repondre avec {} cles", nombre_cles_trouvees);
+        Ok(Some(middleware.build_reponse_chiffree(reponse, m.certificat.as_ref())?.0))
+    } else if ! toutes_cles_trouvees {
+        info!("requete_transfert_cles Cles manquantes, on a {} trouvees sur {} demandees", nombre_cles_trouvees, requete.cle_ids.len());
+        // Generer une commande de transfert de cles pour tous les maitres des cles avec la liste partielle
+        // Va permettre a plusieurs maitres des cles de repondre avec leur liste au besoin
+        let cles_chiffrage_vec = middleware.get_publickeys_chiffrage();
+        let routage = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_TRANSFERT_CLE, vec![Securite::L3Protege])
+            .build();
+        let commande_chiffree = middleware.build_message_action_chiffre(
+            millegrilles_cryptographie::messages_structs::MessageKind::CommandeInterMillegrille,
+            routage, reponse, cles_chiffrage_vec)?.0;
+        Ok(Some(commande_chiffree))
+    } else {
+        debug!("requete_transfert_cles Cles manquantes, on n'a aucunes cles a transmettre, SKIP");
+        Ok(None)
+    }
 }
 
 /// Verifie que la requete contient des cles secretes qui correspondent aux cles stockees.
@@ -2025,38 +2102,39 @@ async fn traiter_cles_manquantes_ca<M>(
 
     // Rechiffrer et emettre les cles manquantes.
     if ! cles_manquantes.is_empty() {
-        let routage_commande = RoutageMessageAction::builder(
-            DOMAINE_NOM, COMMANDE_TRANSFERT_CLE, vec![Securite::L3Protege]
-        )
-            .blocking(false)
-            .build();
-
-        // let filtre_manquantes = doc! { CHAMP_HACHAGE_BYTES: {"$in": cles_manquantes} };
-        // let filtre_manquantes = doc! { "$or": CleSynchronisation::get_bson_filter(&cles_manquantes)? };
-        let filtre_manquantes = doc! { "cle_id": { "$in": &cles_manquantes } };
-        let collection = middleware.get_collection_typed::<RowClePartition>(nom_collection.as_str())?;
-        let mut curseur = collection.find(filtre_manquantes, None).await?;
-        while let Some(d) = curseur.next().await {
-            let commande = match d {
-                Ok(cle) => {
-                    match rechiffrer_pour_maitredescles(
-                        middleware, &gestionnaire.handler_rechiffrage, cle) {
-                        Ok(c) => c,
-                        Err(e) => {
-                            error!("traiter_cles_manquantes_ca Erreur traitement rechiffrage cle : {:?}", e);
-                            continue
-                        }
-                    }
-                },
-                Err(e) => {
-                    warn!("traiter_cles_manquantes_ca Erreur conversion document en cle : {:?}", e);
-                    continue
-                }
-            };
-
-            trace!("traiter_cles_manquantes_ca Emettre cles rechiffrees pour CA : {:?}", commande);
-            middleware.transmettre_commande(routage_commande.clone(), &commande).await?;
-        }
+        todo!("refact")
+        // let routage_commande = RoutageMessageAction::builder(
+        //     DOMAINE_NOM, COMMANDE_TRANSFERT_CLE, vec![Securite::L3Protege]
+        // )
+        //     .blocking(false)
+        //     .build();
+        //
+        // // let filtre_manquantes = doc! { CHAMP_HACHAGE_BYTES: {"$in": cles_manquantes} };
+        // // let filtre_manquantes = doc! { "$or": CleSynchronisation::get_bson_filter(&cles_manquantes)? };
+        // let filtre_manquantes = doc! { "cle_id": { "$in": &cles_manquantes } };
+        // let collection = middleware.get_collection_typed::<RowClePartition>(nom_collection.as_str())?;
+        // let mut curseur = collection.find(filtre_manquantes, None).await?;
+        // while let Some(d) = curseur.next().await {
+        //     let commande = match d {
+        //         Ok(cle) => {
+        //             match rechiffrer_pour_maitredescles(
+        //                 middleware, &gestionnaire.handler_rechiffrage, cle) {
+        //                 Ok(c) => c,
+        //                 Err(e) => {
+        //                     error!("traiter_cles_manquantes_ca Erreur traitement rechiffrage cle : {:?}", e);
+        //                     continue
+        //                 }
+        //             }
+        //         },
+        //         Err(e) => {
+        //             warn!("traiter_cles_manquantes_ca Erreur conversion document en cle : {:?}", e);
+        //             continue
+        //         }
+        //     };
+        //
+        //     trace!("traiter_cles_manquantes_ca Emettre cles rechiffrees pour CA : {:?}", commande);
+        //     middleware.transmettre_commande(routage_commande.clone(), &commande).await?;
+        // }
     }
 
     Ok(())
@@ -2157,7 +2235,7 @@ async fn evenement_cle_manquante<M>(middleware: &M, m: MessageValide, gestionnai
 
             debug!("evenement_cle_manquante Emettre reponse avec {} cles", cles.len());
             let reponse = middleware.build_reponse_chiffree(
-                reponse, enveloppe_privee.as_ref(), m.certificat.as_ref())?.0;
+                reponse, m.certificat.as_ref())?.0;
             debug!("evenement_cle_manquante Reponse chiffree {:?}", reponse);
             Ok(Some(reponse))
         }

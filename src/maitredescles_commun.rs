@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-
 use log::{debug, error, info, warn};
+use zeroize::{Zeroize, ZeroizeOnDrop};
+
 use millegrilles_common_rust::base64::{engine::general_purpose::STANDARD_NO_PAD as base64_nopad, Engine as _};
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chiffrage_cle::{CommandeAjouterCleDomaine, CommandeSauvegarderCle};
@@ -57,6 +58,7 @@ pub const REQUETE_SYNCHRONISER_CLES: &str = "synchroniserCles";
 pub const REQUETE_DECHIFFRAGE: &str = "dechiffrage";
 pub const REQUETE_DECHIFFRAGE_V2: &str = "dechiffrageV2";
 pub const REQUETE_VERIFIER_PREUVE: &str = "verifierPreuve";
+pub const REQUETE_TRANSFERT_CLES: &str = "transfertCles";
 
 // pub const COMMANDE_SAUVEGARDER_CLE: &str = "sauvegarderCle";
 pub const COMMANDE_CONFIRMER_CLES_SUR_CA: &str = "confirmerClesSurCa";
@@ -1168,54 +1170,54 @@ pub struct MessageListeCles {
     pub cles: Vec<CleSecreteRechiffrage>
 }
 
-/// Genere une commande de sauvegarde de cles pour tous les certificats maitre des cles connus
-/// incluant le certificat de millegrille
-pub fn rechiffrer_pour_maitredescles<M>(middleware: &M, handler: &HandlerCleRechiffrage, cle: RowClePartition)
-    -> Result<CommandeTransfertCle, Error>
-    where M: GenerateurMessages + CleChiffrageHandler
-{
-    let mut signature = cle.signature.clone();
-
-    // Dechiffrer cle secrete
-    let cle_interne = CleInterneChiffree::try_from(cle.clone())?;
-    let cle_secrete = handler.dechiffer_cle_secrete(cle_interne)?;
-
-    let enveloppe_privee = middleware.get_enveloppe_signature();
-
-    // Verifier si la cle rechiffree CA est deja dans la signature. L'ajouter au besoin.
-    if signature.ca.is_none() {
-        debug!("rechiffrer_pour_maitredescles_ca Rechiffrer la cle pour le CA");
-
-        // Chiffrer pour le CA
-        let cle_publique_ca = &enveloppe_privee.enveloppe_ca.certificat.public_key()?;
-        let cle_rechiffree = chiffrer_asymmetrique_ed25519(&cle_secrete.0[..], cle_publique_ca)?;
-        let cle_ca_str = base64_nopad.encode(cle_rechiffree);
-        signature.ca = Some(cle_ca_str.as_str().try_into().map_err(|_| Error::Str("Erreur conversion cle_ca_str en heapless::String"))?);
-    }
-
-    let fingerprint_local = enveloppe_privee.fingerprint()?;
-    let pk_chiffrage = middleware.get_publickeys_chiffrage();
-    let mut map_cles_chiffrees = HashMap::new();
-    for cle in pk_chiffrage {
-        let fingerprint = cle.fingerprint()?;
-        if fingerprint == fingerprint_local {
-            continue  // On a deja la cle dechiffree localement, skip
-        }
-        let cle_publique = &cle.certificat.public_key()?;
-        let cle_rechiffree = chiffrer_asymmetrique_ed25519(&cle_secrete.0[..], cle_publique)?;
-        let cle_ca_str = base64_nopad.encode(cle_rechiffree);
-        map_cles_chiffrees.insert(fingerprint, cle_ca_str);
-    }
-
-    Ok(CommandeTransfertCle {
-        cles: map_cles_chiffrees,
-        signature,
-        format: cle.format,
-        iv: cle.iv,
-        tag: cle.tag,
-        header: cle.header,
-    })
-}
+// /// Genere une commande de sauvegarde de cles pour tous les certificats maitre des cles connus
+// /// incluant le certificat de millegrille
+// pub fn rechiffrer_pour_maitredescles<M>(middleware: &M, handler: &HandlerCleRechiffrage, cle: RowClePartition)
+//     -> Result<CommandeTransfertClesV2, Error>
+//     where M: GenerateurMessages + CleChiffrageHandler
+// {
+//     let mut signature = cle.signature.clone();
+//
+//     // Dechiffrer cle secrete
+//     let cle_interne = CleInterneChiffree::try_from(cle.clone())?;
+//     let cle_secrete = handler.dechiffer_cle_secrete(cle_interne)?;
+//
+//     let enveloppe_privee = middleware.get_enveloppe_signature();
+//
+//     // Verifier si la cle rechiffree CA est deja dans la signature. L'ajouter au besoin.
+//     if signature.ca.is_none() {
+//         debug!("rechiffrer_pour_maitredescles_ca Rechiffrer la cle pour le CA");
+//
+//         // Chiffrer pour le CA
+//         let cle_publique_ca = &enveloppe_privee.enveloppe_ca.certificat.public_key()?;
+//         let cle_rechiffree = chiffrer_asymmetrique_ed25519(&cle_secrete.0[..], cle_publique_ca)?;
+//         let cle_ca_str = base64_nopad.encode(cle_rechiffree);
+//         signature.ca = Some(cle_ca_str.as_str().try_into().map_err(|_| Error::Str("Erreur conversion cle_ca_str en heapless::String"))?);
+//     }
+//
+//     let fingerprint_local = enveloppe_privee.fingerprint()?;
+//     let pk_chiffrage = middleware.get_publickeys_chiffrage();
+//     let mut map_cles_chiffrees = HashMap::new();
+//     for cle in pk_chiffrage {
+//         let fingerprint = cle.fingerprint()?;
+//         if fingerprint == fingerprint_local {
+//             continue  // On a deja la cle dechiffree localement, skip
+//         }
+//         let cle_publique = &cle.certificat.public_key()?;
+//         let cle_rechiffree = chiffrer_asymmetrique_ed25519(&cle_secrete.0[..], cle_publique)?;
+//         let cle_ca_str = base64_nopad.encode(cle_rechiffree);
+//         map_cles_chiffrees.insert(fingerprint, cle_ca_str);
+//     }
+//
+//     Ok(CommandeTransfertCle {
+//         cles: map_cles_chiffrees,
+//         signature,
+//         format: cle.format,
+//         iv: cle.iv,
+//         tag: cle.tag,
+//         header: cle.header,
+//     })
+// }
 
 // /// Dechiffre le message kind:8 d'une batch
 // pub fn dechiffrer_batch<M>(middleware: &M, m: MessageValide) -> Result<CommandeRechiffrerBatch, Error>
@@ -1365,22 +1367,68 @@ pub async fn verifier_permission_rechiffrage<M>(middleware: &M, m: &MessageValid
     Ok((certificat, requete_autorisee_globalement))
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CommandeTransfertCle {
-    /// Cles chiffrees pour differents destinataires.
-    /// Key : fingerprint hex, Value: cle chiffree base64
-    pub cles: HashMap<String, String>,
+// #[derive(Clone, Debug, Serialize, Deserialize)]
+// pub struct CommandeTransfertCle {
+//     /// Cles chiffrees pour differents destinataires.
+//     /// Key : fingerprint hex, Value: cle chiffree base64
+//     pub cles: HashMap<String, String>,
+//
+//     /// Signature des domaines autorises pour le dechiffrage.
+//     pub signature: SignatureDomaines,
+//
+//     // Information de dechiffrage symmetrique (obsolete)
+//     #[serde(default, with = "optionformatchiffragestr")]
+//     pub format: Option<FormatChiffrage>,
+//     #[serde(skip_serializing_if = "Option::is_none")]
+//     pub iv: Option<String>,
+//     #[serde(skip_serializing_if = "Option::is_none")]
+//     pub tag: Option<String>,
+//     #[serde(skip_serializing_if = "Option::is_none")]
+//     pub header: Option<String>,
+// }
 
-    /// Signature des domaines autorises pour le dechiffrage.
+/// Requete de dechiffrage de cles par domaine/ids
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RequeteTransfert {
+    /// fingerprint du certificat du maitre des cles a l'origine de la requete
+    pub fingerprint: String,
+    /// Liste de cle_id a rechiffrer
+    pub cle_ids: Vec<String>,
+    /// Si true, indique qu'on veut une reponse meme si elle est incomplete (incluant 0 cles).
+    pub toujours_repondre: Option<bool>,
+}
+
+#[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
+pub struct CleTransfert {
+    /// Cle secrete dechiffree en format base64 no pad
+    pub cle_secrete_base64: String,
+
+    /// Signature des domaines pour cette cle
+    #[zeroize(skip)]
     pub signature: SignatureDomaines,
 
-    // Information de dechiffrage symmetrique (obsolete)
-    #[serde(default, with = "optionformatchiffragestr")]
+    // Information obsolete (chiffrage V1)
+
+    /// Format de chiffrage.
+    #[serde(default, with="optionformatchiffragestr")]
+    #[zeroize(skip)]
     pub format: Option<FormatChiffrage>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub iv: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tag: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub header: Option<String>,
+
+    /// Nonce ou header selon l'algorithme.
+    #[zeroize(skip)]
+    pub nonce: Option<String>,
+
+    /// Element de verification selon le format de chiffrage.
+    /// Peut etre un hachage (e.g. blake2s) ou un HMAC (e.g. compute tag de chacha20-poly1305).
+    #[zeroize(skip)]
+    pub verification: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct CommandeTransfertClesV2 {
+    /// Fingerprint du maitre des cles emetteur
+    pub fingerprint_emetteur: String,
+
+    /// Liste de cles secretes (dechiffrees)
+    pub cles: Vec<CleTransfert>,
 }

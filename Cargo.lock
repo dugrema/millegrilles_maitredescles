@@ -2167,6 +2167,7 @@ dependencies = [
  "millegrilles_common_rust",
  "serde",
  "sqlite",
+ "zeroize",
 ]
 
 [[package]]

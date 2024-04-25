@@ -11,3 +11,4 @@ env_logger = "0.9"
 millegrilles_common_rust = { path = "millegrilles_common_rust" }
 serde = { version = "1.0", features = ["derive"] }
 sqlite = { version = "0.30" }
+zeroize = "1.7"
