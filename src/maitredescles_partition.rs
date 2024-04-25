@@ -1322,9 +1322,52 @@ async fn requete_dechiffrage_v2<M>(middleware: &M, m: MessageValide, gestionnair
     }
 
     // Verifier si on a des cles inconnues
-    if cles_trouvees < cle_ids.len() {
+    // En cas de cles inconnues, et si on a plusieurs maitre des cles, faire une requete
+    let nombre_maitre_des_cles = middleware.get_publickeys_chiffrage().len();
+    if cles_trouvees < cle_ids.len() && nombre_maitre_des_cles > 1 {
         debug!("requete_dechiffrage_v2 Cles manquantes, on a {} trouvees sur {} demandees", cles.len(), cle_ids.len());
-        error!("requete_dechiffrage_v2 TODO Cles manquantes Fix me");
+
+        // Identifier les cles manquantes
+        let mut cles_hashset = HashSet::new();
+        for item in cle_ids {
+            cles_hashset.insert(item.as_str());
+        }
+        for item in &cles {
+            if let Some(cle_id) = &item.cle_id {
+                cles_hashset.remove(cle_id.as_str());
+            }
+        }
+
+        // Effectuer une requete pour verifier si les cles sont connues d'un autre maitre des cles
+        let liste_cles: Vec<String> = cles_hashset.iter().map(|m| m.to_string()).collect();
+        let requete_transfert = RequeteTransfert {
+            fingerprint,
+            cle_ids: liste_cles,
+            toujours_repondre: Some(true),
+        };
+        let data_reponse = effectuer_requete_cles_manquantes(
+            middleware, &requete_transfert).await.unwrap_or_else(|e| {
+            error!("traiter_batch_synchroniser_clesErreur requete cles manquantes : {:?}", e);
+            None
+        });
+        if let Some(data_reponse) = data_reponse {
+            for cle in data_reponse.cles {
+                let cle_id = cle.signature.get_cle_ref()?;
+                let mut cle_secrete_bytes = [0u8; 32];
+                cle_secrete_bytes.copy_from_slice(&base64_nopad.decode(cle.cle_secrete_base64.as_str())?[0..32]);
+                let cle_secrete = CleSecreteX25519 {0: cle_secrete_bytes};
+
+                // Ajouter la cle serialisee a la liste des reponses
+                let cle_serialisee = CleSecreteSerialisee::from_cle_secrete(
+                    cle_secrete.clone(), Some(cle_id.as_str()), cle.format.clone(), cle.nonce.as_ref(), cle.verification.as_ref())?;
+                cles.push(cle_serialisee);
+
+                // Sauvegarder la nouvelle cle
+                if let Err(e) = sauvegarder_cle_secrete(middleware, gestionnaire, cle.signature.clone(), &cle_secrete).await {
+                    error!("traiter_batch_synchroniser_cles Erreur sauvegarde cle {} : {:?}", cle_id, e);
+                }
+            }
+        }
     }
 
     // Preparer la reponse
@@ -1944,8 +1987,14 @@ async fn effectuer_requete_cles_manquantes<M>(
     -> Result<Option<CommandeTransfertClesV2>, Error>
     where M: GenerateurMessages
 {
+    let delai_blocking = match &requete_transfert.toujours_repondre {
+        Some(true) => 3_000,  // Requete live, temps court
+        _ => 20_000,  // Requete batch, temps long
+    };
+
     let routage_evenement_manquant = RoutageMessageAction::builder(
         DOMAINE_NOM, REQUETE_TRANSFERT_CLES, vec![Securite::L3Protege])
+        .timeout_blocking(delai_blocking)
         .build();
 
     let data_reponse: Option<CommandeTransfertClesV2> = match middleware.transmettre_requete(
