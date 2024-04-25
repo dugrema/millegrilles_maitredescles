@@ -1432,3 +1432,29 @@ pub struct CommandeTransfertClesV2 {
     /// Liste de cles secretes (dechiffrees)
     pub cles: Vec<CleTransfert>,
 }
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct CleTransfertCa {
+    /// Signature des domaines pour cette cle
+    pub signature: SignatureDomaines,
+
+    // Information obsolete (chiffrage V1)
+
+    /// Format de chiffrage.
+    #[serde(default, with="optionformatchiffragestr")]
+    pub format: Option<FormatChiffrage>,
+
+    /// Nonce ou header selon l'algorithme.
+    pub nonce: Option<String>,
+
+    /// Element de verification selon le format de chiffrage.
+    /// Peut etre un hachage (e.g. blake2s) ou un HMAC (e.g. compute tag de chacha20-poly1305).
+    pub verification: Option<String>,
+}
+
+/// Liste des cles pour le CA. Le contenu est chiffre.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct CommandeTransfertClesCaV2 {
+    /// Liste de cles chiffrees
+    pub cles: Vec<CleTransfertCa>,
+}

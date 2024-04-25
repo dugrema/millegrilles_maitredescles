@@ -2102,39 +2102,37 @@ async fn traiter_cles_manquantes_ca<M>(
 
     // Rechiffrer et emettre les cles manquantes.
     if ! cles_manquantes.is_empty() {
-        todo!("refact")
-        // let routage_commande = RoutageMessageAction::builder(
-        //     DOMAINE_NOM, COMMANDE_TRANSFERT_CLE, vec![Securite::L3Protege]
-        // )
-        //     .blocking(false)
-        //     .build();
-        //
-        // // let filtre_manquantes = doc! { CHAMP_HACHAGE_BYTES: {"$in": cles_manquantes} };
-        // // let filtre_manquantes = doc! { "$or": CleSynchronisation::get_bson_filter(&cles_manquantes)? };
-        // let filtre_manquantes = doc! { "cle_id": { "$in": &cles_manquantes } };
-        // let collection = middleware.get_collection_typed::<RowClePartition>(nom_collection.as_str())?;
-        // let mut curseur = collection.find(filtre_manquantes, None).await?;
-        // while let Some(d) = curseur.next().await {
-        //     let commande = match d {
-        //         Ok(cle) => {
-        //             match rechiffrer_pour_maitredescles(
-        //                 middleware, &gestionnaire.handler_rechiffrage, cle) {
-        //                 Ok(c) => c,
-        //                 Err(e) => {
-        //                     error!("traiter_cles_manquantes_ca Erreur traitement rechiffrage cle : {:?}", e);
-        //                     continue
-        //                 }
-        //             }
-        //         },
-        //         Err(e) => {
-        //             warn!("traiter_cles_manquantes_ca Erreur conversion document en cle : {:?}", e);
-        //             continue
-        //         }
-        //     };
-        //
-        //     trace!("traiter_cles_manquantes_ca Emettre cles rechiffrees pour CA : {:?}", commande);
-        //     middleware.transmettre_commande(routage_commande.clone(), &commande).await?;
-        // }
+        let filtre_manquantes = doc! { "cle_id": { "$in": &cles_manquantes } };
+        let collection = middleware.get_collection_typed::<RowClePartition>(nom_collection.as_str())?;
+        let mut curseur = collection.find(filtre_manquantes, None).await?;
+        let mut cles = Vec::new();
+        while let Some(d) = curseur.next().await {
+            match d {
+                Ok(cle) => {
+                    let cle_transfert_ca = CleTransfertCa {
+                        signature: cle.signature,
+                        format: cle.format,
+                        nonce: cle.header,
+                        verification: cle.tag,
+                    };
+                    cles.push(cle_transfert_ca)
+                },
+                Err(e) => {
+                    warn!("traiter_cles_manquantes_ca Erreur conversion document en cle : {:?}", e);
+                    continue
+                }
+            };
+        }
+
+        let routage_commande = RoutageMessageAction::builder(
+            DOMAINE_NOM, COMMANDE_TRANSFERT_CLE_CA, vec![Securite::L3Protege]
+        )
+            .blocking(false)
+            .build();
+
+        let commande = CommandeTransfertClesCaV2 { cles };
+        debug!("traiter_cles_manquantes_ca Emettre {} cles rechiffrees pour CA", commande.cles.len());
+        middleware.transmettre_commande(routage_commande.clone(), &commande).await?;
     }
 
     Ok(())

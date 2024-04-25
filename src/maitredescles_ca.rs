@@ -149,6 +149,8 @@ pub fn preparer_queues() -> Vec<QueueType> {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L4Secure});
     }
 
+    rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_TRANSFERT_CLE_CA), exchange: Securite::L3Protege});
+
     // Capturer les commandes "sauver cle" sur tous les exchanges pour toutes les partitions
     // Va creer la transaction locale CA si approprie
     for sec in [Securite::L1Public, Securite::L2Prive] {
@@ -321,7 +323,8 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnaire_ca
             COMMANDE_SAUVEGARDER_CLE => commande_sauvegarder_cle(middleware, m, gestionnaire_ca).await,
             COMMANDE_AJOUTER_CLE_DOMAINES => commande_ajouter_cle_domaines(middleware, m, gestionnaire_ca).await,
             COMMANDE_CONFIRMER_CLES_SUR_CA => commande_confirmer_cles_sur_ca(middleware, m, gestionnaire_ca).await,
-            COMMANDE_TRANSFERT_CLE => commande_transfert_cle(middleware, m, gestionnaire_ca).await,
+            // COMMANDE_TRANSFERT_CLE => commande_transfert_cle(middleware, m, gestionnaire_ca).await,
+            COMMANDE_TRANSFERT_CLE_CA => commande_transfert_cle_ca(middleware, m, gestionnaire_ca).await,
 
             // Commandes inconnues
             _ => Err(format!("maitredescles_ca.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, action))?,
@@ -445,7 +448,7 @@ async fn commande_ajouter_cle_domaines<M>(middleware: &M, m: MessageValide, gest
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-async fn commande_transfert_cle<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireMaitreDesClesCa)
+async fn commande_transfert_cle_ca<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireMaitreDesClesCa)
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -455,7 +458,7 @@ async fn commande_transfert_cle<M>(middleware: &M, m: MessageValide, gestionnair
     {
         Err(Error::Str("commande_transfert_cle Exchange/Role non autorise"))?
     }
-    let commande: CommandeTransfertClesV2 = deser_message_buffer!(m.message);
+    let commande: CommandeTransfertClesCaV2 = deser_message_buffer!(m.message);
 
     for cle in commande.cles {
         // Verifier si on a deja la cle - sinon, creer une nouvelle transaction
