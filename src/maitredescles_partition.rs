@@ -167,11 +167,7 @@ impl GestionnaireMaitreDesClesPartition {
             if dechiffrer {
                 rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE), exchange: sec.clone() });
                 rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_VERIFIER_PREUVE), exchange: sec.clone() });
-                // rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}.{}", DOMAINE_NOM, nom_partition, REQUETE_VERIFIER_PREUVE), exchange: sec.clone() });
             }
-            rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE_V2), exchange: Securite::L3Protege });
-            rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_TRANSFERT_CLES), exchange: Securite::L3Protege });
-
             rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_CERTIFICAT_MAITREDESCLES), exchange: sec.clone() });
 
             // Commande volatile
@@ -183,12 +179,21 @@ impl GestionnaireMaitreDesClesPartition {
             }
         }
 
+        if dechiffrer {
+            rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE_V2), exchange: Securite::L3Protege });
+        }
+        rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_TRANSFERT_CLES), exchange: Securite::L3Protege });
+        rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_CERTIFICAT_MAITREDESCLES), exchange: Securite::L1Public });
+
+        // Commande volatile
+        rk_volatils.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_CERT_MAITREDESCLES), exchange: Securite::L3Protege });
+
         // Sauvegarde cleDomaine sur exchange public
         rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_AJOUTER_CLE_DOMAINES), exchange: Securite::L1Public });
         rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_TRANSFERT_CLE), exchange: Securite::L3Protege });
 
         // Commande sauvegarder cle 4.secure pour redistribution des cles
-        rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE), exchange: Securite::L4Secure });
+        // rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE), exchange: Securite::L4Secure });
         rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_TRANSFERT_CLE), exchange: Securite::L4Secure });
 
         // rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.*.{}", DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE), exchange: Securite::L4Secure });
@@ -200,13 +205,9 @@ impl GestionnaireMaitreDesClesPartition {
         // Requetes de dechiffrage/preuve re-emise sur le bus 4.secure lorsque la cle est inconnue
         rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE), exchange: Securite::L4Secure });
         rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_VERIFIER_PREUVE), exchange: Securite::L4Secure });
+        rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION), exchange: Securite::L3Protege });
 
-        for sec in [Securite::L3Protege, Securite::L4Secure] {
-            // Evenement sert a synchronisation cles
-            rk_volatils.push(ConfigRoutingExchange { routing_key: format!("evenement.{}.{}", DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION), exchange: sec.clone() });
-            // Requete est utilise pour echange entre maitre des cles durant requete client
-            rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION), exchange: sec.clone() });
-        }
+        rk_volatils.push(ConfigRoutingExchange { routing_key: format!("evenement.{}.{}", DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION), exchange: Securite::L3Protege });
         rk_volatils.push(ConfigRoutingExchange { routing_key: format!("evenement.{}.{}", DOMAINE_NOM, EVENEMENT_CLES_RECHIFFRAGE), exchange: Securite::L4Secure });
         // rk_volatils.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, COMMANDE_DECHIFFRER_CLE), exchange: Securite::L4Secure });
 
@@ -1107,123 +1108,125 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValide, gestionnaire: 
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages + MongoDao + ValidateurX509 + CleChiffrageHandler
 {
-    debug!("requete_dechiffrage Consommer requete : {:?}", & m.message);
-    let message_ref = m.message.parse()?;
-    let requete: RequeteDechiffrage = match message_ref.contenu()?.deserialize() {
-        Ok(inner) => inner,
-        Err(e) => {
-            info!("requete_dechiffrage Erreur mapping ParametresGetPermissionMessages : {:?}", e);
-            return Ok(Some(middleware.reponse_err(None, None, Some(format!("Erreur mapping requete : {:?}", e).as_str()))?))
-        }
-    };
+    warn!("requete_dechiffrage Consommer requete OBSOLETE : {:?}", & m.message);
+    return Ok(Some(middleware.reponse_err(99, None, Some("obsolete"))?))
 
-    // Supporter l'ancien format de requete (liste_hachage_bytes) avec le nouveau (cle_ids)
-    let cle_ids = match requete.cle_ids.as_ref() {
-        Some(inner) => inner,
-        None => match requete.liste_hachage_bytes.as_ref() {
-            Some(inner) => inner,
-            None => Err(Error::Str("Aucunes cles demandees pour le rechiffrage"))?
-        }
-    };
-
-    // Verifier que la requete est autorisee
-    let (certificat, requete_autorisee_globalement) = match verifier_permission_rechiffrage(middleware, &m, &requete).await {
-        Ok(inner) => inner,
-        Err(ErreurPermissionRechiffrage::Refuse(e)) => {
-            let refuse = json!({"ok": false, "err": e.err, "acces": "0.refuse", "code": e.code});
-            return Ok(Some(middleware.build_reponse(&refuse)?.0))
-        },
-        Err(ErreurPermissionRechiffrage::Error(e)) => Err(e)?
-    };
-
-    let enveloppe_privee = middleware.get_enveloppe_signature();
-    let fingerprint = enveloppe_privee.fingerprint()?;
-
-    // Trouver les cles demandees et rechiffrer
-    let mut curseur = preparer_curseur_cles(
-        middleware, gestionnaire, &requete, Some(&vec![requete.domaine.to_string()])).await?;
-    let (mut cles, cles_trouvees) = rechiffrer_cles(
-        middleware, gestionnaire,
-        &m, &requete, enveloppe_privee.clone(), certificat.as_ref(),
-        requete_autorisee_globalement, &mut curseur).await?;
-
-    let nom_collection = match gestionnaire.get_collection_cles()? {
-        Some(n) => n,
-        None => Err(Error::Str("maitredescles_partition.preparer_curseur_cles Collection cles n'est pas definie"))?
-    };
-
-    // Verifier si on a des cles inconnues
-    if cles.len() < cle_ids.len() {
-        debug!("requete_dechiffrage Cles manquantes, on a {} trouvees sur {} demandees", cles.len(), cle_ids.len());
-
-        error!("requete_dechiffrage Requete Cle non dechiffrages, fix me");  // TODO
-        // todo!("fix me")
-
-        // let cles_connues = cles.keys().map(|s|s.to_owned()).collect();
-        // // emettre_cles_inconnues(middleware, requete, cles_connues).await?;
-        // let cles_recues = match requete_cles_inconnues(
-        //     middleware, &requete, cles_connues).await
-        // {
-        //     Ok(reponse) => {
-        //         debug!("Reponse cles manquantes : {:?}", reponse.cles);
-        //         reponse.cles
-        //     },
-        //     Err(e) => {
-        //         error!("requete_dechiffrage Erreur requete_cles_inconnues, skip : {:?}", e);
-        //         Vec::new()
-        //     }
-        // };
-        //
-        // debug!("Reponse cle manquantes recue : {:?}", cles_recues);
-        // for cle in cles_recues.into_iter() {
-        //
-        //     let hachage_bytes = cle.hachage_bytes.clone();
-        //
-        //     let cle_secrete = cle.get_cle_secrete()?;
-        //     let (_, cle_rechiffree) = cle.rechiffrer_cle(&gestionnaire.handler_rechiffrage)?;
-        //
-        //     let mut doc_cle: RowClePartition = cle.try_into()?;
-        //     doc_cle.cle_symmetrique = Some(cle_rechiffree.cle);
-        //     doc_cle.nonce_symmetrique = Some(cle_rechiffree.nonce);
-        //
-        //     let cle_interne = CleSecreteRechiffrage::from_doc_cle(cle_secrete, doc_cle.clone())?;
-        //
-        //     sauvegarder_cle_rechiffrage(middleware, &gestionnaire,
-        //         nom_collection.as_str(),
-        //         cle_interne).await?;
-        //
-        //     match rechiffrer_cle(&mut doc_cle, &gestionnaire.handler_rechiffrage, certificat.as_ref()) {
-        //         Ok(()) => {
-        //             cles.insert(hachage_bytes, doc_cle);
-        //         },
-        //         Err(e) => {
-        //             error!("rechiffrer_cles Erreur rechiffrage cle {:?}", e);
-        //             continue;  // Skip cette cle
-        //         }
-        //     }
-        // }
-    }
-
-    // Preparer la reponse
-    // Verifier si on a au moins une cle dans la reponse
-    let reponse = if cles.len() > 0 {
-        let reponse = json!({
-            "acces": CHAMP_ACCES_PERMIS,
-            "code": 1,
-            "cles": &cles,
-        });
-        debug!("requete_dechiffrage Reponse rechiffrage {:?} : {:?}", m.type_message, reponse);
-        middleware.build_reponse(reponse)?.0
-    } else {
-        // On n'a pas trouve de cles
-        debug!("requete_dechiffrage Requete {:?} de dechiffrage {:?}, cles inconnues", m.type_message, &requete.liste_hachage_bytes);
-
-        // Retourner cle inconnu a l'usager
-        let inconnu = json!({"ok": false, "err": "Cles inconnues", "acces": CHAMP_ACCES_CLE_INCONNUE, "code": 4});
-        middleware.build_reponse(&inconnu)?.0
-    };
-
-    Ok(Some(reponse))
+    // let message_ref = m.message.parse()?;
+    // let requete: RequeteDechiffrage = match message_ref.contenu()?.deserialize() {
+    //     Ok(inner) => inner,
+    //     Err(e) => {
+    //         info!("requete_dechiffrage Erreur mapping ParametresGetPermissionMessages : {:?}", e);
+    //         return Ok(Some(middleware.reponse_err(None, None, Some(format!("Erreur mapping requete : {:?}", e).as_str()))?))
+    //     }
+    // };
+    //
+    // // Supporter l'ancien format de requete (liste_hachage_bytes) avec le nouveau (cle_ids)
+    // let cle_ids = match requete.cle_ids.as_ref() {
+    //     Some(inner) => inner,
+    //     None => match requete.liste_hachage_bytes.as_ref() {
+    //         Some(inner) => inner,
+    //         None => Err(Error::Str("Aucunes cles demandees pour le rechiffrage"))?
+    //     }
+    // };
+    //
+    // // Verifier que la requete est autorisee
+    // let (certificat, requete_autorisee_globalement) = match verifier_permission_rechiffrage(middleware, &m, &requete).await {
+    //     Ok(inner) => inner,
+    //     Err(ErreurPermissionRechiffrage::Refuse(e)) => {
+    //         let refuse = json!({"ok": false, "err": e.err, "acces": "0.refuse", "code": e.code});
+    //         return Ok(Some(middleware.build_reponse(&refuse)?.0))
+    //     },
+    //     Err(ErreurPermissionRechiffrage::Error(e)) => Err(e)?
+    // };
+    //
+    // let enveloppe_privee = middleware.get_enveloppe_signature();
+    // let fingerprint = enveloppe_privee.fingerprint()?;
+    //
+    // // Trouver les cles demandees et rechiffrer
+    // let mut curseur = preparer_curseur_cles(
+    //     middleware, gestionnaire, &requete, Some(&vec![requete.domaine.to_string()])).await?;
+    // let (mut cles, cles_trouvees) = rechiffrer_cles(
+    //     middleware, gestionnaire,
+    //     &m, &requete, enveloppe_privee.clone(), certificat.as_ref(),
+    //     requete_autorisee_globalement, &mut curseur).await?;
+    //
+    // let nom_collection = match gestionnaire.get_collection_cles()? {
+    //     Some(n) => n,
+    //     None => Err(Error::Str("maitredescles_partition.preparer_curseur_cles Collection cles n'est pas definie"))?
+    // };
+    //
+    // // Verifier si on a des cles inconnues
+    // if cles.len() < cle_ids.len() {
+    //     debug!("requete_dechiffrage Cles manquantes, on a {} trouvees sur {} demandees", cles.len(), cle_ids.len());
+    //
+    //     error!("requete_dechiffrage Requete Cle non dechiffrages, fix me");  // TODO
+    //     // todo!("fix me")
+    //
+    //     // let cles_connues = cles.keys().map(|s|s.to_owned()).collect();
+    //     // // emettre_cles_inconnues(middleware, requete, cles_connues).await?;
+    //     // let cles_recues = match requete_cles_inconnues(
+    //     //     middleware, &requete, cles_connues).await
+    //     // {
+    //     //     Ok(reponse) => {
+    //     //         debug!("Reponse cles manquantes : {:?}", reponse.cles);
+    //     //         reponse.cles
+    //     //     },
+    //     //     Err(e) => {
+    //     //         error!("requete_dechiffrage Erreur requete_cles_inconnues, skip : {:?}", e);
+    //     //         Vec::new()
+    //     //     }
+    //     // };
+    //     //
+    //     // debug!("Reponse cle manquantes recue : {:?}", cles_recues);
+    //     // for cle in cles_recues.into_iter() {
+    //     //
+    //     //     let hachage_bytes = cle.hachage_bytes.clone();
+    //     //
+    //     //     let cle_secrete = cle.get_cle_secrete()?;
+    //     //     let (_, cle_rechiffree) = cle.rechiffrer_cle(&gestionnaire.handler_rechiffrage)?;
+    //     //
+    //     //     let mut doc_cle: RowClePartition = cle.try_into()?;
+    //     //     doc_cle.cle_symmetrique = Some(cle_rechiffree.cle);
+    //     //     doc_cle.nonce_symmetrique = Some(cle_rechiffree.nonce);
+    //     //
+    //     //     let cle_interne = CleSecreteRechiffrage::from_doc_cle(cle_secrete, doc_cle.clone())?;
+    //     //
+    //     //     sauvegarder_cle_rechiffrage(middleware, &gestionnaire,
+    //     //         nom_collection.as_str(),
+    //     //         cle_interne).await?;
+    //     //
+    //     //     match rechiffrer_cle(&mut doc_cle, &gestionnaire.handler_rechiffrage, certificat.as_ref()) {
+    //     //         Ok(()) => {
+    //     //             cles.insert(hachage_bytes, doc_cle);
+    //     //         },
+    //     //         Err(e) => {
+    //     //             error!("rechiffrer_cles Erreur rechiffrage cle {:?}", e);
+    //     //             continue;  // Skip cette cle
+    //     //         }
+    //     //     }
+    //     // }
+    // }
+    //
+    // // Preparer la reponse
+    // // Verifier si on a au moins une cle dans la reponse
+    // let reponse = if cles.len() > 0 {
+    //     let reponse = json!({
+    //         "acces": CHAMP_ACCES_PERMIS,
+    //         "code": 1,
+    //         "cles": &cles,
+    //     });
+    //     debug!("requete_dechiffrage Reponse rechiffrage {:?} : {:?}", m.type_message, reponse);
+    //     middleware.build_reponse(reponse)?.0
+    // } else {
+    //     // On n'a pas trouve de cles
+    //     debug!("requete_dechiffrage Requete {:?} de dechiffrage {:?}, cles inconnues", m.type_message, &requete.liste_hachage_bytes);
+    //
+    //     // Retourner cle inconnu a l'usager
+    //     let inconnu = json!({"ok": false, "err": "Cles inconnues", "acces": CHAMP_ACCES_CLE_INCONNUE, "code": 4});
+    //     middleware.build_reponse(&inconnu)?.0
+    // };
+    //
+    // Ok(Some(reponse))
 }
 
 async fn requete_dechiffrage_v2<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireMaitreDesClesPartition)
@@ -1869,17 +1872,14 @@ async fn traiter_batch_synchroniser_cles<M>(middleware: &M, gestionnaire: &Gesti
         cles_hashset.insert(item.as_str());
     }
 
-    debug!("Recu liste_hachage_bytes a verifier : {} cles", liste_cles.len());
-    // let liste_cles_bson = convertir_to_bson(&liste_cles)?;
-    // let filtre_cles = doc! { CHAMP_HACHAGE_BYTES: {"$in": liste_cles_bson} };
-    // let filtre_cles = doc! { "$or": CleSynchronisation::get_bson_filter(&liste_cles)? };
+    debug!("traiter_batch_synchroniser_cles Recu liste_hachage_bytes a verifier : {} cles", liste_cles.len());
     let filtre_cles = doc! {"cle_id": { "$in": &liste_cles } };
     let projection = doc! { CHAMP_CLE_ID: 1 };
     let find_options = FindOptions::builder().projection(projection).build();
 
     let nom_collection = match gestionnaire.get_collection_cles()? {
         Some(n) => n,
-        None => Err(Error::Str("maitredescles_partition.synchroniser_cles Collection cles n'est pas definie"))?
+        None => Err(Error::Str("maitredescles_partition.traiter_batch_synchroniser_cles Collection cles n'est pas definie"))?
     };
 
     let collection = middleware.get_collection_typed::<CleSynchronisation>(nom_collection.as_str())?;
@@ -1890,85 +1890,97 @@ async fn traiter_batch_synchroniser_cles<M>(middleware: &M, gestionnaire: &Gesti
                 cles_hashset.remove(inner.cle_id.as_str());
             },
             Err(e) => {
-                info!("synchroniser_cles Erreur mapping cle : {:?}", e);
+                info!("traiter_batch_synchroniser_cles Erreur mapping cle : {:?}", e);
                 continue
             }
         }
     }
 
     if cles_hashset.len() > 0 {
-        debug!("synchroniser_cles Cles absentes localement : {} cles", cles_hashset.len());
+        debug!("traiter_batch_synchroniser_cles Cles absentes localement : {} cles", cles_hashset.len());
+
+        let enveloppe_signature = middleware.get_enveloppe_signature();
+        let fingerprint = enveloppe_signature.fingerprint()?;
 
         // Emettre requete pour indiquer que ces cles sont manquantes dans la partition
         let liste_cles: Vec<String> = cles_hashset.iter().map(|m| m.to_string()).collect();
-        let evenement_cles_manquantes = ReponseSynchroniserCles { liste_cle_id: liste_cles };
-
-        let routage_evenement_manquant = RoutageMessageAction::builder(
-            DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION, vec![Securite::L4Secure])
-            .build();
-
-        let data_reponse: Option<MessageListeCles> = match middleware.transmettre_requete(
-            routage_evenement_manquant.clone(), &evenement_cles_manquantes).await
-        {
-            Ok(inner) => match inner {
-                Some(inner) => match inner {
-                    TypeMessage::Valide(inner) => {
-                        debug!("synchroniser_cles Reponse demande cles manquantes : {:?}", inner);
-                        let message_ref = inner.message.parse()?;
-                        let enveloppe_privee = middleware.get_enveloppe_signature();
-                        match message_ref.dechiffrer(enveloppe_privee.as_ref()) {
-                            Ok(inner) => Some(inner),
-                            Err(e) => {
-                                warn!("synchroniser_cles Erreur dechiffrage reponse : {:?}", e);
-                                None
-                            }
-                        }
-                    },
-                    _ => {
-                        warn!("synchroniser_cles Erreur reception reponse cles manquantes, mauvais type reponse.");
-                        None
-                    }
-                },
-                None => {
-                    warn!("synchroniser_cles Erreur reception reponse cles manquantes, resultat None");
-                    None
-                }
-            },
-            Err(e) => {
-                warn!("synchroniser_cles Erreur reception reponse cles manquantes (e.g. timeout) : {:?}", e);
-                None
-            },
+        let requete_transfert = RequeteTransfert {
+            fingerprint,
+            cle_ids: liste_cles,
+            toujours_repondre: Some(false),
         };
 
+        let data_reponse = effectuer_requete_cles_manquantes(
+            middleware, &requete_transfert).await.unwrap_or_else(|e| {
+            error!("traiter_batch_synchroniser_clesErreur requete cles manquantes : {:?}", e);
+            None
+        });
+
         if let Some(data_reponse) = data_reponse {
-            todo!("fix me")
-            // match serde_json::from_slice::<MessageListeCles>(&data_reponse.data_dechiffre[..]) {
-            //     Ok(reponse) => {
-            //         debug!("Reponse {:?}", reponse.cles);
-            //         for cle_rechiffree in reponse.cles.into_iter() {
-            //             // sauvegarder_cle_rechiffrage(middleware, &gestionnaire,
-            //             //                             nom_collection.as_str(),
-            //             //                             cle_rechiffree).await?;
-            //
-            //             // Retirer la cle de la liste non dechiffrables
-            //         }
-            //         // Verifier s'il reste encore des cles non dechiffrables
-            //     },
-            //     Err(e) => {
-            //         warn!("synchroniser_cles Aucune reponse sur cles demandees, indiquer que les cles sont non dechiffrables (Err: {:?})", e);
-            //     }
-            // }
+            for cle in data_reponse.cles {
+                let cle_id = cle.signature.get_cle_ref()?;
+                let mut cle_secrete_bytes = [0u8; 32];
+                cle_secrete_bytes.copy_from_slice(&base64_nopad.decode(cle.cle_secrete_base64.as_str())?[0..32]);
+                let cle_secrete = CleSecreteX25519 {0: cle_secrete_bytes};
+                if let Err(e) = sauvegarder_cle_secrete(middleware, gestionnaire, cle.signature.clone(), &cle_secrete).await {
+                    error!("traiter_batch_synchroniser_cles Erreur sauvegarde cle {} : {:?}", cle_id, e);
+                }
+            }
         }
 
         if cles_hashset.len() > 0 {
-            info!("synchroniser_cles Il reste {} cles non dechiffrables", cles_hashset.len());
-            let liste_cles: Vec<String> = cles_hashset.iter().map(|m| m.to_string()).collect();
-            let evenement_cles_manquantes = ReponseSynchroniserCles { liste_cle_id: liste_cles };
-            middleware.emettre_evenement(routage_evenement_manquant, &evenement_cles_manquantes).await?;
+            info!("traiter_batch_synchroniser_cles Il reste {} cles non dechiffrables", cles_hashset.len());
+            // let liste_cles: Vec<String> = cles_hashset.iter().map(|m| m.to_string()).collect();
+            // let evenement_cles_manquantes = ReponseSynchroniserCles { liste_cle_id: liste_cles };
+            // middleware.emettre_evenement(routage_evenement_manquant, &evenement_cles_manquantes).await?;
         }
     }
 
     Ok(())
+}
+
+async fn effectuer_requete_cles_manquantes<M>(
+    middleware: &M, requete_transfert: &RequeteTransfert)
+    -> Result<Option<CommandeTransfertClesV2>, Error>
+    where M: GenerateurMessages
+{
+    let routage_evenement_manquant = RoutageMessageAction::builder(
+        DOMAINE_NOM, REQUETE_TRANSFERT_CLES, vec![Securite::L3Protege])
+        .build();
+
+    let data_reponse: Option<CommandeTransfertClesV2> = match middleware.transmettre_requete(
+        routage_evenement_manquant.clone(), &requete_transfert).await
+    {
+        Ok(inner) => match inner {
+            Some(inner) => match inner {
+                TypeMessage::Valide(inner) => {
+                    debug!("synchroniser_cles Reponse demande cles manquantes : {:?}", inner);
+                    let message_ref = inner.message.parse()?;
+                    let enveloppe_privee = middleware.get_enveloppe_signature();
+                    match message_ref.dechiffrer(enveloppe_privee.as_ref()) {
+                        Ok(inner) => Some(inner),
+                        Err(e) => {
+                            warn!("synchroniser_cles Erreur dechiffrage reponse : {:?}", e);
+                            None
+                        }
+                    }
+                },
+                _ => {
+                    warn!("synchroniser_cles Erreur reception reponse cles manquantes, mauvais type reponse.");
+                    None
+                }
+            },
+            None => {
+                warn!("synchroniser_cles Erreur reception reponse cles manquantes, resultat None");
+                None
+            }
+        },
+        Err(e) => {
+            warn!("synchroniser_cles Erreur reception reponse cles manquantes (e.g. timeout) : {:?}", e);
+            None
+        },
+    };
+    Ok(data_reponse)
 }
 
 /// S'assurer que le CA a toutes les cles de la partition. Permet aussi de resetter le flag non-dechiffrable.
@@ -2142,106 +2154,108 @@ async fn evenement_cle_manquante<M>(middleware: &M, m: MessageValide, gestionnai
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: ValidateurX509 + GenerateurMessages + MongoDao + CleChiffrageHandler + CleChiffrageCache + ConfigMessages
 {
+    error!("evenement_cle_manquante Evenement obsolete");
+    Ok(None)
     // debug!("evenement_cle_manquante Verifier si on peut transmettre la cle manquante {:?}", &m.message);
-    debug!("evenement_cle_manquante Verifier si on peut transmettre la cle manquante");
+    // debug!("evenement_cle_manquante Verifier si on peut transmettre la cle manquante");
 
-    // Conserver flag pour indiquer methode de reponse
-    // est_evenement true : commande rechiffrage
-    //              false : reponse
-    // let est_evenement = m.routing_key.starts_with("evenement.");
-    let est_evenement = match & m.type_message {
-        TypeMessageOut::Evenement(_) => true,
-        _ => false
-    };
-
-    if ! m.certificat.verifier_roles(vec![RolesCertificats::MaitreDesCles])? {
-        debug!("evenement_cle_manquante Certificat sans role maitredescles, on rejette la demande");
-        return Ok(None)
-    }
-
-    let partition = m.certificat.fingerprint()?;
-    let enveloppe_privee = middleware.get_enveloppe_signature();
-    let partition_locale = enveloppe_privee.fingerprint()?;
-
-    if partition == partition_locale {
-        debug!("evenement_cle_manquante Evenement emis par la partition locale, on l'ignore");
-        return Ok(None)
-    }
-
-    let event_non_dechiffrables: ReponseSynchroniserCles = deser_message_buffer!(m.message);
-
-    let nom_collection = match gestionnaire.get_collection_cles()? {
-        Some(n) => n,
-        None => Err(Error::Str("maitredescles_partition.evenement_cle_manquante Collection cles n'est pas definie"))?
-    };
-
-    // S'assurer que le certificat de maitre des cles recus est dans la liste de rechiffrage
-    // middleware.recevoir_certificat_chiffrage(middleware, &m.message).await?;
-    if let Err(e) = middleware.ajouter_certificat_chiffrage(m.certificat.clone()) {
-        error!("Erreur reception certificat chiffrage : {:?}", e);
-    }
-
-    let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE, vec![Securite::L4Secure])
-        .partition(partition)
-        .build();
-
-    let liste_cles = event_non_dechiffrables.liste_cle_id;
-    let filtre = doc! {
-        // "$or": CleSynchronisation::get_bson_filter(&liste_cles)?
-        "$in": liste_cles
-    };
-    trace!("evenement_cle_manquante filtre {:?}", filtre);
-
-    let collection = middleware.get_collection(nom_collection.as_str())?;
-    let mut curseur = collection.find(filtre, None).await?;
-
-    let mut cles = Vec::new();
-    while let Some(d) = curseur.next().await {
-        let commande = match d {
-            Ok(cle) => {
-                match convertir_bson_deserializable::<RowClePartition>(cle) {
-                    Ok(doc_cle) => {
-                        todo!("fix me")
-                        // trace!("evenement_cle_manquante Rechiffrer cle {}/{}", doc_cle.domaine, doc_cle.hachage_bytes);
-                        // let cle_interne = CleInterneChiffree::try_from(doc_cle.clone())?;
-                        // let cle_secrete = gestionnaire.handler_rechiffrage.dechiffer_cle_secrete(cle_interne)?;
-                        // CleSecreteRechiffrage::from_doc_cle(cle_secrete, doc_cle)?
-                    },
-                    Err(e) => {
-                        warn!("evenement_cle_manquante Erreur conversion document en cle : {:?}", e);
-                        continue
-                    }
-                }
-            },
-            Err(e) => Err(format!("maitredescles_partition.evenement_cle_manquante Erreur lecture curseur : {:?}", e))?
-        };
-
-        cles.push(commande);
-    }
-
-    if cles.len() > 0 {
-
-        if est_evenement {
-            // Batir une commande de rechiffrage
-            todo!("obsolete");
-        } else {
-            // Repondre normalement
-            let reponse = json!({
-                "ok": true,
-                "cles": cles,
-            });
-
-            debug!("evenement_cle_manquante Emettre reponse avec {} cles", cles.len());
-            let reponse = middleware.build_reponse_chiffree(
-                reponse, m.certificat.as_ref())?.0;
-            debug!("evenement_cle_manquante Reponse chiffree {:?}", reponse);
-            Ok(Some(reponse))
-        }
-    } else {
-        // Si on n'a aucune cle, ne pas repondre. Un autre maitre des cles pourrait le faire
-        debug!("evenement_cle_manquante On n'a aucune des cles demandees");
-        Ok(None)
-    }
+    // // Conserver flag pour indiquer methode de reponse
+    // // est_evenement true : commande rechiffrage
+    // //              false : reponse
+    // // let est_evenement = m.routing_key.starts_with("evenement.");
+    // let est_evenement = match & m.type_message {
+    //     TypeMessageOut::Evenement(_) => true,
+    //     _ => false
+    // };
+    //
+    // if ! m.certificat.verifier_roles(vec![RolesCertificats::MaitreDesCles])? {
+    //     debug!("evenement_cle_manquante Certificat sans role maitredescles, on rejette la demande");
+    //     return Ok(None)
+    // }
+    //
+    // let partition = m.certificat.fingerprint()?;
+    // let enveloppe_privee = middleware.get_enveloppe_signature();
+    // let partition_locale = enveloppe_privee.fingerprint()?;
+    //
+    // if partition == partition_locale {
+    //     debug!("evenement_cle_manquante Evenement emis par la partition locale, on l'ignore");
+    //     return Ok(None)
+    // }
+    //
+    // let event_non_dechiffrables: ReponseSynchroniserCles = deser_message_buffer!(m.message);
+    //
+    // let nom_collection = match gestionnaire.get_collection_cles()? {
+    //     Some(n) => n,
+    //     None => Err(Error::Str("maitredescles_partition.evenement_cle_manquante Collection cles n'est pas definie"))?
+    // };
+    //
+    // // S'assurer que le certificat de maitre des cles recus est dans la liste de rechiffrage
+    // // middleware.recevoir_certificat_chiffrage(middleware, &m.message).await?;
+    // if let Err(e) = middleware.ajouter_certificat_chiffrage(m.certificat.clone()) {
+    //     error!("Erreur reception certificat chiffrage : {:?}", e);
+    // }
+    //
+    // let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE, vec![Securite::L4Secure])
+    //     .partition(partition)
+    //     .build();
+    //
+    // let liste_cles = event_non_dechiffrables.liste_cle_id;
+    // let filtre = doc! {
+    //     // "$or": CleSynchronisation::get_bson_filter(&liste_cles)?
+    //     "$in": liste_cles
+    // };
+    // trace!("evenement_cle_manquante filtre {:?}", filtre);
+    //
+    // let collection = middleware.get_collection(nom_collection.as_str())?;
+    // let mut curseur = collection.find(filtre, None).await?;
+    //
+    // let mut cles = Vec::new();
+    // while let Some(d) = curseur.next().await {
+    //     let commande = match d {
+    //         Ok(cle) => {
+    //             match convertir_bson_deserializable::<RowClePartition>(cle) {
+    //                 Ok(doc_cle) => {
+    //                     todo!("fix me")
+    //                     // trace!("evenement_cle_manquante Rechiffrer cle {}/{}", doc_cle.domaine, doc_cle.hachage_bytes);
+    //                     // let cle_interne = CleInterneChiffree::try_from(doc_cle.clone())?;
+    //                     // let cle_secrete = gestionnaire.handler_rechiffrage.dechiffer_cle_secrete(cle_interne)?;
+    //                     // CleSecreteRechiffrage::from_doc_cle(cle_secrete, doc_cle)?
+    //                 },
+    //                 Err(e) => {
+    //                     warn!("evenement_cle_manquante Erreur conversion document en cle : {:?}", e);
+    //                     continue
+    //                 }
+    //             }
+    //         },
+    //         Err(e) => Err(format!("maitredescles_partition.evenement_cle_manquante Erreur lecture curseur : {:?}", e))?
+    //     };
+    //
+    //     cles.push(commande);
+    // }
+    //
+    // if cles.len() > 0 {
+    //
+    //     if est_evenement {
+    //         // Batir une commande de rechiffrage
+    //         todo!("obsolete");
+    //     } else {
+    //         // Repondre normalement
+    //         let reponse = json!({
+    //             "ok": true,
+    //             "cles": cles,
+    //         });
+    //
+    //         debug!("evenement_cle_manquante Emettre reponse avec {} cles", cles.len());
+    //         let reponse = middleware.build_reponse_chiffree(
+    //             reponse, m.certificat.as_ref())?.0;
+    //         debug!("evenement_cle_manquante Reponse chiffree {:?}", reponse);
+    //         Ok(Some(reponse))
+    //     }
+    // } else {
+    //     // Si on n'a aucune cle, ne pas repondre. Un autre maitre des cles pourrait le faire
+    //     debug!("evenement_cle_manquante On n'a aucune des cles demandees");
+    //     Ok(None)
+    // }
 }
 
 async fn commande_verifier_cle_symmetrique<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition, m: &MessageValide)
