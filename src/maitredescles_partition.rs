@@ -1347,10 +1347,12 @@ async fn requete_dechiffrage_v2<M>(middleware: &M, m: MessageValide, gestionnair
         };
         let data_reponse = effectuer_requete_cles_manquantes(
             middleware, &requete_transfert).await.unwrap_or_else(|e| {
-            error!("traiter_batch_synchroniser_clesErreur requete cles manquantes : {:?}", e);
+            error!("traiter_batch_synchroniser_cles Erreur requete cles manquantes : {:?}", e);
             None
         });
         if let Some(data_reponse) = data_reponse {
+            debug!("traiter_batch_synchroniser_cles Recu {}/{} cles suite a requete de cles manquantes",
+                data_reponse.cles.len(), cles_hashset.len());
             for cle in data_reponse.cles {
                 let cle_id = cle.signature.get_cle_ref()?;
                 let mut cle_secrete_bytes = [0u8; 32];
@@ -1955,11 +1957,12 @@ async fn traiter_batch_synchroniser_cles<M>(middleware: &M, gestionnaire: &Gesti
 
         let data_reponse = effectuer_requete_cles_manquantes(
             middleware, &requete_transfert).await.unwrap_or_else(|e| {
-            error!("traiter_batch_synchroniser_clesErreur requete cles manquantes : {:?}", e);
+            error!("traiter_batch_synchroniser_cles Erreur requete cles manquantes : {:?}", e);
             None
         });
 
         if let Some(data_reponse) = data_reponse {
+            debug!("traiter_batch_synchroniser_cles Recu {} cles suite a la requete de cles manquantes", data_reponse.cles.len());
             for cle in data_reponse.cles {
                 let cle_id = cle.signature.get_cle_ref()?;
                 let mut cle_secrete_bytes = [0u8; 32];
@@ -1973,9 +1976,6 @@ async fn traiter_batch_synchroniser_cles<M>(middleware: &M, gestionnaire: &Gesti
 
         if cles_hashset.len() > 0 {
             info!("traiter_batch_synchroniser_cles Il reste {} cles non dechiffrables", cles_hashset.len());
-            // let liste_cles: Vec<String> = cles_hashset.iter().map(|m| m.to_string()).collect();
-            // let evenement_cles_manquantes = ReponseSynchroniserCles { liste_cle_id: liste_cles };
-            // middleware.emettre_evenement(routage_evenement_manquant, &evenement_cles_manquantes).await?;
         }
     }
 
@@ -2003,7 +2003,7 @@ async fn effectuer_requete_cles_manquantes<M>(
         Ok(inner) => match inner {
             Some(inner) => match inner {
                 TypeMessage::Valide(inner) => {
-                    debug!("synchroniser_cles Reponse demande cles manquantes : {:?}", inner);
+                    debug!("synchroniser_cles Reponse demande cles manquantes\n{}", from_utf8(inner.message.buffer.as_slice())?);
                     let message_ref = inner.message.parse()?;
                     let enveloppe_privee = middleware.get_enveloppe_signature();
                     match message_ref.dechiffrer(enveloppe_privee.as_ref()) {
