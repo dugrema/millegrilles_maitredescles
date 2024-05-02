@@ -16,7 +16,7 @@ use millegrilles_common_rust::chiffrage_cle::{CleChiffrageCache, CommandeAjouter
 use millegrilles_common_rust::chrono::{Duration, Utc};
 use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::constantes::*;
-use millegrilles_common_rust::common_messages::{ReponseRequeteDechiffrageV2, RequeteDechiffrage};
+use millegrilles_common_rust::common_messages::{ReponseRequeteDechiffrageV2, RequeteDechiffrage, RequeteDechiffrageMessage};
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::futures_util::stream::FuturesUnordered;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
@@ -180,7 +180,8 @@ impl GestionnaireMaitreDesClesPartition {
         }
 
         if dechiffrer {
-            rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE_V2), exchange: Securite::L3Protege });
+            rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, MAITREDESCLES_REQUETE_DECHIFFRAGE_V2), exchange: Securite::L3Protege });
+            rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, MAITREDESCLES_REQUETE_DECHIFFRAGE_MESSAGE), exchange: Securite::L3Protege });
         }
         rk_dechiffrage.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_TRANSFERT_CLES), exchange: Securite::L3Protege });
         rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_CERTIFICAT_MAITREDESCLES), exchange: Securite::L1Public });
@@ -507,6 +508,7 @@ async fn consommer_requete<M>(middleware: &M, message: MessageValide, gestionnai
                 REQUETE_CERTIFICAT_MAITREDESCLES => requete_certificat_maitredescles(middleware, message).await,
                 REQUETE_DECHIFFRAGE => requete_dechiffrage(middleware, message, gestionnaire).await,
                 REQUETE_DECHIFFRAGE_V2 => requete_dechiffrage_v2(middleware, message, gestionnaire).await,
+                MAITREDESCLES_REQUETE_DECHIFFRAGE_MESSAGE => requete_dechiffrage_message(middleware, message, gestionnaire).await,
                 REQUETE_VERIFIER_PREUVE => requete_verifier_preuve(middleware, message, gestionnaire).await,
                 REQUETE_TRANSFERT_CLES => requete_transfert_cles(middleware, message, gestionnaire).await,
                 EVENEMENT_CLES_MANQUANTES_PARTITION => evenement_cle_manquante(middleware, message, gestionnaire).await,
@@ -1393,6 +1395,60 @@ async fn requete_dechiffrage_v2<M>(middleware: &M, m: MessageValide, gestionnair
     };
 
     Ok(Some(reponse))
+}
+
+#[derive(Serialize)]
+struct ReponseDechiffrageMessage {
+    ok: bool,
+    cle_secrete_base64: String
+}
+
+async fn requete_dechiffrage_message<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireMaitreDesClesPartition)
+                                   -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
+    where M: GenerateurMessages + MongoDao + ValidateurX509 + CleChiffrageHandler
+{
+    debug!("requete_dechiffrage_message Consommer requete : {:?}", & m.type_message);
+
+    // Une requete de dechiffrage de message doit etre effectuee par un module backend (Securite 3 ou 4).
+    if ! m.certificat.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure])? {
+        return Ok(Some(middleware.reponse_err(401, None, Some("Acces refuse"))?))
+    }
+
+    let message_ref = m.message.parse()?;
+    let requete: RequeteDechiffrageMessage = match message_ref.contenu()?.deserialize() {
+        Ok(inner) => inner,
+        Err(e) => {
+            info!("requete_dechiffrage_message Erreur mapping RequeteDechiffrageMessage : {:?}", e);
+            return Ok(Some(middleware.reponse_err(Some(500), None, Some(format!("Erreur mapping requete : {:?}", e).as_str()))?))
+        }
+    };
+
+    let enveloppe_signature = middleware.get_enveloppe_signature();
+    let fingerprint = enveloppe_signature.fingerprint()?;
+
+    let cle_chiffree = match requete.cles.get(fingerprint.as_str()) {
+        Some(inner) => inner.as_str(),
+        None => return Ok(Some(middleware.reponse_err(3, None, Some("Cles non supportees"))?))
+    };
+
+    let cle_bytes = base64_nopad.decode(cle_chiffree)?;
+    let cle_dechiffree = dechiffrer_asymmetrique_ed25519(cle_bytes.as_slice(), &enveloppe_signature.cle_privee)?;
+
+    // Verifier que le domaine est inclus dans la signature
+    if let Err(_) = requete.signature.verifier_derivee(&cle_dechiffree.0) {
+        return Ok(Some(middleware.reponse_err(4, None, Some("Signature domaines invalide"))?))
+    }
+
+    // Verifier que le certificat donne acces a au moins 1 domaine dans la signature
+    let domaines_permis: Vec<String> = requete.signature.domaines.iter().map(|d| d.to_string()).collect();
+    if ! m.certificat.verifier_domaines(domaines_permis)? {
+        return Ok(Some(middleware.reponse_err(5, None, Some("Acces pour domaines refuse"))?))
+    }
+
+    let cle_secrete_base64 = base64_nopad.encode(cle_dechiffree.0);
+
+    let reponse = ReponseDechiffrageMessage { ok: true, cle_secrete_base64 };
+    Ok(Some(middleware.build_reponse_chiffree(reponse, m.certificat.as_ref())?.0))
 }
 
 /// Methode qui repond a un maitre des cles avec la liste complete des cles demandees. Si la liste

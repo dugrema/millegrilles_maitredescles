@@ -2362,9 +2362,9 @@ dependencies = [
 
 [[package]]
 name = "lapin"
-version = "2.3.3"
+version = "2.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be0454336697a39b3eb8d06339aa1b4da3cad94862fca62b0e32fd4b7f71b563"
+checksum = "fae02c316a8a5922ce7518afa6b6c00e9a099f8e59587567e3331efdd11b8ceb"
 dependencies = [
  "amq-protocol",
  "async-global-executor-trait",
@@ -2506,8 +2506,8 @@ checksum = "6c8640c5d730cb13ebd907d8d04b52f55ac9a2eec55b440c8892f40d56c76c1d"
 
 [[package]]
 name = "millegrilles_common_rust"
-version = "2024.4.0"
-source = "git+https://github.com/dugrema/millegrilles_common_rust.git?branch=2024.4#89bfa57f1cb9d1267cefa7e9189d13a2cf4361fd"
+version = "2024.4.1"
+source = "git+https://github.com/dugrema/millegrilles_common_rust.git?branch=2024.4#5695c0284cf7d9e673a72c3c9e5b5a1a893dbc77"
 dependencies = [
  "async-compression",
  "async-recursion",
@@ -2558,8 +2558,8 @@ dependencies = [
 
 [[package]]
 name = "millegrilles_cryptographie"
-version = "2024.4.0"
-source = "git+https://github.com/dugrema/millegrilles_cryptographie.git?branch=2024.4#c0bd87a543a7bad73f6ee82321e653bcdfacb665"
+version = "2024.4.6"
+source = "git+https://github.com/dugrema/millegrilles_cryptographie.git?branch=2024.4#fc4c4f63fe35c8017ee270338c5a81faea4b8719"
 dependencies = [
  "base64 0.22.1",
  "blake2",
@@ -2586,7 +2586,7 @@ dependencies = [
 
 [[package]]
 name = "millegrilles_maitredescles"
-version = "2024.4.0"
+version = "2024.4.1"
 dependencies = [
  "env_logger 0.9.3",
  "log",
@@ -3904,9 +3904,9 @@ checksum = "388a1df253eca08550bef6c72392cfe7c30914bf41df5269b68cbd6ff8f570a3"
 
 [[package]]
 name = "serde"
-version = "1.0.199"
+version = "1.0.200"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c9f6e76df036c77cd94996771fb40db98187f096dd0b9af39c6c6e452ba966a"
+checksum = "ddc6f9cc94d67c0e21aaf7eda3a010fd3af78ebf6e096aa6e2e13c79749cce4f"
 dependencies = [
  "serde_derive",
 ]
@@ -3944,9 +3944,9 @@ dependencies = [
 
 [[package]]
 name = "serde_derive"
-version = "1.0.199"
+version = "1.0.200"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11bd257a6541e141e42ca6d24ae26f7714887b47e89aa739099104c7e4d3b7fc"
+checksum = "856f046b9400cee3c8c94ed572ecdb752444c24528c035cd35882aad6f492bcb"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4824,9 +4824,9 @@ dependencies = [
 
 [[package]]
 name = "value-bag"
-version = "1.8.1"
+version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74797339c3b98616c009c7c3eb53a0ce41e85c8ec66bd3db96ed132d20cfdee8"
+checksum = "5a84c137d37ab0142f0f2ddfe332651fdbf252e7b7dbb4e67b6c1f1b2e925101"
 
 [[package]]
 name = "vcpkg"
