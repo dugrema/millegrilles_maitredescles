@@ -1431,6 +1431,8 @@ async fn requete_dechiffrage_message<M>(middleware: &M, m: MessageValide, gestio
         None => return Ok(Some(middleware.reponse_err(3, None, Some("Cles non supportees"))?))
     };
 
+    debug!("requete_dechiffrage_message Decoder cle chiffree {}", cle_chiffree);
+
     let cle_bytes = base64_nopad.decode(cle_chiffree)?;
     let cle_dechiffree = dechiffrer_asymmetrique_ed25519(cle_bytes.as_slice(), &enveloppe_signature.cle_privee)?;
 
