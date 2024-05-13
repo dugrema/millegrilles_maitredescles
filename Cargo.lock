@@ -2593,7 +2593,7 @@ dependencies = [
 
 [[package]]
 name = "millegrilles_maitredescles"
-version = "2024.4.1"
+version = "2024.4.29"
 dependencies = [
  "env_logger 0.9.3",
  "log",

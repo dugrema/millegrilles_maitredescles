@@ -2021,12 +2021,36 @@ async fn traiter_batch_synchroniser_cles<M>(middleware: &M, gestionnaire: &Gesti
 
         if let Some(data_reponse) = data_reponse {
             debug!("traiter_batch_synchroniser_cles Recu {} cles suite a la requete de cles manquantes", data_reponse.cles.len());
+            let nom_collection_cles = match gestionnaire.get_collection_cles()? {
+                Some(c) => c,
+                None => Err(Error::Str("maitredescles_partition.commande_rechiffrer_batch Gestionnaire sans partition/certificat"))?
+            };
+
             for cle in data_reponse.cles {
                 let cle_id = cle.signature.get_cle_ref()?;
-                let mut cle_secrete_bytes = [0u8; 32];
-                cle_secrete_bytes.copy_from_slice(&base64_nopad.decode(cle.cle_secrete_base64.as_str())?[0..32]);
-                let cle_secrete = CleSecreteX25519 {0: cle_secrete_bytes};
-                if let Err(e) = sauvegarder_cle_secrete(middleware, gestionnaire, cle.signature.clone(), &cle_secrete).await {
+                // let mut cle_secrete_bytes = [0u8; 32];
+                // cle_secrete_bytes.copy_from_slice(&base64_nopad.decode(cle.cle_secrete_base64.as_str())?[0..32]);
+                // let cle_secrete = CleSecreteX25519 {0: cle_secrete_bytes};
+                // if let Err(e) = sauvegarder_cle_secrete(middleware, gestionnaire, cle.signature.clone(), &cle_secrete).await {
+                //     error!("traiter_batch_synchroniser_cles Erreur sauvegarde cle {} : {:?}", cle_id, e);
+                // }
+
+                let format: Option<String> = match cle.format.clone() {
+                    Some(inner) => {
+                        let format_str: &str = inner.into();
+                        Some(format_str.to_string())
+                    },
+                    None => None
+                };
+
+                let cle_secrete_rechiffrage = CleSecreteRechiffrage {
+                    signature: cle.signature.clone(),
+                    cle_secrete: cle.cle_secrete_base64.clone(),
+                    format,
+                    header: cle.nonce.clone(),
+                };
+
+                if let Err(e) = sauvegarder_cle_rechiffrage(middleware, gestionnaire, nom_collection_cles.as_str(), cle_secrete_rechiffrage).await {
                     error!("traiter_batch_synchroniser_cles Erreur sauvegarde cle {} : {:?}", cle_id, e);
                 }
             }
