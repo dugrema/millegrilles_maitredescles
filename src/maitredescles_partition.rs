@@ -16,7 +16,7 @@ use millegrilles_common_rust::chiffrage_cle::{CleChiffrageCache, CommandeAjouter
 use millegrilles_common_rust::chrono::{Duration, Utc};
 use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::constantes::*;
-use millegrilles_common_rust::common_messages::{ReponseRequeteDechiffrageV2, RequeteDechiffrage, RequeteDechiffrageMessage};
+use millegrilles_common_rust::common_messages::{ReponseRequeteDechiffrageV2, RequeteDechiffrage, RequeteDechiffrageMessage, ResponseRequestDechiffrageV2Cle};
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::futures_util::stream::FuturesUnordered;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
@@ -1246,6 +1246,8 @@ async fn requete_dechiffrage_v2<M>(middleware: &M, m: MessageValide, gestionnair
         }
     };
 
+    let inclure_signature = Some(true) == requete.inclure_signature;
+
     // Supporter l'ancien format de requete (liste_hachage_bytes) avec le nouveau (cle_ids)
     let cle_ids = match requete.cle_ids.as_ref() {
         Some(inner) => inner,
@@ -1269,7 +1271,7 @@ async fn requete_dechiffrage_v2<M>(middleware: &M, m: MessageValide, gestionnair
     let fingerprint = enveloppe_privee.fingerprint()?;
 
     // Recuperer les cles et dechiffrer
-    let mut cles = Vec::new();
+    let mut cles: Vec<ResponseRequestDechiffrageV2Cle> = Vec::new();
 
     let nom_collection = match gestionnaire.get_collection_cles()? {
         Some(inner) => inner, None => Err(Error::Str("Nom de collection pour les cles est manquant"))?
@@ -1305,8 +1307,13 @@ async fn requete_dechiffrage_v2<M>(middleware: &M, m: MessageValide, gestionnair
             Ok(inner) => {
                 cles_trouvees += 1;
                 if inner.signature.domaines.contains(&domaine) {
+                    let signature = inner.signature.clone();
                     match inner.to_cle_secrete_serialisee(gestionnaire.handler_rechiffrage.as_ref()) {
-                        Ok(inner) => cles.push(inner),
+                        Ok(inner) => {
+                            let mut cle: ResponseRequestDechiffrageV2Cle = inner.into();
+                            if inclure_signature { cle.signature = Some(signature); }
+                            cles.push(cle);
+                        },
                         Err(e) => {
                             warn!("Erreur mapping / dechiffrage cle - SKIP : {:?}", e);
                             continue
