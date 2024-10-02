@@ -31,21 +31,20 @@ use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::{optionform
 use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::{SignatureDomaines, SignatureDomainesVersion};
 use crate::constants::*;
 use crate::maitredescles_commun::*;
-use crate::maitredescles_mongodb::preparer_index_mongodb_custom;
+use crate::maitredescles_mongodb::{preparer_index_mongodb_custom, NOM_COLLECTION_CA_CLES, NOM_COLLECTION_TRANSACTIONS};
 
-pub const NOM_COLLECTION_CLES: &str = "MaitreDesCles/CA/cles";
-pub const NOM_COLLECTION_TRANSACTIONS: &str = "MaitreDesCles/CA";
-
-// const NOM_Q_VOLATILS_GLOBAL: &str = "MaitreDesCles/volatils";
-
-const NOM_Q_TRANSACTIONS: &str = "MaitreDesCles/CA/transactions";
-const NOM_Q_VOLATILS: &str = "MaitreDesCles/CA/volatils";
-const NOM_Q_TRIGGERS: &str = "MaitreDesCles/CA/triggers";
-
-const REQUETE_CLES_NON_DECHIFFRABLES: &str = "clesNonDechiffrables";
-const REQUETE_COMPTER_CLES_NON_DECHIFFRABLES: &str = "compterClesNonDechiffrables";
-
-const COMMANDE_RESET_NON_DECHIFFRABLE: &str = "resetNonDechiffrable";
+// pub const NOM_COLLECTION_CLES: &str = "MaitreDesCles/CA/cles";
+// pub const NOM_COLLECTION_TRANSACTIONS: &str = "MaitreDesCles/CA";
+//
+// // const NOM_Q_VOLATILS_GLOBAL: &str = "MaitreDesCles/volatils";
+// const NOM_Q_TRANSACTIONS: &str = "MaitreDesCles/CA/transactions";
+// const NOM_Q_VOLATILS: &str = "MaitreDesCles/CA/volatils";
+// const NOM_Q_TRIGGERS: &str = "MaitreDesCles/CA/triggers";
+//
+// const REQUETE_CLES_NON_DECHIFFRABLES: &str = "clesNonDechiffrables";
+// const REQUETE_COMPTER_CLES_NON_DECHIFFRABLES: &str = "compterClesNonDechiffrables";
+//
+// const COMMANDE_RESET_NON_DECHIFFRABLE: &str = "resetNonDechiffrable";
 
 #[derive(Clone, Debug)]
 pub struct GestionnaireMaitreDesClesCa {
@@ -68,13 +67,13 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesCa {
 
     fn get_collection_transactions(&self) -> Option<String> { Some(String::from(NOM_COLLECTION_TRANSACTIONS)) }
 
-    fn get_collections_documents(&self) -> Result<Vec<String>, Error> { Ok(vec![String::from(NOM_COLLECTION_CLES)]) }
+    fn get_collections_documents(&self) -> Result<Vec<String>, Error> { Ok(vec![String::from(NOM_COLLECTION_CA_CLES)]) }
 
-    fn get_q_transactions(&self) -> Result<Option<String>, Error> { Ok(Some(String::from(NOM_Q_TRANSACTIONS))) }
+    fn get_q_transactions(&self) -> Result<Option<String>, Error> { Ok(Some(String::from(NOM_Q_CA_TRANSACTIONS))) }
 
-    fn get_q_volatils(&self) -> Result<Option<String>, Error> { Ok(Some(String::from(NOM_Q_VOLATILS))) }
+    fn get_q_volatils(&self) -> Result<Option<String>, Error> { Ok(Some(String::from(NOM_Q_CA_VOLATILS))) }
 
-    fn get_q_triggers(&self) -> Result<Option<String>, Error> { Ok(Some(String::from(NOM_Q_TRIGGERS))) }
+    fn get_q_triggers(&self) -> Result<Option<String>, Error> { Ok(Some(String::from(NOM_Q_CA_TRIGGERS))) }
 
     fn preparer_queues(&self) -> Result<Vec<QueueType>, Error> { Ok(preparer_queues()) }
 
@@ -83,7 +82,7 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesCa {
     }
 
     async fn preparer_database<M>(&self, middleware: &M) -> Result<(), Error> where M: Middleware + 'static {
-        preparer_index_mongodb_custom(middleware, NOM_COLLECTION_CLES, true).await
+        preparer_index_mongodb_custom(middleware, NOM_COLLECTION_CA_CLES, true).await
     }
 
     async fn consommer_requete<M>(&self, middleware: &M, message: MessageValide) -> Result<Option<MessageMilleGrillesBufferDefault>, Error> where M: Middleware + 'static {
@@ -174,7 +173,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
     // Queue de messages volatils (requete, commande, evenements)
     queues.push(QueueType::ExchangeQueue (
         ConfigQueue {
-            nom_queue: NOM_Q_VOLATILS.into(),
+            nom_queue: NOM_Q_CA_VOLATILS.into(),
             routing_keys: rk_volatils,
             ttl: DEFAULT_Q_TTL.into(),
             durable: true,
@@ -202,7 +201,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
     // Queue de transactions
     queues.push(QueueType::ExchangeQueue (
         ConfigQueue {
-            nom_queue: NOM_Q_TRANSACTIONS.into(),
+            nom_queue: NOM_Q_CA_TRANSACTIONS.into(),
             routing_keys: rk_transactions,
             ttl: None,
             durable: true,
@@ -435,7 +434,7 @@ async fn commande_ajouter_cle_domaines<M>(middleware: &M, m: MessageValide, gest
         .hint(Hint::Name("index_cle_id".to_string()))
         .projection(doc!{CHAMP_CLE_ID: 1})
         .build();
-    let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
+    let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
     let resultat = collection.find_one(filtre, options).await?;
 
     if resultat.is_none() {
@@ -470,7 +469,7 @@ async fn commande_transfert_cle_ca<M>(middleware: &M, m: MessageValide, gestionn
             .hint(Hint::Name("index_cle_id".to_string()))
             .projection(doc! {CHAMP_CLE_ID: 1})
             .build();
-        let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
+        let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
         let resultat = collection.find_one(filtre, options).await?;
 
         if resultat.is_none() {
@@ -532,7 +531,7 @@ async fn commande_reset_non_dechiffrable<M>(middleware: &M, m: MessageValide, _g
         "$set": {CHAMP_NON_DECHIFFRABLE: true},
         "$currentDate": {CHAMP_MODIFICATION: true},
     };
-    let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
+    let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
     collection.update_many(filtre, ops, None).await?;
 
     Ok(Some(middleware.reponse_ok(None, None)?))
@@ -617,7 +616,7 @@ async fn transaction_cle<M>(middleware: &M, transaction: TransactionValide) -> R
         "$currentDate": {CHAMP_MODIFICATION: true}
     };
     let opts = UpdateOptions::builder().upsert(true).build();
-    let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
+    let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
     debug!("transaction_cle update ops : {:?}", ops);
     let resultat = match collection.update_one(filtre, ops, opts).await {
         Ok(r) => r,
@@ -651,7 +650,7 @@ async fn transaction_cle_v2<M>(middleware: &M, transaction: TransactionValide) -
         "$currentDate": {CHAMP_MODIFICATION: true}
     };
     let opts = UpdateOptions::builder().upsert(true).build();
-    let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
+    let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
     debug!("transaction_cle update ops : {:?}", ops);
     let resultat = match collection.update_one(filtre, ops, opts).await {
         Ok(r) => r,
@@ -677,7 +676,7 @@ async fn requete_compter_cles_non_dechiffrables<M>(middleware: &M, m: MessageVal
     //     CHAMP_CREATION: 1,
     // };
     let opts = CountOptions::builder().hint(hint).build();
-    let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
+    let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
     let compte = collection.count_documents(filtre, opts).await?;
 
     let reponse = json!({ "compte": compte });
@@ -760,7 +759,7 @@ async fn requete_cles_non_dechiffrables<M>(middleware: &M, m: MessageValide, _ge
             .limit(Some(limite_docs as i64))
             .build();
         debug!("requete_cles_non_dechiffrables filtre cles a rechiffrer : filtre {:?} opts {:?}", filtre, opts);
-        let collection = middleware.get_collection_typed::<RowClePartitionRef>(NOM_COLLECTION_CLES)?;
+        let collection = middleware.get_collection_typed::<RowClePartitionRef>(NOM_COLLECTION_CA_CLES)?;
         collection.find(filtre, opts).await?
     };
 
@@ -815,7 +814,7 @@ async fn requete_synchronizer_cles<M>(middleware: &M, m: MessageValide, _gestion
             .limit(Some(limite_docs as i64))
             .projection(Some(projection))
             .build();
-        let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
+        let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
 
         collection.find(filtre, opts).await?
     };
@@ -854,7 +853,7 @@ async fn evenement_cle_manquante<M>(middleware: &M, m: &MessageValide) -> Result
         "$set": { CHAMP_NON_DECHIFFRABLE: true },
         "$currentDate": { CHAMP_MODIFICATION: true },
     };
-    let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
+    let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
     let resultat_update = collection.update_many(filtre, ops, None).await?;
     debug!("evenement_cle_manquante Resultat update : {:?}", resultat_update);
 
@@ -877,7 +876,7 @@ async fn evenement_cle_recue_partition<M>(middleware: &M, m: &MessageValide) -> 
         "$set": { CHAMP_NON_DECHIFFRABLE: false },
         "$currentDate": { CHAMP_MODIFICATION: true },
     };
-    let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
+    let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
     let resultat_update = collection.update_many(filtre, ops, None).await?;
     debug!("evenement_cle_recue_partition Resultat update : {:?}", resultat_update);
 
@@ -907,7 +906,7 @@ async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValide, _ge
         "$set": { CHAMP_NON_DECHIFFRABLE: false},
         "$currentDate": { CHAMP_MODIFICATION: true }
     };
-    let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
+    let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
     let resultat_update = collection.update_many(filtre_update, ops, None).await?;
     debug!("commande_confirmer_cles_sur_ca Resultat update : {:?}", resultat_update);
 

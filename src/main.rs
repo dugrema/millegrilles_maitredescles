@@ -9,10 +9,19 @@ mod messages;
 mod chiffrage_cles;
 mod constants;
 mod maitredescles_mongodb;
+mod builder;
+mod ca_manager;
+mod mongodb_manager;
+mod sqlite_manager;
+mod requests;
+mod commands;
+mod events;
+mod transactions;
 
 use log::{info};
 use millegrilles_common_rust::tokio as tokio;
-use crate::domaines_maitredescles::run;
+// use crate::domaines_maitredescles::run;
+use crate::builder::run;
 
 fn main() {
     env_logger::init();

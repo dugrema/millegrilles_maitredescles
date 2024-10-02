@@ -53,3 +53,12 @@ pub const INDEX_CONFIRMATION_CA: &str = "confirmation_ca";
 pub const CHAMP_FINGERPRINT_PK: &str = "fingerprint_pk";
 pub const CHAMP_CONFIRMATION_CA: &str = "confirmation_ca";
 
+
+pub const NOM_Q_CA_TRANSACTIONS: &str = "MaitreDesCles/CA/transactions";
+pub const NOM_Q_CA_VOLATILS: &str = "MaitreDesCles/CA/volatils";
+pub const NOM_Q_CA_TRIGGERS: &str = "MaitreDesCles/CA/triggers";
+
+
+pub const REQUETE_CLES_NON_DECHIFFRABLES: &str = "clesNonDechiffrables";
+pub const REQUETE_COMPTER_CLES_NON_DECHIFFRABLES: &str = "compterClesNonDechiffrables";
+pub const COMMANDE_RESET_NON_DECHIFFRABLE: &str = "resetNonDechiffrable";

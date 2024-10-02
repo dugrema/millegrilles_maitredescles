@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::str::from_utf8;
 use std::sync::{Arc, Mutex};
 use log::{debug, error, info, warn};
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -36,7 +37,7 @@ use millegrilles_common_rust::millegrilles_cryptographie::heapless;
 use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::{SignatureDomaines, SignatureDomainesRef, SignatureDomainesVersion};
 
 use crate::chiffrage_cles::chiffrer_asymetrique_multibase;
-use crate::constants::{CHAMP_CLE_ID, CHAMP_NON_DECHIFFRABLE, DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION, EVENEMENT_DEMANDE_CLE_SYMMETRIQUE, INDEX_CLE_ID, INDEX_NON_DECHIFFRABLES};
+use crate::constants::{CHAMP_CLE_ID, CHAMP_NON_DECHIFFRABLE, DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION, EVENEMENT_DEMANDE_CLE_SYMMETRIQUE, INDEX_CLE_ID, INDEX_NON_DECHIFFRABLES, REQUETE_TRANSFERT_CLES};
 use crate::domaines_maitredescles::TypeGestionnaire;
 use crate::maitredescles_partition::GestionnaireMaitreDesClesPartition;
 use crate::maitredescles_rechiffrage::{CleInterneChiffree, HandlerCleRechiffrage};
@@ -1277,4 +1278,54 @@ pub struct CleTransfertCa {
 pub struct CommandeTransfertClesCaV2 {
     /// Liste de cles chiffrees
     pub cles: Vec<CleTransfertCa>,
+}
+
+pub async fn effectuer_requete_cles_manquantes<M>(
+    middleware: &M, requete_transfert: &RequeteTransfert)
+    -> Result<Option<CommandeTransfertClesV2>, Error>
+where M: GenerateurMessages
+{
+    let delai_blocking = match &requete_transfert.toujours_repondre {
+        Some(true) => 3_000,  // Requete live, temps court
+        _ => 20_000,  // Requete batch, temps long
+    };
+
+    let routage_evenement_manquant = RoutageMessageAction::builder(
+        DOMAINE_NOM, REQUETE_TRANSFERT_CLES, vec![Securite::L3Protege])
+        .timeout_blocking(delai_blocking)
+        .build();
+
+    let data_reponse: Option<CommandeTransfertClesV2> = match middleware.transmettre_requete(
+        routage_evenement_manquant.clone(), &requete_transfert).await
+    {
+        Ok(inner) => match inner {
+            Some(inner) => match inner {
+                TypeMessage::Valide(inner) => {
+                    debug!("synchroniser_cles Reponse demande cles manquantes\n{}", from_utf8(inner.message.buffer.as_slice())?);
+                    let message_ref = inner.message.parse()?;
+                    let enveloppe_privee = middleware.get_enveloppe_signature();
+                    match message_ref.dechiffrer(enveloppe_privee.as_ref()) {
+                        Ok(inner) => Some(inner),
+                        Err(e) => {
+                            warn!("synchroniser_cles Erreur dechiffrage reponse : {:?}", e);
+                            None
+                        }
+                    }
+                },
+                _ => {
+                    warn!("synchroniser_cles Erreur reception reponse cles manquantes, mauvais type reponse.");
+                    None
+                }
+            },
+            None => {
+                warn!("synchroniser_cles Erreur reception reponse cles manquantes, resultat None");
+                None
+            }
+        },
+        Err(e) => {
+            warn!("synchroniser_cles Erreur reception reponse cles manquantes (e.g. timeout) : {:?}", e);
+            None
+        },
+    };
+    Ok(data_reponse)
 }

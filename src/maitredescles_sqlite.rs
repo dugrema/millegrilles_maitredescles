@@ -531,12 +531,6 @@ impl GestionnaireMaitreDesClesSQLite {
     }
 }
 
-pub async fn preparer_index_mongodb_partition<M>(_middleware: &M, _gestionnaire: &GestionnaireMaitreDesClesSQLite) -> Result<(), String>
-    where M: ValidateurX509
-{
-    Ok(())
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct DocumentRechiffrage {
     fingerprint_pk: String,
