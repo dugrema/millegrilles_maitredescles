@@ -1,48 +1,39 @@
+use log::{debug, error, info, warn};
 use std::collections::{HashMap, HashSet};
 use std::str::from_utf8;
 use std::sync::{Arc, Mutex};
-use log::{debug, error, info, warn};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use millegrilles_common_rust::base64::{engine::general_purpose::STANDARD_NO_PAD as base64_nopad, Engine as _};
+use millegrilles_common_rust::bson;
+use millegrilles_common_rust::bson::{bson, doc, Bson, Document};
+use millegrilles_common_rust::certificats::ordered_map;
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
-use millegrilles_common_rust::chiffrage_cle::{CommandeAjouterCleDomaine, CommandeSauvegarderCle};
+use millegrilles_common_rust::chiffrage_cle::CommandeSauvegarderCle;
+use millegrilles_common_rust::chrono::{DateTime, Utc};
+use millegrilles_common_rust::common_messages::RequeteDechiffrage;
 use millegrilles_common_rust::constantes::*;
+use millegrilles_common_rust::error::Error;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
 use millegrilles_common_rust::messages_generiques::MessageCedule;
 use millegrilles_common_rust::middleware::Middleware;
-use millegrilles_common_rust::mongo_dao::{ChampIndex, IndexOptions, MongoDao};
+use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::{optionformatchiffragestr, CleSecrete, FormatChiffrage};
+use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_cles::{CleChiffrageHandler, CleSecreteSerialisee};
+use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::{SignatureDomaines, SignatureDomainesRef, SignatureDomainesVersion};
+use millegrilles_common_rust::millegrilles_cryptographie::x25519::CleSecreteX25519;
+use millegrilles_common_rust::millegrilles_cryptographie::x509::EnveloppeCertificat;
+use millegrilles_common_rust::mongo_dao::MongoDao;
+use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
 use millegrilles_common_rust::recepteur_messages::{MessageValide, TypeMessage};
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
+use millegrilles_common_rust::serde_json::json;
 use millegrilles_common_rust::tokio::{sync::mpsc::Sender, time::{sleep, Duration}};
-use millegrilles_common_rust::certificats::ordered_map;
-use millegrilles_common_rust::common_messages::{ReponseSignatureCertificat, RequeteDechiffrage};
 use millegrilles_common_rust::{multibase, multibase::Base, serde_json};
-use millegrilles_common_rust::bson::{bson, doc, serde_helpers::chrono_datetime_as_bson_datetime, Bson, Document};
-use millegrilles_common_rust::chrono::{DateTime, Utc};
-use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::hachages::hacher_bytes;
-use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::{optionformatchiffragestr, CleSecrete, FormatChiffrage};
-use millegrilles_common_rust::millegrilles_cryptographie::x25519::{chiffrer_asymmetrique_ed25519, CleSecreteX25519};
-use millegrilles_common_rust::millegrilles_cryptographie::x509::{EnveloppeCertificat, EnveloppePrivee};
 use millegrilles_common_rust::multibase::Base::Base58Btc;
 use millegrilles_common_rust::multihash::Code;
-use millegrilles_common_rust::serde_json::json;
-use millegrilles_common_rust::error::Error;
-use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_cles::{CleChiffrageHandler, CleSecreteSerialisee};
-use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
-use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::epochseconds;
-use millegrilles_common_rust::bson;
-use millegrilles_common_rust::millegrilles_cryptographie::heapless;
-use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::{SignatureDomaines, SignatureDomainesRef, SignatureDomainesVersion};
-
-use crate::chiffrage_cles::chiffrer_asymetrique_multibase;
-use crate::constants::{CHAMP_CLE_ID, CHAMP_NON_DECHIFFRABLE, DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION, EVENEMENT_DEMANDE_CLE_SYMMETRIQUE, INDEX_CLE_ID, INDEX_NON_DECHIFFRABLES, REQUETE_TRANSFERT_CLES};
-// use crate::domaines_maitredescles::TypeGestionnaire;
-// use crate::maitredescles_partition::GestionnaireMaitreDesClesPartition;
+use crate::constants::{DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION, EVENEMENT_DEMANDE_CLE_SYMMETRIQUE, REQUETE_TRANSFERT_CLES};
 use crate::maitredescles_rechiffrage::{CleInterneChiffree, HandlerCleRechiffrage};
-// use crate::maitredescles_sqlite::GestionnaireMaitreDesClesSQLite;
-use crate::messages::MessageReponseChiffree;
 
 pub async fn entretien<M>(middleware: Arc<M>)
     where M: Middleware + 'static

@@ -22,15 +22,9 @@ use crate::maitredescles_mongodb::*;
 
 
 #[derive(Clone)]
-pub struct MaitreDesClesCaManager {
-    pub fingerprint: String,
-}
+pub struct MaitreDesClesCaManager {}
 
-impl MaitreDesClesCaManager {
-    pub fn new(fingerprint: String) -> MaitreDesClesCaManager {
-        MaitreDesClesCaManager { fingerprint }
-    }
-}
+impl MaitreDesClesCaManager {}
 
 impl GestionnaireDomaineV2 for MaitreDesClesCaManager {
     fn get_collection_transactions(&self) -> Option<String> {

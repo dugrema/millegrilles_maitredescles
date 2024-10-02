@@ -17,6 +17,7 @@ mod requests;
 mod commands;
 mod events;
 mod transactions;
+mod maintenance;
 
 use log::{info};
 use millegrilles_common_rust::tokio as tokio;

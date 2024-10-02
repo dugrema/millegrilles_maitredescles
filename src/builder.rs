@@ -19,6 +19,7 @@ use millegrilles_common_rust::transactions::resoumettre_transactions;
 use millegrilles_common_rust::tokio::time::{sleep, Duration as DurationTokio};
 
 use crate::ca_manager::{preparer_index_mongodb_ca, MaitreDesClesCaManager};
+use crate::maintenance::thread_entretien;
 // use crate::domaines_maitredescles::TypeGestionnaire;
 // use crate::maitredescles_ca::GestionnaireMaitreDesClesCa;
 use crate::maitredescles_commun::emettre_cles_symmetriques;
@@ -37,9 +38,9 @@ pub enum MaitreDesClesSymmetricManager {
     None
 }
 
-struct MaitreDesClesManager {
-    ca: Option<MaitreDesClesCaManager>,
-    symmetric: MaitreDesClesSymmetricManager
+pub struct MaitreDesClesManager {
+    pub ca: Option<MaitreDesClesCaManager>,
+    pub symmetric: MaitreDesClesSymmetricManager
 }
 
 static DOMAIN_MANAGER: StaticCell<MaitreDesClesManager> = StaticCell::new();
@@ -141,7 +142,7 @@ fn charger_gestionnaire_ca() -> Option<MaitreDesClesCaManager> {
     let fp_ca = calculer_fingerprint(cert_ca).expect("fingerprint cert ca");
 
     info!("Configuration du maitre des cles avec CA {}", fp_ca);
-    Some(MaitreDesClesCaManager { fingerprint: fp_ca.into() })
+    Some(MaitreDesClesCaManager {})
 }
 
 fn charger_gestionnaire() -> MaitreDesClesSymmetricManager {
@@ -180,191 +181,4 @@ fn preprarer_handler_rechiffrage() -> Result<HandlerCleRechiffrage, Error> {
     } else {
         panic!("domaines_maitredescles.charger_gestionnaires Type de certificat non supporte pour Maitre des cles");
     }
-}
-
-async fn thread_entretien<M>(_gestionnaire: &MaitreDesClesManager, middleware: &M)
-where M: Middleware
-{
-    warn!("TODO - Implement thread_entretien");  // TODO
-    loop {
-        let intervalle_entretien = DurationTokio::new(300, 0);
-        sleep(intervalle_entretien).await;
-    }
-    // let intervalle_entretien: chrono::Duration = chrono::Duration::minutes(5);
-    //
-    // let mut certificat_emis = false;
-    //
-    // // Liste de collections de transactions pour tous les domaines geres par Core
-    // let collections_transaction = {
-    //     let mut coll_docs_strings = Vec::new();
-    //
-    //     // Si on a un CA, conserver la collection de transactions
-    //     if let Some(gestionnaire) = unsafe{&crate::domaines_maitredescles::GESTIONNAIRE_CA } {
-    //         if let Some(collection) = gestionnaire.get_collection_transactions() {
-    //             coll_docs_strings.push(collection);
-    //         }
-    //     }
-    //
-    //     // Note : Il n'y a pas de collection de transaction pour les autres types
-    //
-    //     coll_docs_strings
-    // };
-    //
-    // let mut rechiffrage_complete = false;
-    // let mut prochain_entretien_transactions = chrono::Utc::now();
-    //
-    // // Intervalle sync certificats avec CA et autres maitre des cles
-    // let mut prochain_sync = chrono::Utc::now();
-    // let intervalle_sync = chrono::Duration::hours(6);
-    //
-    // let mut prochaine_confirmation_ca = chrono::Utc::now();
-    // let mut reset_flag_confirmation_ca = true;
-    //
-    // let mut prochain_chargement_certificats_autres = chrono::Utc::now();
-    //
-    // info!("domaines_maitredescles.entretien : Debut thread dans 5 secondes");
-    //
-    // // Donner 5 secondes pour que les Q soient pretes (e.g. Q reponse)
-    // sleep(DurationTokio::new(5, 0)).await;
-    //
-    // loop {
-    //     let maintenant = chrono::Utc::now();
-    //     debug!("domaines_maitredescles.entretien  Execution task d'entretien Core {:?}", maintenant);
-    //
-    //     // Sleep jusqu'au prochain entretien ou evenement MQ (e.g. connexion)
-    //     debug!("domaines_maitredescles.entretien Fin cycle, sleep {} secondes", DUREE_ATTENTE / 1000);
-    //     let duration = DurationTokio::from_millis(crate::domaines_maitredescles::DUREE_ATTENTE);
-    //
-    //     middleware.entretien_validateur().await;
-    //
-    //     if prochain_chargement_certificats_autres < maintenant {
-    //         match charger_certificats_chiffrage(middleware.as_ref()).await {
-    //             Ok(()) => {
-    //                 prochain_chargement_certificats_autres = maintenant + intervalle_entretien;
-    //                 debug!("domaines_maitredescles.entretien Prochain chargement cert maitredescles: {:?}", prochain_chargement_certificats_autres);
-    //             },
-    //             Err(e) => warn!("domaines_maitredescles.entretien Erreur chargement certificats de maitre des cles : {:?}", e)
-    //         }
-    //         // match middleware.charger_certificats_chiffrage(middleware.as_ref()).await {
-    //         //     Ok(()) => {
-    //         //         prochain_chargement_certificats_autres = maintenant + intervalle_entretien;
-    //         //     },
-    //         //     Err(e) => info!("Erreur chargement certificats de maitre des cles tiers : {:?}", e)
-    //         // }
-    //     }
-    //
-    //     if prochain_entretien_transactions < maintenant {
-    //         let resultat = resoumettre_transactions(
-    //             middleware.as_ref(),
-    //             &collections_transaction
-    //         ).await;
-    //
-    //         match resultat {
-    //             Ok(_) => {
-    //                 prochain_entretien_transactions = maintenant + intervalle_entretien;
-    //             },
-    //             Err(e) => {
-    //                 warn!("domaines_maitredescles.entretien Erreur resoumission transactions (entretien) : {:?}", e);
-    //             }
-    //         }
-    //     }
-    //
-    //     if certificat_emis == false {
-    //         debug!("domaines_maitredescles.entretien Emettre certificat");
-    //         match middleware.emettre_certificat(middleware.as_ref()).await {
-    //             Ok(()) => certificat_emis = true,
-    //             Err(e) => error!("Erreur emission certificat local : {:?}", e),
-    //         }
-    //         debug!("domaines_maitredescles.entretien Fin emission traitement certificat local, resultat : {}", certificat_emis);
-    //     }
-    //
-    //     match unsafe{&crate::domaines_maitredescles::GESTIONNAIRE } {
-    //         TypeGestionnaire::Partition(g) => {
-    //
-    //             if prochain_sync < maintenant {
-    //                 debug!("entretien Effectuer sync des cles du CA non disponibles localement");
-    //                 match g.synchroniser_cles(middleware.as_ref()).await {
-    //                     Ok(()) => {
-    //                         prochain_sync = maintenant + intervalle_sync;
-    //                     },
-    //                     Err(e) => {
-    //                         prochain_sync = maintenant + intervalle_entretien;  // Reessayer dans 5 minutes
-    //                         warn!("entretien Partition Erreur syncrhonization cles avec CA : {:?}", e)
-    //                     }
-    //                 }
-    //             }
-    //
-    //             if prochaine_confirmation_ca < maintenant {
-    //                 // Emettre certificat local (pas vraiment a la bonne place)
-    //                 match g.emettre_certificat_maitredescles(middleware.as_ref(), None).await {
-    //                     Ok(()) => (),
-    //                     Err(e) => error!("entretien Partition Erreur emission certificat de maitre des cles : {:?}", e)
-    //                 }
-    //
-    //                 match emettre_cles_symmetriques(middleware.as_ref(), g.handler_rechiffrage.as_ref()).await {
-    //                     Ok(()) => (),
-    //                     Err(e) => error!("entretien Partition Erreur emission evenement cles rechiffrage : {:?}", e)
-    //                 }
-    //
-    //                 debug!("entretien Pousser les cles locales vers le CA");
-    //                 match g.confirmer_cles_ca(middleware.as_ref(), Some(reset_flag_confirmation_ca)).await {
-    //                     Ok(()) => {
-    //                         reset_flag_confirmation_ca = false;
-    //                         prochaine_confirmation_ca = maintenant + intervalle_entretien;
-    //                     },
-    //                     Err(e) => {
-    //                         warn!("entretien Partition Pousser les cles locales vers le CA : {:?}", e);
-    //                         prochaine_confirmation_ca = maintenant + intervalle_entretien;  // Reessayer dans 5 minutes
-    //                     }
-    //                 }
-    //             }
-    //
-    //         },
-    //         TypeGestionnaire::SQLite(g) => {
-    //             if prochain_sync < maintenant {
-    //                 debug!("entretien Effectuer sync des cles du CA non disponibles localement");
-    //                 match g.synchroniser_cles(middleware.as_ref()).await {
-    //                     Ok(()) => {
-    //                         prochain_sync = maintenant + intervalle_sync;
-    //                     },
-    //                     Err(e) => {
-    //                         prochain_sync = maintenant + intervalle_entretien;
-    //                         warn!("entretien SQLite Erreur synchronization cles avec CA : {:?}", e)
-    //                     }
-    //                 }
-    //             }
-    //
-    //             if prochaine_confirmation_ca < maintenant {
-    //                 // Emettre certificat local (pas vraiment a la bonne place)
-    //                 match g.emettre_certificat_maitredescles(middleware.as_ref(), None).await {
-    //                     Ok(_) => (),
-    //                     Err(e) => error!("entretien SQLite Erreur emission certificat de maitre des cles : {:?}", e)
-    //                 }
-    //
-    //                 match emettre_cles_symmetriques(middleware.as_ref(), &g.handler_rechiffrage).await {
-    //                     Ok(()) => (),
-    //                     Err(e) => error!("entretien Partition Erreur emission evenement cles rechiffrage : {:?}", e)
-    //                 }
-    //
-    //                 debug!("entretien Pousser les cles locales vers le CA");
-    //                 match g.confirmer_cles_ca(middleware.clone(), Some(reset_flag_confirmation_ca)).await {
-    //                     Ok(()) => {
-    //                         reset_flag_confirmation_ca = false;
-    //                         prochaine_confirmation_ca = maintenant + intervalle_entretien;
-    //                     },
-    //                     Err(e) => {
-    //                         warn!("entretien SQLITE Pousser les cles locales vers le CA : {:?}", e);
-    //                         prochaine_confirmation_ca = maintenant + intervalle_entretien;
-    //                     }
-    //                 }
-    //             }
-    //         },
-    //         _ => ()
-    //     }
-    //
-    //     sleep(duration).await;
-    // }
-    //
-    // // panic!("Forcer fermeture");
-    // info!("domaines_maitredescles.entretien : Fin thread");
 }
