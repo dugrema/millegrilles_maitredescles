@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use log::{debug, error, info, trace, warn};
 use millegrilles_common_rust::async_trait::async_trait;
-use millegrilles_common_rust::bson::{DateTime, doc, Document};
+use millegrilles_common_rust::bson::{doc, DateTime, Document};
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chiffrage_cle::{CommandeAjouterCleDomaine, CommandeSauvegarderCle};
 use millegrilles_common_rust::{chrono, get_domaine_action, serde_json};
@@ -14,8 +14,8 @@ use millegrilles_common_rust::db_structs::TransactionValide;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::messages_generiques::MessageCedule;
-use millegrilles_common_rust::middleware::{Middleware, sauvegarder_traiter_transaction, sauvegarder_traiter_transaction_serializable};
-use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::{MessageMilleGrillesBufferDefault};
+use millegrilles_common_rust::middleware::{sauvegarder_traiter_transaction, sauvegarder_traiter_transaction_serializable, Middleware};
+use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, MongoDao};
 use millegrilles_common_rust::mongodb::options::{CountOptions, FindOneOptions, FindOptions, Hint, UpdateOptions};
 use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange, QueueType, TypeMessageOut};
@@ -27,10 +27,11 @@ use millegrilles_common_rust::transactions::{TraiterTransaction, Transaction};
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::optionepochseconds;
 use millegrilles_common_rust::error::Error;
 use millegrilles_common_rust::millegrilles_cryptographie::{deser_message_buffer, heapless};
-use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::{FormatChiffrage, optionformatchiffragestr};
+use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::{optionformatchiffragestr, FormatChiffrage};
 use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::{SignatureDomaines, SignatureDomainesVersion};
-
+use crate::constants::*;
 use crate::maitredescles_commun::*;
+use crate::maitredescles_mongodb::preparer_index_mongodb_custom;
 
 pub const NOM_COLLECTION_CLES: &str = "MaitreDesCles/CA/cles";
 pub const NOM_COLLECTION_TRANSACTIONS: &str = "MaitreDesCles/CA";

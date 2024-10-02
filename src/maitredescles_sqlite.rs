@@ -22,7 +22,7 @@ use millegrilles_common_rust::futures::stream::FuturesUnordered;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
 use millegrilles_common_rust::hachages::hacher_bytes;
 use millegrilles_common_rust::messages_generiques::{CommandeCleRechiffree, CommandeDechiffrerCle, MessageCedule};
-use millegrilles_common_rust::middleware::{Middleware, sauvegarder_transaction};
+use millegrilles_common_rust::middleware::{sauvegarder_transaction, Middleware};
 use millegrilles_common_rust::middleware_db::MiddlewareDb;
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::FormatChiffrage;
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_cles::CleChiffrageHandler;
@@ -43,32 +43,32 @@ use millegrilles_common_rust::tokio::sync::mpsc;
 use millegrilles_common_rust::tokio::time::sleep;
 use millegrilles_common_rust::tokio::time::Duration as Duration_tokio;
 use millegrilles_common_rust::tokio_stream::StreamExt;
-use millegrilles_common_rust::transactions::{EtatTransaction, marquer_transaction, TraiterTransaction, Transaction};
+use millegrilles_common_rust::transactions::{marquer_transaction, EtatTransaction, TraiterTransaction, Transaction};
 use millegrilles_common_rust::error::Error;
 use millegrilles_common_rust::millegrilles_cryptographie::deser_message_buffer;
 use millegrilles_common_rust::millegrilles_cryptographie::x25519::{chiffrer_asymmetrique_ed25519, dechiffrer_asymmetrique_ed25519};
 
 use sqlite::{Connection, State};
-
 use crate::maitredescles_commun::*;
+use crate::constants::*;
 use crate::maitredescles_rechiffrage::{CleInterneChiffree, HandlerCleRechiffrage};
 // use crate::maitredescles_volatil::{CleInterneChiffree, HandlerCleRechiffrage};
 use crate::messages::{MessageReponseChiffree, RequeteVerifierPreuve};
 use crate::tokio;
 
-const NOM_COLLECTION_RECHIFFRAGE: &str = "MaitreDesCles/rechiffrage";
-
-// const NOM_Q_VOLATILS_GLOBAL: &str = "MaitreDesCles/volatils";
-
-const REQUETE_CERTIFICAT_MAITREDESCLES: &str = COMMANDE_CERT_MAITREDESCLES;
-
-const COMMANDE_RECHIFFRER_BATCH: &str = "rechiffrerBatch";
-
-const INDEX_RECHIFFRAGE_PK: &str = "fingerprint_pk";
-const INDEX_CONFIRMATION_CA: &str = "confirmation_ca";
-
-const CHAMP_FINGERPRINT_PK: &str = "fingerprint_pk";
-const CHAMP_CONFIRMATION_CA: &str = "confirmation_ca";
+// const NOM_COLLECTION_RECHIFFRAGE: &str = "MaitreDesCles/rechiffrage";
+//
+// // const NOM_Q_VOLATILS_GLOBAL: &str = "MaitreDesCles/volatils";
+//
+// const REQUETE_CERTIFICAT_MAITREDESCLES: &str = COMMANDE_CERT_MAITREDESCLES;
+//
+// const COMMANDE_RECHIFFRER_BATCH: &str = "rechiffrerBatch";
+//
+// const INDEX_RECHIFFRAGE_PK: &str = "fingerprint_pk";
+// const INDEX_CONFIRMATION_CA: &str = "confirmation_ca";
+//
+// const CHAMP_FINGERPRINT_PK: &str = "fingerprint_pk";
+// const CHAMP_CONFIRMATION_CA: &str = "confirmation_ca";
 
 
 #[derive(Debug)]

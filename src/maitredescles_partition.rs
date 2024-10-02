@@ -22,8 +22,8 @@ use millegrilles_common_rust::futures_util::stream::FuturesUnordered;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
 use millegrilles_common_rust::hachages::hacher_bytes;
 use millegrilles_common_rust::messages_generiques::{CommandeCleRechiffree, CommandeDechiffrerCle, MessageCedule};
-use millegrilles_common_rust::middleware::{Middleware, sauvegarder_traiter_transaction_serializable, sauvegarder_transaction};
-use millegrilles_common_rust::mongo_dao::{ChampIndex, convertir_bson_deserializable, convertir_to_bson, IndexOptions, MongoDao, verifier_erreur_duplication_mongo};
+use millegrilles_common_rust::middleware::{sauvegarder_traiter_transaction_serializable, sauvegarder_transaction, Middleware};
+use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, verifier_erreur_duplication_mongo, ChampIndex, IndexOptions, MongoDao};
 use millegrilles_common_rust::mongodb::{Collection, Cursor};
 use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOneOptions, FindOptions, Hint, InsertOneOptions, UpdateOptions};
 use millegrilles_common_rust::{get_domaine_action, millegrilles_cryptographie, multibase, serde_json};
@@ -40,30 +40,22 @@ use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::json;
 use millegrilles_common_rust::tokio::fs::File as File_tokio;
 use millegrilles_common_rust::tokio::{io::AsyncReadExt, spawn};
-use millegrilles_common_rust::tokio::time::{Duration as Duration_tokio, sleep};
+use millegrilles_common_rust::tokio::time::{sleep, Duration as Duration_tokio};
 use millegrilles_common_rust::tokio::sync::{mpsc, mpsc::{Receiver, Sender}};
 use millegrilles_common_rust::tokio_stream::StreamExt;
-use millegrilles_common_rust::transactions::{EtatTransaction, marquer_transaction, TraiterTransaction, Transaction};
+use millegrilles_common_rust::transactions::{marquer_transaction, EtatTransaction, TraiterTransaction, Transaction};
 use millegrilles_common_rust::error::Error;
 use millegrilles_common_rust::millegrilles_cryptographie::{deser_message_buffer, heapless};
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::FormatChiffrage;
 use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::{SignatureDomaines, SignatureDomainesVersion};
-use millegrilles_common_rust::millegrilles_cryptographie::x25519::{chiffrer_asymmetrique_ed25519, CleSecreteX25519, dechiffrer_asymmetrique_ed25519};
+use millegrilles_common_rust::millegrilles_cryptographie::x25519::{chiffrer_asymmetrique_ed25519, dechiffrer_asymmetrique_ed25519, CleSecreteX25519};
 use crate::maitredescles_ca::{GestionnaireMaitreDesClesCa, NOM_COLLECTION_CLES};
 
+use crate::constants::*;
 use crate::maitredescles_commun::*;
+use crate::maitredescles_mongodb::{preparer_index_mongodb_custom, preparer_index_mongodb_partition};
 use crate::maitredescles_rechiffrage::{CleInterneChiffree, HandlerCleRechiffrage};
 use crate::messages::{MessageReponseChiffree, RequeteVerifierPreuve};
-
-const REQUETE_CERTIFICAT_MAITREDESCLES: &str = COMMANDE_CERT_MAITREDESCLES;
-
-const COMMANDE_RECHIFFRER_BATCH: &str = "rechiffrerBatch";
-
-const INDEX_RECHIFFRAGE_PK: &str = "fingerprint_pk";
-const INDEX_CONFIRMATION_CA: &str = "confirmation_ca";
-
-const CHAMP_FINGERPRINT_PK: &str = "fingerprint_pk";
-const CHAMP_CONFIRMATION_CA: &str = "confirmation_ca";
 
 pub struct GestionnaireMaitreDesClesPartition {
     pub handler_rechiffrage: Arc<HandlerCleRechiffrage>,
@@ -101,12 +93,12 @@ impl GestionnaireMaitreDesClesPartition {
         Ok(Some(String::from(&fingerprint[35..])))
     }
 
-    fn get_q_sauvegarder_cle(&self) -> Result<Option<String>, Error> {
+    pub fn get_q_sauvegarder_cle(&self) -> Result<Option<String>, Error> {
         let fingerprint = self.handler_rechiffrage.fingerprint()?;
         Ok(Some(format!("MaitreDesCles/{}/sauvegarder", fingerprint)))
     }
 
-    fn get_collection_cles(&self) -> Result<Option<String>, Error> {
+    pub fn get_collection_cles(&self) -> Result<Option<String>, Error> {
         match self.get_partition_tronquee()? {
             Some(p) => Ok(Some("MaitreDesCles/cles".to_string())),
             None => Ok(None)
@@ -140,7 +132,7 @@ impl GestionnaireMaitreDesClesPartition {
     }
 
     /// Preparer les Qs une fois le certificat pret
-    fn preparer_queues_rechiffrage(&self) -> Result<Vec<QueueType>, Error> {
+    pub fn preparer_queues_rechiffrage(&self) -> Result<Vec<QueueType>, Error> {
         let mut rk_dechiffrage = Vec::new();
         let mut rk_commande_cle = Vec::new();
         let mut rk_volatils = Vec::new();
@@ -264,8 +256,6 @@ impl GestionnaireMaitreDesClesPartition {
 
         Ok(queues)
     }
-
-
 }
 
 #[async_trait]
@@ -439,47 +429,6 @@ impl GestionnaireDomaine for GestionnaireMaitreDesClesPartition {
     }
 }
 
-pub async fn preparer_index_mongodb_partition<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition) -> Result<(), Error>
-    where M: MongoDao + ConfigMessages
-{
-    if let Some(collection_cles) = gestionnaire.get_collection_cles()? {
-
-        // Index confirmation ca (table cles)
-        let options_confirmation_ca = IndexOptions {
-            nom_index: Some(String::from(INDEX_CONFIRMATION_CA)),
-            unique: false
-        };
-        let champs_index_confirmation_ca = vec!(
-            ChampIndex { nom_champ: String::from(CHAMP_CONFIRMATION_CA), direction: 1 },
-        );
-        middleware.create_index(
-            middleware,
-            collection_cles.as_str(),
-            champs_index_confirmation_ca,
-            Some(options_confirmation_ca)
-        ).await?;
-
-    }
-
-    // Index confirmation ca (table cles)
-    let options_configuration = IndexOptions {
-        nom_index: Some(String::from("pk")),
-        unique: true
-    };
-    let champs_index_configuration = vec!(
-        ChampIndex { nom_champ: String::from("type"), direction: 1 },
-        ChampIndex { nom_champ: String::from("instance_id"), direction: 1 },
-        ChampIndex { nom_champ: String::from("fingerprint"), direction: 1 },
-    );
-    middleware.create_index(
-        middleware,
-        NOM_COLLECTION_CONFIGURATION,
-        champs_index_configuration,
-        Some(options_configuration)
-    ).await?;
-
-    Ok(())
-}
 
 async fn consommer_requete<M>(middleware: &M, message: MessageValide, gestionnaire: &GestionnaireMaitreDesClesPartition) -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: ValidateurX509 + GenerateurMessages + MongoDao + CleChiffrageHandler + CleChiffrageCache + ConfigMessages
@@ -624,55 +573,6 @@ async fn commande_sauvegarder_cle<M>(middleware: &M, m: MessageValide, gestionna
 {
     error!("sauvegarder_cle Recu cle ancien format, **REJETE**\n{}", from_utf8(m.message.buffer.as_slice())?);
     Ok(Some(middleware.reponse_err(99, None, Some("Commande sauvegarderCle obsolete et retiree"))?))
-
-    // debug!("commande_sauvegarder_cle Consommer commande : {:?}", & m.type_message);
-    // let commande: CommandeSauvegarderCle = deser_message_buffer!(m.message);
-    //
-    // // let partition_message = m.get_partition();
-    // let partition_message = match m.type_message {
-    //     TypeMessageOut::Commande(r) => r.partition.clone(),
-    //     _ => Err(Error::Str("commande_sauvegarder_cle Mauvais type de message, doit etre commande"))?
-    // };
-    //
-    // // let fingerprint = match gestionnaire.handler_rechiffrage.fingerprint() {
-    // //     Some(f) => f,
-    // //     None => Err(format!("maitredescles_partition.commande_sauvegarder_cle Gestionnaire sans partition/certificat"))?
-    // // };
-    // let fingerprint = gestionnaire.handler_rechiffrage.fingerprint()?;
-    // let nom_collection_cles = match gestionnaire.get_collection_cles()? {
-    //     Some(c) => c,
-    //     None => Err(Error::Str("maitredescles_partition.commande_sauvegarder_cle Gestionnaire sans partition/certificat"))?
-    // };
-    //
-    // // let cle = match commande.cles.get(fingerprint.as_str()) {
-    // let cle = match commande.cles.get(fingerprint.as_str()) {
-    //     Some(cle) => cle.as_str(),
-    //     None => {
-    //         // La cle locale n'est pas presente. Verifier si le message de sauvegarde etait
-    //         // adresse a cette partition.
-    //         let reponse = if Some(fingerprint) == partition_message {
-    //             let message = format!("maitredescles_partition.commande_sauvegarder_cle: Erreur validation - commande sauvegarder cles ne contient pas la cle CA : {:?}", commande);
-    //             warn!("{}", message);
-    //             // let reponse_err = json!({"ok": false, "err": message});
-    //             // Ok(Some(middleware.formatter_reponse(&reponse_err, None)?))
-    //             Ok(Some(middleware.reponse_err(None, None, Some(message.as_str()))?))
-    //         } else {
-    //             // Rien a faire, message ne concerne pas cette partition
-    //             Ok(None)
-    //         };
-    //         return reponse;
-    //     }
-    // };
-    //
-    // sauvegarder_cle(middleware, gestionnaire, &commande, nom_collection_cles).await?;
-    //
-    // if Some(fingerprint) == partition_message {
-    //     // Le message etait adresse a cette partition
-    //     Ok(Some(middleware.reponse_ok(None, None)?))
-    // } else {
-    //     // Cle sauvegardee mais aucune reponse requise
-    //     Ok(None)
-    // }
 }
 
 async fn commande_ajouter_cle_domaines<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireMaitreDesClesPartition)
@@ -812,81 +712,6 @@ async fn sauvegarder_cle_secrete<M>(
     Ok(())
 }
 
-// async fn sauvegarder_cle<M, S>(
-//     middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition,
-//     commande: &CommandeSauvegarderCle, nom_collection_cles: S
-// )
-//     -> Result<bool, Error>
-//     where M: GenerateurMessages + MongoDao, S: AsRef<str>
-// {
-//     let nom_collection_cles = nom_collection_cles.as_ref();
-//
-//     let enveloppe_privee = middleware.get_enveloppe_signature();
-//     let fingerprint = enveloppe_privee.fingerprint()?;
-//     let cle = match commande.cles.get(fingerprint.as_str()) {
-//         Some(cle) => cle.as_str(),
-//         None => Err(format!("sauvegarder_cle Cle non disponible pour {}", fingerprint))?
-//     };
-//
-//     // Valider identite, calculer cle_ref
-//     let (cle_id, signature, cle_rechiffree) = {
-//         let cle_bytes = multibase::decode(cle)?.1;
-//         let cle_secrete = dechiffrer_asymmetrique_ed25519(
-//             cle_bytes.as_slice(), &middleware.get_enveloppe_signature().cle_privee)?;
-//
-//         // Chiffrer avec cle symmetrique locale
-//         let handler_rechiffrage = gestionnaire.handler_rechiffrage.as_ref();
-//         let cle_chiffree = handler_rechiffrage.chiffrer_cle_secrete(&cle_secrete.0[..])?;
-//
-//         // Creer Signature version 0, le cle_id est le hachage bytes
-//         let cle_id = commande.hachage_bytes.clone();
-//         let mut domaines = heapless::Vec::new();
-//         domaines.push(commande.domaine.as_str().try_into().map_err(|_| Error::Str("sauvegarder_cle Erreur conversion domaine"))?)
-//             .map_err(|e| Error::String(format!("sauvegarder_cle Erreur conversion domaine : {:?}", e)))?;
-//         let signature = SignatureDomaines {
-//             domaines,
-//             version: SignatureDomainesVersion::NonSigne,
-//             ca: None,
-//             signature: cle_id.as_str().try_into().map_err(|_| Error::Str("sauvegarder_cle Erreur conversion signature"))?,  // Utiliser hachage bytes
-//         };
-//
-//         (cle_id, signature, cle_chiffree)
-//     };
-//
-//     let filtre = doc!{"cle_id": &cle_id};
-//     let format_str: &str = commande.format.clone().into();
-//     let mut set_on_insert_ops = doc!{
-//         "cle_id": cle_id,
-//         "signature": convertir_to_bson(signature)?,
-//         "cle_symmetrique": cle_rechiffree.cle,
-//         "nonce_symmetrique": cle_rechiffree.nonce,
-//
-//         // Champs pour sync
-//         CHAMP_CREATION: Utc::now(),
-//         "dirty": true,
-//         "confirmation_ca": false,
-//
-//         // Ajouter information de dechiffrage de contenu (vieille approche)
-//         "format": format_str,
-//         "iv": commande.iv.as_ref(),
-//         "tag": commande.tag.as_ref(),
-//         "header": commande.header.as_ref(),
-//     };
-//
-//     let ops = doc!{
-//         "$setOnInsert": set_on_insert_ops,
-//         "$currentDate": {CHAMP_MODIFICATION: true}
-//     };
-//     let options = UpdateOptions::builder().upsert(true).build();
-//     let collection = middleware.get_collection(nom_collection_cles)?;
-//
-//     let resultat = collection.update_one(filtre, ops, options).await?;
-//     debug!("commande_sauvegarder_cle Resultat update : {:?}", resultat);
-//     let insere = resultat.upserted_id.is_some();
-//
-//     Ok(insere)
-// }
-
 async fn commande_rotation_certificat<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireMaitreDesClesPartition)
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages + MongoDao + ValidateurX509
@@ -980,10 +805,6 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, mut m: MessageValide, gest
     let enveloppe_privee = middleware.get_enveloppe_signature();
     let commande: CommandeRechiffrerBatch = message_ref.dechiffrer(enveloppe_privee.as_ref())?;
 
-    // let message_chiffre: MessageReponseChiffree = message_ref.contenu()?.deserialize()?;
-    // let message_dechiffre = message_chiffre.dechiffrer(middleware)?;
-    // let commande: CommandeRechiffrerBatch = serde_json::from_slice(&message_dechiffre.data_dechiffre[..])?;
-
     let fingerprint_ca = enveloppe_privee.enveloppe_ca.fingerprint()?;
     let fingerprint = enveloppe_privee.enveloppe_pub.fingerprint()?;
 
@@ -995,11 +816,6 @@ async fn commande_rechiffrer_batch<M>(middleware: &M, mut m: MessageValide, gest
     let collection = middleware.get_collection(nom_collection_cles.as_str())?;
 
     // Traiter chaque cle individuellement
-    // let liste_cles: Vec<CleSynchronisation> = commande.cles.iter().map(|c| {
-    //     //c.hachage_bytes.to_owned()
-    //     //CleSynchronisation { hachage_bytes: c.hachage_bytes.clone(), domaine: c.domaine.clone() }
-    //     CleSynchronisation { cle_id: c.hachage_bytes.clone(), domaine: c.domaine.clone() }
-    // }).collect();
     let mut liste_cle_id: Vec<String> = Vec::new();
     for cle in commande.cles {
         let cle_id = sauvegarder_cle_rechiffrage(
@@ -1061,31 +877,6 @@ async fn sauvegarder_cle_rechiffrage<M>(middleware: &M,
     collection.update_one(filtre, ops, opts).await?;
 
     Ok(cle_id)
-
-    // let mut doc_cle = convertir_to_bson(cle.clone())?;
-    // doc_cle.remove("cleSecrete");
-    // doc_cle.insert("dirty", true);
-    // doc_cle.insert("confirmation_ca", false);
-    // doc_cle.insert(CHAMP_CREATION, Utc::now());
-    // doc_cle.insert(CHAMP_MODIFICATION, Utc::now());
-    // doc_cle.insert(CHAMP_CLE_REF, cle_ref.as_str());
-    //
-    // // Retirer le champ cles
-    // doc_cle.remove(CHAMP_CLES);
-    //
-    // // Inserer la cle pour cette partition
-    // // doc_cle.insert(TRANSACTION_CLE, cle_chiffree_str);
-    // doc_cle.insert(TRANSACTION_CLE, "");
-    //
-    // doc_cle.insert(CHAMP_CLE_SYMMETRIQUE, cle_rechiffree.cle);
-    // doc_cle.insert(CHAMP_NONCE_SYMMETRIQUE, cle_rechiffree.nonce);
-    //
-    // let filtre = doc! { CHAMP_CLE_REF: cle_ref.as_str() };
-    // let ops = doc! { "$setOnInsert": doc_cle };
-    // let opts = UpdateOptions::builder().upsert(true).build();
-    // collection.update_one(filtre, ops, opts).await?;
-    //
-    // Ok(cle_ref)
 }
 
 async fn aiguillage_transaction<M>(middleware: &M, transaction: TransactionValide, gestionnaire: &GestionnaireMaitreDesClesPartition)
@@ -1101,7 +892,6 @@ async fn aiguillage_transaction<M>(middleware: &M, transaction: TransactionValid
     };
 
     match action {
-        // TRANSACTION_CLE => transaction_cle(middleware, transaction, gestionnaire).await,
         _ => Err(Error::String(format!("core_backup.aiguillage_transaction: Transaction {} est de type non gere : {}", transaction.transaction.id, action))),
     }
 }
@@ -1111,124 +901,7 @@ async fn requete_dechiffrage<M>(middleware: &M, m: MessageValide, gestionnaire: 
     where M: GenerateurMessages + MongoDao + ValidateurX509 + CleChiffrageHandler
 {
     warn!("requete_dechiffrage Consommer requete OBSOLETE : {:?}", & m.message);
-    return Ok(Some(middleware.reponse_err(99, None, Some("obsolete"))?))
-
-    // let message_ref = m.message.parse()?;
-    // let requete: RequeteDechiffrage = match message_ref.contenu()?.deserialize() {
-    //     Ok(inner) => inner,
-    //     Err(e) => {
-    //         info!("requete_dechiffrage Erreur mapping ParametresGetPermissionMessages : {:?}", e);
-    //         return Ok(Some(middleware.reponse_err(None, None, Some(format!("Erreur mapping requete : {:?}", e).as_str()))?))
-    //     }
-    // };
-    //
-    // // Supporter l'ancien format de requete (liste_hachage_bytes) avec le nouveau (cle_ids)
-    // let cle_ids = match requete.cle_ids.as_ref() {
-    //     Some(inner) => inner,
-    //     None => match requete.liste_hachage_bytes.as_ref() {
-    //         Some(inner) => inner,
-    //         None => Err(Error::Str("Aucunes cles demandees pour le rechiffrage"))?
-    //     }
-    // };
-    //
-    // // Verifier que la requete est autorisee
-    // let (certificat, requete_autorisee_globalement) = match verifier_permission_rechiffrage(middleware, &m, &requete).await {
-    //     Ok(inner) => inner,
-    //     Err(ErreurPermissionRechiffrage::Refuse(e)) => {
-    //         let refuse = json!({"ok": false, "err": e.err, "acces": "0.refuse", "code": e.code});
-    //         return Ok(Some(middleware.build_reponse(&refuse)?.0))
-    //     },
-    //     Err(ErreurPermissionRechiffrage::Error(e)) => Err(e)?
-    // };
-    //
-    // let enveloppe_privee = middleware.get_enveloppe_signature();
-    // let fingerprint = enveloppe_privee.fingerprint()?;
-    //
-    // // Trouver les cles demandees et rechiffrer
-    // let mut curseur = preparer_curseur_cles(
-    //     middleware, gestionnaire, &requete, Some(&vec![requete.domaine.to_string()])).await?;
-    // let (mut cles, cles_trouvees) = rechiffrer_cles(
-    //     middleware, gestionnaire,
-    //     &m, &requete, enveloppe_privee.clone(), certificat.as_ref(),
-    //     requete_autorisee_globalement, &mut curseur).await?;
-    //
-    // let nom_collection = match gestionnaire.get_collection_cles()? {
-    //     Some(n) => n,
-    //     None => Err(Error::Str("maitredescles_partition.preparer_curseur_cles Collection cles n'est pas definie"))?
-    // };
-    //
-    // // Verifier si on a des cles inconnues
-    // if cles.len() < cle_ids.len() {
-    //     debug!("requete_dechiffrage Cles manquantes, on a {} trouvees sur {} demandees", cles.len(), cle_ids.len());
-    //
-    //     error!("requete_dechiffrage Requete Cle non dechiffrages, fix me");  // TODO
-    //     // todo!("fix me")
-    //
-    //     // let cles_connues = cles.keys().map(|s|s.to_owned()).collect();
-    //     // // emettre_cles_inconnues(middleware, requete, cles_connues).await?;
-    //     // let cles_recues = match requete_cles_inconnues(
-    //     //     middleware, &requete, cles_connues).await
-    //     // {
-    //     //     Ok(reponse) => {
-    //     //         debug!("Reponse cles manquantes : {:?}", reponse.cles);
-    //     //         reponse.cles
-    //     //     },
-    //     //     Err(e) => {
-    //     //         error!("requete_dechiffrage Erreur requete_cles_inconnues, skip : {:?}", e);
-    //     //         Vec::new()
-    //     //     }
-    //     // };
-    //     //
-    //     // debug!("Reponse cle manquantes recue : {:?}", cles_recues);
-    //     // for cle in cles_recues.into_iter() {
-    //     //
-    //     //     let hachage_bytes = cle.hachage_bytes.clone();
-    //     //
-    //     //     let cle_secrete = cle.get_cle_secrete()?;
-    //     //     let (_, cle_rechiffree) = cle.rechiffrer_cle(&gestionnaire.handler_rechiffrage)?;
-    //     //
-    //     //     let mut doc_cle: RowClePartition = cle.try_into()?;
-    //     //     doc_cle.cle_symmetrique = Some(cle_rechiffree.cle);
-    //     //     doc_cle.nonce_symmetrique = Some(cle_rechiffree.nonce);
-    //     //
-    //     //     let cle_interne = CleSecreteRechiffrage::from_doc_cle(cle_secrete, doc_cle.clone())?;
-    //     //
-    //     //     sauvegarder_cle_rechiffrage(middleware, &gestionnaire,
-    //     //         nom_collection.as_str(),
-    //     //         cle_interne).await?;
-    //     //
-    //     //     match rechiffrer_cle(&mut doc_cle, &gestionnaire.handler_rechiffrage, certificat.as_ref()) {
-    //     //         Ok(()) => {
-    //     //             cles.insert(hachage_bytes, doc_cle);
-    //     //         },
-    //     //         Err(e) => {
-    //     //             error!("rechiffrer_cles Erreur rechiffrage cle {:?}", e);
-    //     //             continue;  // Skip cette cle
-    //     //         }
-    //     //     }
-    //     // }
-    // }
-    //
-    // // Preparer la reponse
-    // // Verifier si on a au moins une cle dans la reponse
-    // let reponse = if cles.len() > 0 {
-    //     let reponse = json!({
-    //         "acces": CHAMP_ACCES_PERMIS,
-    //         "code": 1,
-    //         "cles": &cles,
-    //     });
-    //     debug!("requete_dechiffrage Reponse rechiffrage {:?} : {:?}", m.type_message, reponse);
-    //     middleware.build_reponse(reponse)?.0
-    // } else {
-    //     // On n'a pas trouve de cles
-    //     debug!("requete_dechiffrage Requete {:?} de dechiffrage {:?}, cles inconnues", m.type_message, &requete.liste_hachage_bytes);
-    //
-    //     // Retourner cle inconnu a l'usager
-    //     let inconnu = json!({"ok": false, "err": "Cles inconnues", "acces": CHAMP_ACCES_CLE_INCONNUE, "code": 4});
-    //     middleware.build_reponse(&inconnu)?.0
-    // };
-    //
-    // Ok(Some(reponse))
+    Ok(Some(middleware.reponse_err(99, None, Some("obsolete"))?))
 }
 
 async fn requete_dechiffrage_v2<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireMaitreDesClesPartition)
@@ -1613,13 +1286,6 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValide, gestionnai
     let cle_privee = &enveloppe_privee.cle_privee;
     while let Some(rc) = curseur.next().await {
         let cle_mongo_chiffree = rc?;
-        // let cle_mongo_chiffree: DocumentClePartition = match convertir_bson_deserializable(doc_cle) {
-        //     Ok(c) => c,
-        //     Err(e) => {
-        //         error!("requete_verifier_preuve Erreur conversion bson vers TransactionCle : {:?}", e);
-        //         continue
-        //     }
-        // };
 
         let cle_interne_chiffree = CleInterneChiffree::try_from(cle_mongo_chiffree.clone())?;
         let cle_mongo_dechiffree = gestionnaire.handler_rechiffrage.dechiffer_cle_secrete(cle_interne_chiffree)?;
@@ -1768,151 +1434,6 @@ async fn preparer_curseur_cles<M>(
     let collection = middleware.get_collection(nom_collection.as_str())?;
     Ok(collection.find(filtre, None).await?)
 }
-
-/// Verifier si la requete de dechiffrage est valide (autorisee) de maniere globale
-/// Les certificats 4.secure et delegations globales proprietaire donnent acces a toutes les cles
-// async fn verifier_autorisation_dechiffrage_global<M>(middleware: &M, m: &MessageValide, requete: &RequeteDechiffrage)
-//     // -> Result<(bool, Option<EnveloppePermission>), Error>
-//     -> Result<bool, Error>
-//     where M:  ValidateurX509
-// {
-//     // Verifier si le certificat est une delegation globale
-//     if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
-//         debug!("verifier_autorisation_dechiffrage Certificat delegation globale proprietaire - toujours autorise");
-//         return Ok(true)
-//     }
-//
-//     Ok(false)
-//
-//     // Acces global refuse.
-//     // On verifie la presence et validite d'une permission
-//
-//     // let mut permission: Option<EnveloppePermission> = None;
-//     // if let Some(p) = &requete.permission {
-//     //     debug!("verifier_autorisation_dechiffrage_global On a une permission, valider le message {:?}", p);
-//     //     let mut ms = match MessageSerialise::from_parsed(p.to_owned()) {
-//     //         Ok(ms) => Ok(ms),
-//     //         Err(e) => Err(format!("verifier_autorisation_dechiffrage_global Erreur verification permission (2), refuse: {:?}", e))
-//     //     }?;
-//     //
-//     //     // Charger le certificat dans ms
-//     //     let resultat = ms.valider(middleware, None).await?;
-//     //     if ! resultat.valide() {
-//     //         Err(format!("verifier_autorisation_dechiffrage_global Erreur verification certificat permission (1), refuse: certificat invalide"))?
-//     //     }
-//     //
-//     //     match ms.parsed.map_contenu::<PermissionDechiffrage>(None) {
-//     //         Ok(contenu_permission) => {
-//     //             // Verifier la date d'expiration de la permission
-//     //             let estampille = &ms.get_entete().estampille.get_datetime().timestamp();
-//     //             let duree_validite = contenu_permission.permission_duree as i64;
-//     //             let ts_courant = Utc::now().timestamp();
-//     //             if estampille + duree_validite > ts_courant {
-//     //                 debug!("Permission encore valide (duree {}), on va l'utiliser", duree_validite);
-//     //                 // Note : conserver permission "localement" pour return false global
-//     //                 permission = Some(EnveloppePermission {
-//     //                     enveloppe: ms.certificat.clone().expect("cert"),
-//     //                     permission: contenu_permission
-//     //                 });
-//     //             }
-//     //         },
-//     //         Err(e) => info!("verifier_autorisation_dechiffrage_global Erreur verification permission (1), refuse: {:?}", e)
-//     //     }
-//     // }
-//     //
-//     // match permission {
-//     //     Some(p) => {
-//     //         // Verifier si le certificat de permission est une delegation globale
-//     //         if p.enveloppe.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
-//     //             debug!("verifier_autorisation_dechiffrage Certificat delegation globale proprietaire - toujours autorise");
-//     //             return Ok((true, Some(p)))
-//     //         }
-//     //         // Utiliser regles de la permission
-//     //         Ok((false, Some(p)))
-//     //     },
-//     //     None => Ok((false, None))
-//     // }
-//
-// }
-
-/// Rechiffre une cle secrete
-// fn rechiffrer_cle(cle: &mut DocumentClePartition, rechiffreur: &HandlerCleRechiffrage, certificat_destination: &EnveloppeCertificat)
-//     -> Result<(), Error>
-// {
-//     if certificat_destination.verifier_exchanges(vec![Securite::L4Secure]) {
-//         // Ok, acces global
-//     } else if certificat_destination.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
-//         // Ok, acces global,
-//     } else if certificat_destination.verifier_roles(vec![RolesCertificats::ComptePrive]) {
-//         // Compte prive, certificats sont verifies par le domaine (relai de permission)
-//     } else if certificat_destination.verifier_roles(vec![RolesCertificats::Stream]) &&
-//         certificat_destination.verifier_exchanges(vec![Securite::L2Prive]) {
-//         // Certificat de streaming - on doit se fier a l'autorisation pour garantir que c'est un fichier video/audio
-//     } else {
-//         Err(format!("maitredescles_partition.rechiffrer_cle Certificat sans user_id ni L4Secure, acces refuse"))?
-//     }
-//
-//     let hachage_bytes = cle.hachage_bytes.as_str();
-//
-//     let cle_interne = CleInterneChiffree::try_from(cle.clone())?;
-//     let cle_secrete = rechiffreur.dechiffer_cle_secrete(cle_interne)?;
-//
-//     // let cle_secrete = match cle.cle_symmetrique.as_ref() {
-//     //     Some(cle_symmetrique) => {
-//     //         match cle.nonce_symmetrique.as_ref() {
-//     //             Some(nonce) => {
-//     //                 let cle_interne = CleInterneChiffree { cle: cle_symmetrique.to_owned(), nonce: nonce.to_owned() };
-//     //                 rechiffreur.dechiffer_cle_secrete(cle_interne)?
-//     //             },
-//     //             None => {
-//     //                 Err(format!("rechiffrer_cles Nonce manquant pour {}", hachage_bytes))?
-//     //             }
-//     //         }
-//     //     },
-//     //     None => {
-//     //         Err(format!("rechiffrer_cles Cle symmetrique manquant pour {}", hachage_bytes))?
-//     //     }
-//     // };
-//
-//     // let cle_originale = cle.cle.as_str();
-//     // let cle_privee = privee.cle_privee();
-//     let cle_publique = certificat_destination.certificat().public_key()?;
-//     // let cle_rechiffree = rechiffrer_asymetrique_multibase(cle_privee, &cle_publique, cle_originale)?;
-//     let cle_rechiffree = chiffrer_asymetrique_multibase(cle_secrete, &cle_publique)?;
-//
-//     // Remplacer cle dans message reponse
-//     cle.cle = cle_rechiffree;
-//
-//     Ok(())
-// }
-
-// fn rechiffrer_cle(cle: &mut DocumentClePartition, privee: &EnveloppePrivee, certificat_destination: &EnveloppeCertificat)
-//     -> Result<(), Error>
-// {
-//     if certificat_destination.verifier_exchanges(vec![Securite::L4Secure]) {
-//         // Ok, acces global
-//     } else if certificat_destination.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
-//         // Ok, acces global,
-//     } else if certificat_destination.verifier_roles(vec![RolesCertificats::ComptePrive]) {
-//         // Compte prive, certificats sont verifies par le domaine (relai de permission)
-//     } else if certificat_destination.verifier_roles(vec![RolesCertificats::Stream]) &&
-//         certificat_destination.verifier_exchanges(vec![Securite::L2Prive]) {
-//         // Certificat de streaming - on doit se fier a l'autorisation pour garantir que c'est un fichier video/audio
-//     } else {
-//         Err(format!("maitredescles_partition.rechiffrer_cle Certificat sans user_id ni L4Secure, acces refuse"))?
-//     }
-//
-//     let cle_originale = cle.cle.as_str();
-//     let cle_privee = privee.cle_privee();
-//     let cle_publique = certificat_destination.certificat().public_key()?;
-//
-//     let cle_rechiffree = rechiffrer_asymetrique_multibase(cle_privee, &cle_publique, cle_originale)?;
-//
-//     // Remplacer cle dans message reponse
-//     cle.cle = cle_rechiffree;
-//
-//     Ok(())
-// }
 
 async fn synchroniser_cles<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition) -> Result<(), Error>
     where M: GenerateurMessages + MongoDao +  CleChiffrageHandler
@@ -2302,106 +1823,6 @@ async fn evenement_cle_manquante<M>(middleware: &M, m: MessageValide, gestionnai
 {
     error!("evenement_cle_manquante Evenement obsolete");
     Ok(None)
-    // debug!("evenement_cle_manquante Verifier si on peut transmettre la cle manquante {:?}", &m.message);
-    // debug!("evenement_cle_manquante Verifier si on peut transmettre la cle manquante");
-
-    // // Conserver flag pour indiquer methode de reponse
-    // // est_evenement true : commande rechiffrage
-    // //              false : reponse
-    // // let est_evenement = m.routing_key.starts_with("evenement.");
-    // let est_evenement = match & m.type_message {
-    //     TypeMessageOut::Evenement(_) => true,
-    //     _ => false
-    // };
-    //
-    // if ! m.certificat.verifier_roles(vec![RolesCertificats::MaitreDesCles])? {
-    //     debug!("evenement_cle_manquante Certificat sans role maitredescles, on rejette la demande");
-    //     return Ok(None)
-    // }
-    //
-    // let partition = m.certificat.fingerprint()?;
-    // let enveloppe_privee = middleware.get_enveloppe_signature();
-    // let partition_locale = enveloppe_privee.fingerprint()?;
-    //
-    // if partition == partition_locale {
-    //     debug!("evenement_cle_manquante Evenement emis par la partition locale, on l'ignore");
-    //     return Ok(None)
-    // }
-    //
-    // let event_non_dechiffrables: ReponseSynchroniserCles = deser_message_buffer!(m.message);
-    //
-    // let nom_collection = match gestionnaire.get_collection_cles()? {
-    //     Some(n) => n,
-    //     None => Err(Error::Str("maitredescles_partition.evenement_cle_manquante Collection cles n'est pas definie"))?
-    // };
-    //
-    // // S'assurer que le certificat de maitre des cles recus est dans la liste de rechiffrage
-    // // middleware.recevoir_certificat_chiffrage(middleware, &m.message).await?;
-    // if let Err(e) = middleware.ajouter_certificat_chiffrage(m.certificat.clone()) {
-    //     error!("Erreur reception certificat chiffrage : {:?}", e);
-    // }
-    //
-    // let routage_commande = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE, vec![Securite::L4Secure])
-    //     .partition(partition)
-    //     .build();
-    //
-    // let liste_cles = event_non_dechiffrables.liste_cle_id;
-    // let filtre = doc! {
-    //     // "$or": CleSynchronisation::get_bson_filter(&liste_cles)?
-    //     "$in": liste_cles
-    // };
-    // trace!("evenement_cle_manquante filtre {:?}", filtre);
-    //
-    // let collection = middleware.get_collection(nom_collection.as_str())?;
-    // let mut curseur = collection.find(filtre, None).await?;
-    //
-    // let mut cles = Vec::new();
-    // while let Some(d) = curseur.next().await {
-    //     let commande = match d {
-    //         Ok(cle) => {
-    //             match convertir_bson_deserializable::<RowClePartition>(cle) {
-    //                 Ok(doc_cle) => {
-    //                     todo!("fix me")
-    //                     // trace!("evenement_cle_manquante Rechiffrer cle {}/{}", doc_cle.domaine, doc_cle.hachage_bytes);
-    //                     // let cle_interne = CleInterneChiffree::try_from(doc_cle.clone())?;
-    //                     // let cle_secrete = gestionnaire.handler_rechiffrage.dechiffer_cle_secrete(cle_interne)?;
-    //                     // CleSecreteRechiffrage::from_doc_cle(cle_secrete, doc_cle)?
-    //                 },
-    //                 Err(e) => {
-    //                     warn!("evenement_cle_manquante Erreur conversion document en cle : {:?}", e);
-    //                     continue
-    //                 }
-    //             }
-    //         },
-    //         Err(e) => Err(format!("maitredescles_partition.evenement_cle_manquante Erreur lecture curseur : {:?}", e))?
-    //     };
-    //
-    //     cles.push(commande);
-    // }
-    //
-    // if cles.len() > 0 {
-    //
-    //     if est_evenement {
-    //         // Batir une commande de rechiffrage
-    //         todo!("obsolete");
-    //     } else {
-    //         // Repondre normalement
-    //         let reponse = json!({
-    //             "ok": true,
-    //             "cles": cles,
-    //         });
-    //
-    //         debug!("evenement_cle_manquante Emettre reponse avec {} cles", cles.len());
-    //         let reponse = middleware.build_reponse_chiffree(
-    //             reponse, m.certificat.as_ref())?.0;
-    //         debug!("evenement_cle_manquante Reponse chiffree {:?}", reponse);
-    //         Ok(Some(reponse))
-    //     }
-    // } else {
-    //     // Si on n'a aucune cle, ne pas repondre. Un autre maitre des cles pourrait le faire
-    //     debug!("evenement_cle_manquante On n'a aucune des cles demandees");
-    //     Ok(None)
-    // }
 }
 
 async fn commande_verifier_cle_symmetrique<M>(middleware: &M, gestionnaire: &GestionnaireMaitreDesClesPartition, m: &MessageValide)
@@ -2442,11 +1863,6 @@ async fn evenement_cle_rechiffrage<M>(middleware: &M, m: MessageValide, gestionn
     let evenement: EvenementClesRechiffrage = deser_message_buffer!(m.message);
 
     let collection = middleware.get_collection(NOM_COLLECTION_CONFIGURATION)?;
-    // let doc_ca = doc! {
-    //     "type": "CA-tiers",
-    //     "instance_id": &instance_id,
-    //     "cle": evenement.cle_ca,
-    // };
     let filtre_ca = doc! { "type": "CA-tiers", "instance_id": &instance_id };
     let ops_ca = doc! {
         "$set": {
@@ -2462,13 +1878,6 @@ async fn evenement_cle_rechiffrage<M>(middleware: &M, m: MessageValide, gestionn
     let options_ca = UpdateOptions::builder().upsert(true).build();
     collection.update_one(filtre_ca, ops_ca, Some(options_ca)).await?;
 
-    // if let Err(e) = collection.insert_one(doc_ca, None).await {
-    //     if ! verifier_erreur_duplication_mongo(&e.kind) {
-    //         // L'erreur n'est pas une duplication, relancer
-    //         Err(e)?
-    //     }
-    // }
-
     // Dechiffrer cle du tiers, rechiffrer en symmetrique local
     if let Some(cle_tierce) = evenement.cles_dechiffrage.get(fingerprint_local.as_str()) {
 
@@ -2476,20 +1885,6 @@ async fn evenement_cle_rechiffrage<M>(middleware: &M, m: MessageValide, gestionn
         let cle_dechiffree = dechiffrer_asymmetrique_ed25519(
             &cle_tierce_vec.1[..], &enveloppe_signature.cle_privee)?;
         let cle_chiffree = gestionnaire.handler_rechiffrage.chiffrer_cle_secrete(&cle_dechiffree.0[..])?;
-
-        // let doc_cle = doc! {
-        //     "type": "tiers",
-        //     "instance_id": &instance_id,
-        //     "fingerprint": &fingerprint,
-        //     "cle_symmetrique": cle_chiffree.cle,
-        //     "nonce_symmetrique": cle_chiffree.nonce,
-        // };
-        // if let Err(e) = collection.insert_one(doc_cle, None).await {
-        //     if ! verifier_erreur_duplication_mongo(&e.kind) {
-        //         // L'erreur n'est pas une duplication, relancer
-        //         Err(e)?
-        //     }
-        // }
 
         let filtre_cle = doc! {
             "type": "tiers",
@@ -2611,496 +2006,3 @@ pub async fn commande_dechiffrer_cle<M>(middleware: &M, m: MessageValide, gestio
 
     Ok(Some(middleware.build_reponse(&cle_reponse)?.0))
 }
-
-// #[cfg(test)]
-// mod ut {
-//     use std::error::Error;
-//     use std::path::{Path, PathBuf};
-//     use std::thread::sleep;
-//     use std::time::Duration;
-//
-//     use millegrilles_common_rust::certificats::{build_store_path, charger_enveloppe_privee, ValidateurX509Impl};
-//     use millegrilles_common_rust::chiffrage::FormatChiffrage;
-//     use millegrilles_common_rust::configuration::{charger_configuration, ConfigMessages, ConfigurationMessages};
-//     use millegrilles_common_rust::formatteur_messages::{MessageMilleGrillesBufferDefault, MessageSerialise};
-//     use millegrilles_common_rust::openssl::x509::store::X509Store;
-//     use millegrilles_common_rust::openssl::x509::X509;
-//     use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
-//     use millegrilles_common_rust::recepteur_messages::MessageValide;
-//     use millegrilles_common_rust::serde_json::Value;
-//     use millegrilles_common_rust::verificateur::{ResultatValidation, ValidationOptions, VerificateurMessage};
-//     use millegrilles_common_rust::tokio as tokio;
-//     use crate::test_setup::setup;
-//
-//     use super::*;
-//
-//     fn init() -> ConfigurationMessages {
-//         charger_configuration().expect("Erreur configuration")
-//     }
-//
-//     pub fn charger_enveloppe_privee_part(cert: &Path, cle: &Path) -> (Arc<ValidateurX509Impl>, EnveloppePrivee) {
-//         const CA_CERT_PATH: &str = "/home/mathieu/mgdev/certs/pki.millegrille";
-//         let validateur = build_store_path(PathBuf::from(CA_CERT_PATH).as_path()).expect("store");
-//         let validateur = Arc::new(validateur);
-//         let enveloppe_privee = charger_enveloppe_privee(
-//             cert,
-//             cle,
-//             validateur.clone()
-//         ).expect("privee");
-//
-//         (validateur, enveloppe_privee)
-//     }
-//
-//     struct MiddlewareStub { resultat: ResultatValidation, certificat: Option<Arc<EnveloppeCertificat>> }
-//     impl VerificateurMessage for MiddlewareStub {
-//         fn verifier_message(&self, message: &mut MessageSerialise, options: Option<&ValidationOptions>) -> Result<ResultatValidation, Error> {
-//             message.certificat = self.certificat.clone();
-//             Ok(self.resultat.clone())
-//         }
-//     }
-//     #[async_trait]
-//     impl ValidateurX509 for MiddlewareStub {
-//         async fn charger_enveloppe(&self, chaine_pem: &Vec<String>, fingerprint: Option<&str>) -> Result<Arc<EnveloppeCertificat>, String> {
-//             todo!()
-//         }
-//
-//         async fn cacher(&self, certificat: EnveloppeCertificat) -> Arc<EnveloppeCertificat> {
-//             todo!()
-//         }
-//
-//         async fn get_certificat(&self, fingerprint: &str) -> Option<Arc<EnveloppeCertificat>> {
-//             todo!()
-//         }
-//
-//         fn idmg(&self) -> &str {
-//             todo!()
-//         }
-//
-//         fn ca_pem(&self) -> &str {
-//             todo!()
-//         }
-//
-//         fn ca_cert(&self) -> &X509 {
-//             todo!()
-//         }
-//
-//         fn store(&self) -> &X509Store {
-//             todo!()
-//         }
-//
-//         fn store_notime(&self) -> &X509Store {
-//             todo!()
-//         }
-//
-//         async fn entretien_validateur(&self) {
-//             todo!()
-//         }
-//     }
-//
-//     fn prep_mva<S>(enveloppe_privee: &EnveloppePrivee, contenu_message: &S) -> MessageValide
-//         where S: Serialize
-//     {
-//         let message_millegrille = MessageMilleGrillesBufferDefault::new_signer(
-//             enveloppe_privee, contenu_message, Some("domaine"), Some("action"), None::<&str>, None).expect("mg");
-//         let mut message_serialise = MessageSerialise::from_parsed(message_millegrille).expect("ms");
-//         message_serialise.certificat = Some(enveloppe_privee.enveloppe.clone());
-//         let message_valide_action = MessageValide::new(
-//             message_serialise, "q", "rk","domaine", "action", TypeMessageOut::Requete);
-//
-//         message_valide_action
-//     }
-//
-//     #[tokio::test]
-//     async fn acces_global_ok() {
-//         setup("acces_global_ok");
-//
-//         let config = init();
-//         let enveloppe_privee = config.get_configuration_pki().get_enveloppe_privee();
-//
-//         // Stub middleware, resultat verification
-//         let middleware = MiddlewareStub{
-//             resultat: ResultatValidation {signature_valide: true, hachage_valide: Some(true), certificat_valide: true, regles_valides: true},
-//             certificat: None,
-//         };
-//
-//         // Stub message requete
-//         let requete = RequeteDechiffrage { liste_hachage_bytes: vec!["DUMMY".into()], permission: None, certificat_rechiffrage: None };
-//         let message_valide_action = prep_mva(enveloppe_privee.as_ref(), &requete);
-//
-//         // verifier_autorisation_dechiffrage_global<M>(middleware: &M, m: &MessageValide, requete: &RequeteDechiffrage)
-//         let (global_permis, permission) = verifier_autorisation_dechiffrage_global(
-//             &middleware, &message_valide_action, &requete).await.expect("resultat");
-//
-//         debug!("acces_global_ok Resultat global_permis: {}, permission {:?}", global_permis, permission);
-//
-//         assert_eq!(true, global_permis);
-//         assert_eq!(true, permission.is_none());
-//     }
-//
-//     #[tokio::test]
-//     async fn acces_global_refuse() {
-//         setup("acces_global_refuse");
-//
-//         let path_cert = PathBuf::from("/home/mathieu/mgdev/certs/pki.nginx.cert");
-//         let path_key = PathBuf::from("/home/mathieu/mgdev/certs/pki.nginx.key");
-//         let (_, env_privee_autre) = charger_enveloppe_privee_part(path_cert.as_path(), path_key.as_path());
-//         let enveloppe_privee_autre = Arc::new(env_privee_autre);
-//
-//         let config = init();
-//         let enveloppe_privee = config.get_configuration_pki().get_enveloppe_privee();
-//
-//         // Stub middleware, resultat verification
-//         let middleware = MiddlewareStub{
-//             resultat: ResultatValidation {signature_valide: true, hachage_valide: Some(true), certificat_valide: true, regles_valides: true},
-//             certificat: None
-//         };
-//
-//         // Stub message requete
-//         let requete = RequeteDechiffrage { liste_hachage_bytes: vec!["DUMMY".into()], permission: None, certificat_rechiffrage: None };
-//
-//         // Preparer message avec certificat "autre" (qui n'a pas exchange 4.secure)
-//         let mut message_valide_action = prep_mva(enveloppe_privee_autre.as_ref(), &requete);
-//
-//         // verifier_autorisation_dechiffrage_global<M>(middleware: &M, m: &MessageValide, requete: &RequeteDechiffrage)
-//         let (global_permis, permission) = verifier_autorisation_dechiffrage_global(
-//             &middleware, &message_valide_action, &requete).await.expect("resultat");
-//
-//         debug!("acces_global_ok Resultat global_permis: {}, permission {:?}", global_permis, permission);
-//
-//         assert_eq!(false, global_permis);
-//         assert_eq!(true, permission.is_none());
-//     }
-//
-//     #[tokio::test]
-//     async fn permission_globale_ok() {
-//         setup("acces_global_ok");
-//
-//         let path_cert = PathBuf::from("/home/mathieu/mgdev/certs/pki.nginx.cert");
-//         let path_key = PathBuf::from("/home/mathieu/mgdev/certs/pki.nginx.key");
-//         let (_, env_privee_autre) = charger_enveloppe_privee_part(path_cert.as_path(), path_key.as_path());
-//         let enveloppe_privee_autre = Arc::new(env_privee_autre);
-//
-//         let config = init();
-//         let enveloppe_privee = config.get_configuration_pki().get_enveloppe_privee();
-//
-//         // Stub middleware, resultat verification
-//         let middleware = MiddlewareStub{
-//             resultat: ResultatValidation {signature_valide: true, hachage_valide: Some(true), certificat_valide: true, regles_valides: true},
-//             certificat: Some(enveloppe_privee.enveloppe.clone())  // Injecter cert 4.secure
-//         };
-//
-//         // Creer permission
-//         let contenu_permission = PermissionDechiffrage {
-//             permission_hachage_bytes: vec!["DUMMY".into()],
-//             domaines_permis: None,
-//             user_id: None,
-//             permission_duree: 5,
-//         };
-//         let permission = MessageMilleGrillesBufferDefault::new_signer(
-//             enveloppe_privee.as_ref(), &contenu_permission, Some("domaine"), Some("action"), None::<&str>, None).expect("mg");
-//
-//         // Stub message requete
-//         let requete = RequeteDechiffrage { liste_hachage_bytes: vec!["DUMMY".into()], permission: Some(permission), certificat_rechiffrage: None };
-//
-//         // Preparer message avec certificat "autre" (qui n'a pas exchange 4.secure)
-//         let mut message_valide_action = prep_mva(enveloppe_privee_autre.as_ref(), &requete);
-//
-//         // verifier_autorisation_dechiffrage_global<M>(middleware: &M, m: &MessageValide, requete: &RequeteDechiffrage)
-//         let (global_permis, permission) = verifier_autorisation_dechiffrage_global(
-//             &middleware, &message_valide_action, &requete).await.expect("resultat");
-//
-//         debug!("acces_global_ok Resultat global_permis: {}, permission {:?}", global_permis, permission);
-//
-//         assert_eq!(false, global_permis);
-//         assert_eq!(true, permission.is_some());
-//     }
-//
-//     #[tokio::test]
-//     async fn permission_expiree() {
-//         setup("permission_expiree");
-//
-//         let path_cert = PathBuf::from("/home/mathieu/mgdev/certs/pki.nginx.cert");
-//         let path_key = PathBuf::from("/home/mathieu/mgdev/certs/pki.nginx.key");
-//         let (_, env_privee_autre) = charger_enveloppe_privee_part(path_cert.as_path(), path_key.as_path());
-//         let enveloppe_privee_autre = Arc::new(env_privee_autre);
-//
-//         let config = init();
-//         let enveloppe_privee = config.get_configuration_pki().get_enveloppe_privee();
-//
-//         // Stub middleware, resultat verification
-//         let middleware = MiddlewareStub{
-//             resultat: ResultatValidation {signature_valide: true, hachage_valide: Some(true), certificat_valide: true, regles_valides: true},
-//             certificat: Some(enveloppe_privee.enveloppe.clone())  // Injecter cert 4.secure
-//         };
-//
-//         // Creer permission
-//         let contenu_permission = PermissionDechiffrage {
-//             permission_hachage_bytes: vec!["DUMMY".into()],
-//             domaines_permis: None,
-//             user_id: None,
-//             permission_duree: 0,
-//         };
-//         let permission = MessageMilleGrillesBufferDefault::new_signer(
-//             enveloppe_privee.as_ref(),
-//             &contenu_permission,
-//             Some("domaine"),
-//             Some("action"),
-//             None::<&str>,
-//             None
-//         ).expect("mg");
-//
-//         // Stub message requete
-//         let requete = RequeteDechiffrage { liste_hachage_bytes: vec!["DUMMY".into()], permission: Some(permission), certificat_rechiffrage: None };
-//
-//         // Preparer message avec certificat "autre" (qui n'a pas exchange 4.secure)
-//         let mut message_valide_action = prep_mva(enveloppe_privee_autre.as_ref(), &requete);
-//
-//         sleep(Duration::new(1, 0)); // Attendre expiration de la permission
-//
-//         // verifier_autorisation_dechiffrage_global<M>(middleware: &M, m: &MessageValide, requete: &RequeteDechiffrage)
-//         let (global_permis, permission) = verifier_autorisation_dechiffrage_global(
-//             &middleware, &message_valide_action, &requete).await.expect("resultat");
-//
-//         debug!("acces_global_ok Resultat global_permis: {}, permission {:?}", global_permis, permission);
-//
-//         assert_eq!(false, global_permis);
-//         assert_eq!(true, permission.is_none());
-//     }
-//
-//     #[test]
-//     fn permission_specifique_tout() {
-//         setup("permission_specifique_tout");
-//
-//         let config = init();
-//         let enveloppe_privee = config.get_configuration_pki().get_enveloppe_privee();
-//
-//         let path_cert = PathBuf::from("/home/mathieu/mgdev/certs/pki.nginx.cert");
-//         let path_key = PathBuf::from("/home/mathieu/mgdev/certs/pki.nginx.key");
-//         let (_, env_privee_autre) = charger_enveloppe_privee_part(path_cert.as_path(), path_key.as_path());
-//         let enveloppe_privee_autre = Arc::new(env_privee_autre);
-//         let certificat_destination = enveloppe_privee_autre.enveloppe.clone();
-//
-//         // Creer permission
-//         let contenu_permission = PermissionDechiffrage {
-//             permission_hachage_bytes: vec!["DUMMY".into()],
-//             domaines_permis: None,
-//             user_id: None,
-//             permission_duree: 5,
-//         };
-//
-//         let enveloppe_permission = EnveloppePermission {
-//             enveloppe: enveloppe_privee.enveloppe.clone(),
-//             permission: contenu_permission,
-//         };
-//
-//         let identificateurs_document: HashMap<String, String> = HashMap::new();
-//         let cle = TransactionCle {
-//             cle: "CLE".into(),
-//             domaine: "domaine".into(),
-//             partition: None,
-//             format: FormatChiffrage::mgs2,
-//             hachage_bytes: "DUMMY".into(),
-//             identificateurs_document,
-//             iv: "iv".into(),
-//             tag: "tag".into(),
-//         };
-//
-//         let resultat = verifier_autorisation_dechiffrage_specifique(
-//             certificat_destination.as_ref(), Some(&enveloppe_permission), &cle).expect("permission");
-//         debug!("permission_specifique_tout Resultat : {:?}", resultat);
-//
-//         assert_eq!(true, resultat);
-//     }
-//
-//     #[test]
-//     fn permission_specifique_domaine() {
-//         setup("permission_specifique_domaine");
-//
-//         let config = init();
-//         let enveloppe_privee = config.get_configuration_pki().get_enveloppe_privee();
-//
-//         let path_cert = PathBuf::from("/home/mathieu/mgdev/certs/pki.nginx.cert");
-//         let path_key = PathBuf::from("/home/mathieu/mgdev/certs/pki.nginx.key");
-//         let (_, env_privee_autre) = charger_enveloppe_privee_part(path_cert.as_path(), path_key.as_path());
-//         let enveloppe_privee_autre = Arc::new(env_privee_autre);
-//         let certificat_destination = enveloppe_privee_autre.enveloppe.clone();
-//
-//         // Creer permission
-//         let contenu_permission = PermissionDechiffrage {
-//             permission_hachage_bytes: vec!["DUMMY".into()],
-//             domaines_permis: Some(vec!["DomaineTest".into()]),
-//             user_id: None,
-//             permission_duree: 5,
-//         };
-//
-//         let enveloppe_permission = EnveloppePermission {
-//             enveloppe: enveloppe_privee.enveloppe.clone(),
-//             permission: contenu_permission,
-//         };
-//
-//         let identificateurs_document: HashMap<String, String> = HashMap::new();
-//         let cle = TransactionCle {
-//             cle: "CLE".into(),
-//             domaine: "DomaineTest".into(),
-//             partition: None,
-//             format: FormatChiffrage::mgs2,
-//             hachage_bytes: "DUMMY".into(),
-//             identificateurs_document,
-//             iv: "iv".into(),
-//             tag: "tag".into(),
-//         };
-//
-//         let resultat = verifier_autorisation_dechiffrage_specifique(
-//             certificat_destination.as_ref(), Some(&enveloppe_permission), &cle).expect("permission");
-//         debug!("permission_specifique_tout Resultat : {:?}", resultat);
-//
-//         assert_eq!(true, resultat);
-//     }
-//
-//     #[test]
-//     fn permission_specifique_domaine_refuse() {
-//         setup("permission_specifique_domaine_refuse");
-//
-//         let config = init();
-//         let enveloppe_privee = config.get_configuration_pki().get_enveloppe_privee();
-//
-//         let path_cert = PathBuf::from("/home/mathieu/mgdev/certs/pki.nginx.cert");
-//         let path_key = PathBuf::from("/home/mathieu/mgdev/certs/pki.nginx.key");
-//         let (_, env_privee_autre) = charger_enveloppe_privee_part(path_cert.as_path(), path_key.as_path());
-//         let enveloppe_privee_autre = Arc::new(env_privee_autre);
-//         let certificat_destination = enveloppe_privee_autre.enveloppe.clone();
-//
-//         // Creer permission
-//         let contenu_permission = PermissionDechiffrage {
-//             permission_hachage_bytes: vec!["DUMMY".into()],
-//             domaines_permis: Some(vec!["DomaineTest_MAUVAIS".into()]),
-//             user_id: None,
-//             permission_duree: 5,
-//         };
-//
-//         let enveloppe_permission = EnveloppePermission {
-//             enveloppe: enveloppe_privee.enveloppe.clone(),
-//             permission: contenu_permission,
-//         };
-//
-//         let identificateurs_document: HashMap<String, String> = HashMap::new();
-//         let cle = TransactionCle {
-//             cle: "CLE".into(),
-//             domaine: "DomaineTest".into(),
-//             partition: None,
-//             format: FormatChiffrage::mgs2,
-//             hachage_bytes: "DUMMY".into(),
-//             identificateurs_document,
-//             iv: "iv".into(),
-//             tag: "tag".into(),
-//         };
-//
-//         let resultat = verifier_autorisation_dechiffrage_specifique(
-//             certificat_destination.as_ref(), Some(&enveloppe_permission), &cle).expect("permission");
-//         debug!("permission_specifique_tout Resultat : {:?}", resultat);
-//
-//         assert_eq!(false, resultat);
-//     }
-//
-//     #[test]
-//     fn permission_specifique_user_id() {
-//         setup("permission_specifique_user_id");
-//
-//         let config = init();
-//         let enveloppe_privee = config.get_configuration_pki().get_enveloppe_privee();
-//
-//         let path_cert = PathBuf::from("/home/mathieu/mgdev/certs/pki.nginx.cert");
-//         let path_key = PathBuf::from("/home/mathieu/mgdev/certs/pki.nginx.key");
-//         let (_, env_privee_autre) = charger_enveloppe_privee_part(path_cert.as_path(), path_key.as_path());
-//         let enveloppe_privee_autre = Arc::new(env_privee_autre);
-//         let certificat_destination = enveloppe_privee_autre.enveloppe.clone();
-//
-//         // Creer permission
-//         let contenu_permission = PermissionDechiffrage {
-//             permission_hachage_bytes: vec!["DUMMY".into()],
-//             domaines_permis: None,
-//             user_id: Some("dummy_user".into()),
-//             permission_duree: 0,
-//         };
-//
-//         let enveloppe_permission = EnveloppePermission {
-//             enveloppe: enveloppe_privee.enveloppe.clone(),
-//             permission: contenu_permission,
-//         };
-//
-//         let identificateurs_document: HashMap<String, String> = HashMap::new();
-//         let cle = TransactionCle {
-//             cle: "CLE".into(),
-//             domaine: "DomaineTest".into(),
-//             partition: None,
-//             format: FormatChiffrage::mgs2,
-//             hachage_bytes: "DUMMY".into(),
-//             identificateurs_document,
-//             iv: "iv".into(),
-//             tag: "tag".into(),
-//         };
-//
-//         let resultat = verifier_autorisation_dechiffrage_specifique(
-//             certificat_destination.as_ref(), Some(&enveloppe_permission), &cle).expect("permission");
-//         debug!("permission_specifique_tout Resultat : {:?}", resultat);
-//
-//         assert_eq!(false, resultat);
-//     }
-// }
-//
-// #[cfg(test)]
-// mod test_integration {
-//     use millegrilles_common_rust::backup::CatalogueHoraire;
-//     use millegrilles_common_rust::formatteur_messages::MessageSerialise;
-//     use millegrilles_common_rust::generateur_messages::RoutageMessageAction;
-//     use millegrilles_common_rust::middleware::IsConfigurationPki;
-//     use millegrilles_common_rust::middleware_db::preparer_middleware_db;
-//     use millegrilles_common_rust::mongo_dao::convertir_to_bson;
-//     use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
-//     use millegrilles_common_rust::recepteur_messages::TypeMessage;
-//     use millegrilles_common_rust::tokio as tokio;
-//
-//     use crate::test_setup::setup;
-//
-//     use super::*;
-//
-//     #[tokio::test]
-//     async fn test_requete_dechiffrage() {
-//         setup("test_requete_dechiffrage");
-//         let (middleware, _, _, mut futures) = preparer_middleware_db(Vec::new(), None);
-//         let enveloppe_privee = middleware.get_enveloppe_privee();
-//         let fingerprint = enveloppe_privee.fingerprint().as_str();
-//
-//         let gestionnaire = GestionnaireMaitreDesClesPartition {fingerprint: fingerprint.into()};
-//         futures.push(tokio::spawn(async move {
-//
-//             let liste_hachages = vec![
-//                 "z8VxfRxXrdrbAAWQZS8uvFUEk1eA4CGYNUMsypLWdexZ8LKLVsrD6WsrsgmbMNMukoMFUzDbCjQZ2n3VeUFHvXcEDoF"
-//             ];
-//
-//             let contenu = json!({CHAMP_LISTE_HACHAGE_BYTES: liste_hachages});
-//             let message_mg = MessageMilleGrillesBufferDefault::new_signer(
-//                 enveloppe_privee.as_ref(),
-//                 &contenu,
-//                 DOMAINE_NOM.into(),
-//                 REQUETE_DECHIFFRAGE.into(),
-//                 None::<&str>,
-//                 None
-//             ).expect("message");
-//             let mut message = MessageSerialise::from_parsed(message_mg).expect("serialise");
-//
-//             // Injecter certificat utilise pour signer
-//             message.certificat = Some(enveloppe_privee.enveloppe.clone());
-//
-//             let mva = MessageValide::new(
-//                 message, "dummy_q", "routing_key", "domaine", "action", TypeMessageOut::Requete);
-//
-//             let reponse = requete_dechiffrage(middleware.as_ref(), mva, &gestionnaire).await.expect("dechiffrage");
-//             debug!("Reponse requete dechiffrage : {:?}", reponse);
-//
-//         }));
-//         // Execution async du test
-//         futures.next().await.expect("resultat").expect("ok");
-//     }
-//
-// }

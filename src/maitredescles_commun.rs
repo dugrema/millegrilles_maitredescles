@@ -13,15 +13,15 @@ use millegrilles_common_rust::middleware::Middleware;
 use millegrilles_common_rust::mongo_dao::{ChampIndex, IndexOptions, MongoDao};
 use millegrilles_common_rust::recepteur_messages::{MessageValide, TypeMessage};
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
-use millegrilles_common_rust::tokio::{sync::mpsc::Sender, time::{Duration, sleep}};
+use millegrilles_common_rust::tokio::{sync::mpsc::Sender, time::{sleep, Duration}};
 use millegrilles_common_rust::certificats::ordered_map;
 use millegrilles_common_rust::common_messages::{ReponseSignatureCertificat, RequeteDechiffrage};
 use millegrilles_common_rust::{multibase, multibase::Base, serde_json};
-use millegrilles_common_rust::bson::{Bson, bson, doc, Document, serde_helpers::chrono_datetime_as_bson_datetime};
+use millegrilles_common_rust::bson::{bson, doc, serde_helpers::chrono_datetime_as_bson_datetime, Bson, Document};
 use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::hachages::hacher_bytes;
-use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::{CleSecrete, FormatChiffrage, optionformatchiffragestr};
+use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::{optionformatchiffragestr, CleSecrete, FormatChiffrage};
 use millegrilles_common_rust::millegrilles_cryptographie::x25519::{chiffrer_asymmetrique_ed25519, CleSecreteX25519};
 use millegrilles_common_rust::millegrilles_cryptographie::x509::{EnveloppeCertificat, EnveloppePrivee};
 use millegrilles_common_rust::multibase::Base::Base58Btc;
@@ -36,104 +36,12 @@ use millegrilles_common_rust::millegrilles_cryptographie::heapless;
 use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::{SignatureDomaines, SignatureDomainesRef, SignatureDomainesVersion};
 
 use crate::chiffrage_cles::chiffrer_asymetrique_multibase;
+use crate::constants::{CHAMP_CLE_ID, CHAMP_NON_DECHIFFRABLE, DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION, EVENEMENT_DEMANDE_CLE_SYMMETRIQUE, INDEX_CLE_ID, INDEX_NON_DECHIFFRABLES};
 use crate::domaines_maitredescles::TypeGestionnaire;
 use crate::maitredescles_partition::GestionnaireMaitreDesClesPartition;
 use crate::maitredescles_rechiffrage::{CleInterneChiffree, HandlerCleRechiffrage};
 use crate::maitredescles_sqlite::GestionnaireMaitreDesClesSQLite;
-// use crate::maitredescles_volatil::{CleInterneChiffree, HandlerCleRechiffrage};
 use crate::messages::MessageReponseChiffree;
-
-pub const DOMAINE_NOM: &str = "MaitreDesCles";
-
-pub const NOM_COLLECTION_CONFIGURATION: &str = "MaitreDesCles/configuration";
-
-pub const INDEX_CLES_HACHAGE_BYTES: &str = "index_hachage_bytes";
-pub const INDEX_CLE_ID: &str = "index_cle_id";
-//pub const INDEX_CLES_HACHAGE_BYTES_DOMAINES: &str = "index_hachage_bytes_domaines";
-pub const INDEX_NON_DECHIFFRABLES: &str = "index_non_dechiffrables";
-
-pub const NOM_Q_DECHIFFRAGE: &str = "MaitreDesCles/dechiffrage";
-
-pub const REQUETE_SYNCHRONISER_CLES: &str = "synchroniserCles";
-pub const REQUETE_DECHIFFRAGE: &str = "dechiffrage";
-pub const REQUETE_DECHIFFRAGE_V2: &str = "dechiffrageV2";
-pub const REQUETE_VERIFIER_PREUVE: &str = "verifierPreuve";
-pub const REQUETE_TRANSFERT_CLES: &str = "transfertCles";
-
-// pub const COMMANDE_SAUVEGARDER_CLE: &str = "sauvegarderCle";
-pub const COMMANDE_CONFIRMER_CLES_SUR_CA: &str = "confirmerClesSurCa";
-pub const COMMANDE_CLE_SYMMETRIQUE: &str = "cleSymmetrique";
-// pub const COMMANDE_AJOUTER_CLE_DOMAINES: &str = "ajouterCleDomaines";
-
-pub const TRANSACTION_CLE: &str = "cle";
-pub const TRANSACTION_CLE_V2: &str = "cleV2";
-
-pub const CHAMP_CLE_SYMMETRIQUE: &str = "cle_symmetrique";
-pub const CHAMP_NONCE_SYMMETRIQUE: &str = "nonce_symmetrique";
-
-// pub const EVENEMENT_RESET_CLES_NON_DECHIFFRABLES: &str = "resetClesNonDechiffrables";
-pub const EVENEMENT_CLES_MANQUANTES_PARTITION: &str = "clesManquantesPartition";
-pub const EVENEMENT_CLE_RECUE_PARTITION: &str = "cleRecuePartition";
-pub const EVENEMENT_DEMANDE_CLE_SYMMETRIQUE: &str = "demandeCleSymmetrique";
-pub const COMMANDE_VERIFIER_CLE_SYMMETRIQUE: &str = "verifierCleSymmetrique";
-
-pub const CHAMP_HACHAGE_BYTES: &str = "hachage_bytes";
-pub const CHAMP_DOMAINE: &str = "domaine";
-pub const CHAMP_LISTE_HACHAGE_BYTES: &str = "liste_hachage_bytes";
-// pub const CHAMP_LISTE_FINGERPRINTS: &str = "liste_fingerprints";
-pub const CHAMP_LISTE_CLE_REF: &str = "liste_cle_ref";
-pub const CHAMP_LISTE_CLE_ID: &str = "liste_cle_id";
-pub const CHAMP_NON_DECHIFFRABLE: &str = "non_dechiffrable";
-// pub const CHAMP_FINGERPRINT_PK: &str = "fingerprint_pk";
-pub const CHAMP_CLE_ID: &str = "cle_id";
-// pub const CHAMP_CLE_REF: &str = "cle_ref";
-pub const CHAMP_CLES: &str = "cles";
-pub const CHAMP_LISTE_CLES: &str = "liste_cles";
-
-// pub const CHAMP_ACCES: &str = "acces";
-pub const CHAMP_ACCES_REFUSE: &str = "0.refuse";
-pub const CHAMP_ACCES_PERMIS: &str = "1.permis";
-// pub const CHAMP_ACCES_ERREUR: &str = "2.erreur";
-// pub const CHAMP_ACCES_CLE_INDECHIFFRABLE: &str = "3.indechiffrable";
-pub const CHAMP_ACCES_CLE_INCONNUE: &str = "4.inconnue";
-
-/// Creer index MongoDB
-pub async fn preparer_index_mongodb_custom<M>(middleware: &M, nom_collection_cles: &str, ca: bool) -> Result<(), Error>
-    where M: MongoDao + ConfigMessages
-{
-    // Index cle_id
-    let options_cle_id = IndexOptions {
-        nom_index: Some(String::from(INDEX_CLE_ID)),
-        unique: true,
-    };
-    let champs_index_cle_id = vec!(
-        ChampIndex {nom_champ: String::from(CHAMP_CLE_ID), direction: 1},
-    );
-    middleware.create_index(
-        middleware,
-        nom_collection_cles,
-        champs_index_cle_id,
-        Some(options_cle_id)
-    ).await?;
-
-    // Index cles non dechiffrable
-    let options_non_dechiffrables = IndexOptions {
-        nom_index: Some(String::from(INDEX_NON_DECHIFFRABLES)),
-        unique: false,
-    };
-    let champs_index_non_dechiffrables = vec!(
-        ChampIndex {nom_champ: String::from(CHAMP_NON_DECHIFFRABLE), direction: 1},
-        ChampIndex {nom_champ: String::from(CHAMP_CREATION), direction: 1},
-    );
-    middleware.create_index(
-        middleware,
-        nom_collection_cles,
-        champs_index_non_dechiffrables,
-        Some(options_non_dechiffrables)
-    ).await?;
-
-    Ok(())
-}
 
 pub async fn entretien<M>(middleware: Arc<M>)
     where M: Middleware + 'static
@@ -228,70 +136,6 @@ pub async fn emettre_cles_symmetriques<M>(middleware: &M, rechiffreur: &HandlerC
     Ok(())
 }
 
-// pub async fn entretien_rechiffreur<M>(middleware: Arc<M>, handler_rechiffrage: Arc<HandlerCleRechiffrage>)
-//     where M: Middleware + 'static
-// {
-//     loop {
-//         debug!("Cycle entretien rechiffreur {}", DOMAINE_NOM);
-//
-//         match handler_rechiffrage.fingerprint() {
-//             Some(f) => {
-//                 // Rechiffreur pret et actif
-//                 debug!("entretien_rechiffreur Handler rechiffrage fingerprint {:?}", f);
-//             },
-//             None => {
-//                 info!("entretien_rechiffreur Aucun certificat configure, on demande de generer un certificat volatil");
-//                 match generer_certificat_volatil(middleware.as_ref(), handler_rechiffrage.as_ref()).await {
-//                     Ok(()) => (),
-//                     Err(e) => error!("entretien_rechiffreur Erreur generation certificat volatil : {:?}", e)
-//                 }
-//             }
-//         };
-//
-//         sleep(Duration::new(30, 0)).await;
-//     }
-// }
-
-// pub async fn generer_certificat_volatil<M>(middleware: &M, handler_rechiffrage: &HandlerCleRechiffrage)
-//     -> Result<(), Error>
-//     where M: GenerateurMessages + ValidateurX509
-// {
-//     let idmg = middleware.get_enveloppe_signature().idmg()?;
-//     let csr_volatil = handler_rechiffrage.generer_csr(idmg)?;
-//     debug!("generer_certificat_volatil Demande de generer un certificat volatil, CSR : {:?}", csr_volatil);
-//
-//     let routage = RoutageMessageAction::builder(DOMAINE_PKI, "signerCsr")
-//         .exchanges(vec![Securite::L3Protege])
-//         // .timeout_blocking(20000)
-//         .build();
-//
-//     let reponse: ReponseSignatureCertificat = match middleware.transmettre_commande(routage, &csr_volatil, true).await? {
-//         Some(m) => match m {
-//             TypeMessage::Valide(m) => m.message.parsed.map_contenu()?,
-//             _ => Err(format!("maitredescles_commun.generer_certificat_volatil Mauvais type de reponse"))?
-//         },
-//         None => Err(format!("maitredescles_commun.generer_certificat_volatil Aucune reponse recue"))?
-//     };
-//
-//     debug!("generer_certificat_volatil Reponse {:?}", reponse);
-//     if Some(true) == reponse.ok {
-//         match reponse.certificat {
-//             Some(vec_certificat_pem) => {
-//                 let enveloppe_ca = middleware.get_enveloppe_signature().enveloppe_ca.clone();
-//                 let ca_pem = enveloppe_ca.get_pem_vec().get(0).expect("CA").pem.clone();
-//                 let enveloppe = middleware.charger_enveloppe(&vec_certificat_pem, None, Some(ca_pem.as_str())).await?;
-//                 handler_rechiffrage.set_certificat(enveloppe, enveloppe_ca)?;
-//
-//                 // Certificat pret
-//                 Ok(())
-//             },
-//             None => Err(format!("maitredescles_commun.generer_certificat_volatil Erreur creation certificat volatil cote serveur, aucun certificat recu"))?
-//         }
-//     } else {
-//         Err(format!("maitredescles_commun.generer_certificat_volatil Erreur creation certificat volatil cote serveur (certissuer ok == false)"))?
-//     }
-// }
-
 pub async fn preparer_rechiffreur<M>(middleware: &M, handler_rechiffrage: &HandlerCleRechiffrage)
     -> Result<(), Error>
     where M: GenerateurMessages + ValidateurX509
@@ -308,30 +152,6 @@ where M: Middleware + 'static {
 
     Ok(())
 }
-
-/// Emettre evenement de cles inconnues suite a une requete. Permet de faire la difference entre
-/// les cles de la requete et les cles connues.
-// pub async fn emettre_cles_inconnues<M>(middleware: &M, requete: &RequeteDechiffrage, cles_connues: Vec<String>)
-//     -> Result<(), Error>
-//     where M: GenerateurMessages
-// {
-//     // Faire une demande interne de sync pour voir si les cles inconnues existent (async)
-//     let routage_evenement_manquant = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION)
-//         .exchanges(vec![Securite::L4Secure])
-//         .build();
-//
-//     let mut set_cles = HashSet::new();
-//     set_cles.extend(requete.liste_hachage_bytes.iter());
-//     let mut set_cles_trouvees = HashSet::new();
-//     set_cles_trouvees.extend(&cles_connues);
-//     let set_diff = set_cles.difference(&set_cles_trouvees);
-//     let liste_cles: Vec<String> = set_diff.into_iter().map(|m| m.to_string()).collect();
-//     debug!("emettre_cles_inconnues Requete de cles inconnues : {:?}", liste_cles);
-//
-//     let evenement_cles_manquantes = ReponseSynchroniserCles { liste_hachage_bytes: liste_cles };
-//
-//     Ok(middleware.emettre_evenement(routage_evenement_manquant.clone(), &evenement_cles_manquantes).await?)
-// }
 
 /// Emettre evenement de cles inconnues suite a une requete. Permet de faire la difference entre
 /// les cles de la requete et les cles connues.
