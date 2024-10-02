@@ -18,8 +18,7 @@ use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange,
 use millegrilles_common_rust::recepteur_messages::MessageValide;
 
 use crate::constants::*;
-// use crate::maitredescles_ca::GestionnaireMaitreDesClesCa;
-use crate::maitredescles_mongodb::{commande_ajouter_cle_domaines, commande_ajouter_cle_domaines_ca, commande_confirmer_cles_sur_ca, commande_reset_non_dechiffrable_ca, commande_transfert_cle_ca, evenement_cle_manquante, evenement_cle_recue_partition, preparer_index_mongodb_custom, requete_cles_non_dechiffrables, requete_compter_cles_non_dechiffrables_ca, requete_synchronizer_cles, transaction_cle, transaction_cle_v2, NOM_COLLECTION_CA_CLES, NOM_COLLECTION_TRANSACTIONS};
+use crate::maitredescles_mongodb::*;
 
 
 #[derive(Clone)]
@@ -35,7 +34,7 @@ impl MaitreDesClesCaManager {
 
 impl GestionnaireDomaineV2 for MaitreDesClesCaManager {
     fn get_collection_transactions(&self) -> Option<String> {
-        Some(String::from(NOM_COLLECTION_TRANSACTIONS))
+        Some(String::from(NOM_COLLECTION_TRANSACTIONS_CA))
     }
 
     fn get_collections_volatiles(&self) -> Result<Vec<String>, CommonError> {
@@ -172,7 +171,7 @@ fn preparer_queues() -> Vec<QueueType> {
     // Queue commande de sauvegarde de cle
     queues.push(QueueType::ExchangeQueue (
         ConfigQueue {
-            nom_queue: String::from(format!("{}/sauvegarder", NOM_COLLECTION_TRANSACTIONS)),
+            nom_queue: String::from(format!("{}/sauvegarder", DOMAINE_NOM)),
             routing_keys: rk_sauvegarder_cle,
             ttl: None,
             durable: true,
