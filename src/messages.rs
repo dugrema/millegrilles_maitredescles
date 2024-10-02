@@ -1,19 +1,22 @@
-use std::collections::HashMap;
-use std::str::from_utf8;
+use crate::maitredescles_commun::RowClePartitionRef;
 use log::{debug, error};
 use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::common_messages::DataDechiffre;
 use millegrilles_common_rust::error::Error;
 use millegrilles_common_rust::generateur_messages::GenerateurMessages;
 use millegrilles_common_rust::hachages::verifier_multihash;
-use millegrilles_common_rust::{hex, multibase};
-use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::FormatChiffrage;
+use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::{optionformatchiffragestr, FormatChiffrage};
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_cles::CleChiffrageHandler;
-use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::{DechiffrageInterMillegrilleOwned, MessageMilleGrillesBufferDefault, MessageMilleGrillesOwned, MessageMilleGrillesRef, MessageMilleGrillesRefDefault};
-use millegrilles_common_rust::millegrilles_cryptographie::x25519::{CleSecreteX25519, dechiffrer_asymmetrique_ed25519};
-use millegrilles_common_rust::millegrilles_cryptographie::x509::EnveloppeCertificat;
+use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::SignatureDomaines;
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::epochseconds;
+use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::optionepochseconds;
+use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::{DechiffrageInterMillegrilleOwned, MessageMilleGrillesBufferDefault, MessageMilleGrillesOwned, MessageMilleGrillesRef, MessageMilleGrillesRefDefault};
+use millegrilles_common_rust::millegrilles_cryptographie::x25519::{dechiffrer_asymmetrique_ed25519, CleSecreteX25519};
+use millegrilles_common_rust::millegrilles_cryptographie::x509::EnveloppeCertificat;
+use millegrilles_common_rust::{chrono, hex, multibase};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::str::from_utf8;
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct RequeteVerifierPreuve {
@@ -152,5 +155,43 @@ impl MessageReponseChiffree {
         // // debug!("formatteur_messages.MessageReponseChiffree.dechiffrer Data dechiffre {:?}", String::from_utf8(data_dechiffre.data_dechiffre.clone()));
         //
         // Ok(data_dechiffre)
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RequeteClesNonDechiffrable {
+    pub limite: Option<u64>,
+    // pub page: Option<u64>,
+    pub skip: Option<u64>,
+    #[serde(default, skip_serializing_if="Option::is_none", with="optionepochseconds")]
+    pub date_creation_min: Option<chrono::DateTime<Utc>>,
+    pub exclude_hachage_bytes: Option<Vec<String>>
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RecupererCleCa {
+    pub signature: SignatureDomaines,
+
+    // Valeurs dechiffrage contenu V1 (obsolete)
+    #[serde(default, skip_serializing_if="Option::is_none", with="optionformatchiffragestr")]
+    pub format: Option<FormatChiffrage>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub iv: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub tag: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub header: Option<String>,
+}
+
+impl<'a> TryFrom<RowClePartitionRef<'a>> for RecupererCleCa {
+    type Error = Error;
+    fn try_from(value: RowClePartitionRef<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            signature: value.signature.try_into()?,
+            format: value.format,
+            iv: match value.iv { Some(inner) => Some(inner.to_string()), None => None },
+            tag: match value.tag { Some(inner) => Some(inner.to_string()), None => None },
+            header: match value.header { Some(inner) => Some(inner.to_string()), None => None },
+        })
     }
 }

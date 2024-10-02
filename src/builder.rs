@@ -15,8 +15,9 @@ use millegrilles_common_rust::tokio::spawn;
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::error::{Error as CommonError, Error};
 use millegrilles_common_rust::middleware::{charger_certificats_chiffrage, Middleware};
-use millegrilles_common_rust::tokio::time::sleep;
 use millegrilles_common_rust::transactions::resoumettre_transactions;
+use millegrilles_common_rust::tokio::time::{sleep, Duration as DurationTokio};
+
 use crate::ca_manager::{preparer_index_mongodb_ca, MaitreDesClesCaManager};
 use crate::domaines_maitredescles::TypeGestionnaire;
 use crate::maitredescles_ca::GestionnaireMaitreDesClesCa;
@@ -184,6 +185,10 @@ async fn thread_entretien<M>(_gestionnaire: &MaitreDesClesManager, middleware: &
 where M: Middleware
 {
     warn!("TODO - Implement thread_entretien");  // TODO
+    loop {
+        let intervalle_entretien = DurationTokio::new(300, 0);
+        sleep(intervalle_entretien).await;
+    }
     // let intervalle_entretien: chrono::Duration = chrono::Duration::minutes(5);
     //
     // let mut certificat_emis = false;
