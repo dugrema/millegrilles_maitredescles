@@ -38,10 +38,10 @@ use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::{Signat
 
 use crate::chiffrage_cles::chiffrer_asymetrique_multibase;
 use crate::constants::{CHAMP_CLE_ID, CHAMP_NON_DECHIFFRABLE, DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION, EVENEMENT_DEMANDE_CLE_SYMMETRIQUE, INDEX_CLE_ID, INDEX_NON_DECHIFFRABLES, REQUETE_TRANSFERT_CLES};
-use crate::domaines_maitredescles::TypeGestionnaire;
-use crate::maitredescles_partition::GestionnaireMaitreDesClesPartition;
+// use crate::domaines_maitredescles::TypeGestionnaire;
+// use crate::maitredescles_partition::GestionnaireMaitreDesClesPartition;
 use crate::maitredescles_rechiffrage::{CleInterneChiffree, HandlerCleRechiffrage};
-use crate::maitredescles_sqlite::GestionnaireMaitreDesClesSQLite;
+// use crate::maitredescles_sqlite::GestionnaireMaitreDesClesSQLite;
 use crate::messages::MessageReponseChiffree;
 
 pub async fn entretien<M>(middleware: Arc<M>)

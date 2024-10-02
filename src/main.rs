@@ -1,9 +1,9 @@
-mod domaines_maitredescles;
-mod maitredescles_partition;
-mod maitredescles_ca;
-mod maitredescles_commun;
+// mod domaines_maitredescles;
+// mod maitredescles_partition;
+// mod maitredescles_ca;
 //mod maitredescles_redis;  // Obsolete
-mod maitredescles_sqlite;
+// mod maitredescles_sqlite;
+mod maitredescles_commun;
 mod maitredescles_rechiffrage;
 mod messages;
 mod chiffrage_cles;

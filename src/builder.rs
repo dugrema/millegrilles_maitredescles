@@ -19,13 +19,13 @@ use millegrilles_common_rust::transactions::resoumettre_transactions;
 use millegrilles_common_rust::tokio::time::{sleep, Duration as DurationTokio};
 
 use crate::ca_manager::{preparer_index_mongodb_ca, MaitreDesClesCaManager};
-use crate::domaines_maitredescles::TypeGestionnaire;
-use crate::maitredescles_ca::GestionnaireMaitreDesClesCa;
+// use crate::domaines_maitredescles::TypeGestionnaire;
+// use crate::maitredescles_ca::GestionnaireMaitreDesClesCa;
 use crate::maitredescles_commun::emettre_cles_symmetriques;
-use crate::maitredescles_partition::GestionnaireMaitreDesClesPartition;
+// use crate::maitredescles_partition::GestionnaireMaitreDesClesPartition;
 use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
-use crate::maitredescles_sqlite::GestionnaireMaitreDesClesSQLite;
-use crate::mongodb_manager::{preparer_index_mongodb, MaitreDesClesMongoDbManager};
+// use crate::maitredescles_sqlite::GestionnaireMaitreDesClesSQLite;
+use crate::mongodb_manager::{preparer_index_mongodb, thread_entretien_manager_mongodb, MaitreDesClesMongoDbManager};
 use crate::sqlite_manager::MaitreDesClesSqliteManager;
 
 pub trait MaitreDesClesSymmetricManagerTrait {}
@@ -109,6 +109,7 @@ where M: Middleware + IsConfigNoeud
         MaitreDesClesSymmetricManager::MongoDb(manager) => {
             futures.extend(manager.initialiser(middleware).await.expect("initialize mongodb"));
             preparer_index_mongodb(middleware).await.expect("index mongodb ca");
+            futures.push(spawn(thread_entretien_manager_mongodb(manager, middleware)));
         },
         MaitreDesClesSymmetricManager::SQLite(manager) => {
             futures.extend(manager.initialiser(middleware).await.expect("initialize sqlite"));

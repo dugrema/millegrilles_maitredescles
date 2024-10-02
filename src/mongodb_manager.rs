@@ -2,31 +2,36 @@ use std::sync::{Arc, Mutex};
 use log::{debug, error, info};
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::backup::BackupStarter;
-use millegrilles_common_rust::certificats::ValidateurX509;
+use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
+use millegrilles_common_rust::chiffrage_cle::CleChiffrageCache;
 use millegrilles_common_rust::configuration::ConfigMessages;
-use millegrilles_common_rust::constantes::{Securite, COMMANDE_AJOUTER_CLE_DOMAINES, COMMANDE_CERT_MAITREDESCLES, COMMANDE_ROTATION_CERTIFICAT, COMMANDE_SAUVEGARDER_CLE, COMMANDE_TRANSFERT_CLE, DEFAULT_Q_TTL, EVENEMENT_CLES_RECHIFFRAGE, MAITREDESCLES_REQUETE_DECHIFFRAGE_MESSAGE, MAITREDESCLES_REQUETE_DECHIFFRAGE_V2};
+use millegrilles_common_rust::constantes::{RolesCertificats, Securite, COMMANDE_AJOUTER_CLE_DOMAINES, COMMANDE_CERT_MAITREDESCLES, COMMANDE_ROTATION_CERTIFICAT, COMMANDE_SAUVEGARDER_CLE, COMMANDE_TRANSFERT_CLE, DEFAULT_Q_TTL, DELEGATION_GLOBALE_PROPRIETAIRE, EVENEMENT_CLES_RECHIFFRAGE, MAITREDESCLES_REQUETE_DECHIFFRAGE_MESSAGE, MAITREDESCLES_REQUETE_DECHIFFRAGE_V2, COMMANDE_DECHIFFRER_CLE};
 use millegrilles_common_rust::db_structs::TransactionValide;
 use millegrilles_common_rust::domaines_traits::{AiguillageTransactions, ConsommateurMessagesBus, GestionnaireBusMillegrilles, GestionnaireDomaineV2};
 use millegrilles_common_rust::domaines_v2::GestionnaireDomaineSimple;
 use millegrilles_common_rust::error::{Error as CommonError, Error};
 use millegrilles_common_rust::futures_util::stream::FuturesUnordered;
 use millegrilles_common_rust::generateur_messages::GenerateurMessages;
+use millegrilles_common_rust::get_domaine_action;
 use millegrilles_common_rust::messages_generiques::MessageCedule;
 use millegrilles_common_rust::middleware::{Middleware, MiddlewareMessages, RabbitMqTrait};
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_cles::CleChiffrageHandler;
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
 use millegrilles_common_rust::mongo_dao::MongoDao;
-use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange, NamedQueue, QueueType};
+use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange, NamedQueue, QueueType, TypeMessageOut};
 use millegrilles_common_rust::recepteur_messages::{MessageValide, TypeMessage};
 use millegrilles_common_rust::tokio::spawn;
 use millegrilles_common_rust::tokio::sync::mpsc;
 use millegrilles_common_rust::tokio::time::{sleep, Duration as DurationTokio};
-
+use millegrilles_common_rust::tokio_stream::StreamExt;
 use crate::builder::MaitreDesClesSymmetricManagerTrait;
+use crate::commands::{commande_dechiffrer_cle, commande_verifier_cle_symmetrique};
 use crate::constants::*;
-use crate::maitredescles_commun::GestionnaireRessources;
-use crate::maitredescles_mongodb::{confirmer_cles_ca, preparer_index_mongodb_custom, preparer_index_mongodb_partition, preparer_rechiffreur_mongo, synchroniser_cles, NOM_COLLECTION_SYMMETRIQUE_CLES};
+use crate::maitredescles_commun::{emettre_certificat_maitredescles, GestionnaireRessources};
+use crate::maitredescles_mongodb::{commande_ajouter_cle_domaines, commande_cle_symmetrique, commande_rechiffrer_batch, commande_rotation_certificat, commande_transfert_cle, confirmer_cles_ca, evenement_cle_manquante, evenement_cle_rechiffrage, preparer_index_mongodb_custom, preparer_index_mongodb_partition, preparer_rechiffreur_mongo, requete_dechiffrage_v2, requete_transfert_cles, synchroniser_cles, NOM_COLLECTION_SYMMETRIQUE_CLES};
+// use crate::maitredescles_partition::GestionnaireMaitreDesClesPartition;
 use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
+use crate::requests::{requete_certificat_maitredescles, requete_dechiffrage_message};
 
 pub struct MaitreDesClesMongoDbManager {
     pub handler_rechiffrage: HandlerCleRechiffrage,
@@ -69,6 +74,15 @@ impl MaitreDesClesMongoDbManager {
         Ok(Some(format!("MaitreDesCles/{}/volatils", fingerprint)))
     }
 
+    pub async fn emettre_certificat_maitredescles<M>(&self, middleware: &M, m: Option<MessageValide>) -> Result<(), Error>
+    where M: GenerateurMessages
+    {
+        if self.handler_rechiffrage.is_ready() {
+            emettre_certificat_maitredescles(middleware, m).await
+        } else {
+            Ok(())
+        }
+    }
 }
 
 impl MaitreDesClesSymmetricManagerTrait for MaitreDesClesMongoDbManager {}
@@ -130,35 +144,32 @@ impl ConsommateurMessagesBus for MaitreDesClesMongoDbManager {
     where
         M: Middleware
     {
-        todo!()
-        // consommer_requete(middleware, message, self).await
+        consommer_requete(middleware, message, self).await
     }
 
     async fn consommer_commande<M>(&self, middleware: &M, message: MessageValide) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where
         M: Middleware
     {
-        todo!()
-        // consommer_commande(middleware, message, self).await
+        consommer_commande(middleware, message, self).await
     }
 
     async fn consommer_evenement<M>(&self, middleware: &M, message: MessageValide) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where
         M: Middleware
     {
-        todo!()
-        // consommer_evenement(self, middleware, message).await
+        consommer_evenement(middleware, self, message).await
     }
 }
 
 #[async_trait]
 impl AiguillageTransactions for MaitreDesClesMongoDbManager {
-    async fn aiguillage_transaction<M>(&self, middleware: &M, transaction: TransactionValide) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    async fn aiguillage_transaction<M>(&self, _middleware: &M, transaction: TransactionValide) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where
         M: ValidateurX509 + GenerateurMessages + MongoDao
     {
-        todo!()
-        // aiguillage_transaction(self, middleware, transaction).await
+        // Aucunes transactions
+        Err(Error::String(format!("MaitreDesClesMongoDbManager.aiguillage_transaction: Transaction {} est de type non gere ", transaction.transaction.id)))
     }
 }
 
@@ -306,11 +317,13 @@ where M: MongoDao + ConfigMessages
     Ok(())
 }
 
-pub async fn entretien() {
-
+pub async fn thread_entretien_manager_mongodb<M>(manager: &'static MaitreDesClesMongoDbManager, middleware: &'static M)
+    where M: Middleware
+{
+    thread_configuration_rechiffrage(manager, middleware).await
 }
 
-async fn thread_configuration_rechiffrage<M>(manager: &'static MaitreDesClesMongoDbManager, middleware: &'static M)
+pub async fn thread_configuration_rechiffrage<M>(manager: &'static MaitreDesClesMongoDbManager, middleware: &'static M)
     where M: Middleware
 {
     let mut q_preparation_completee = false;
@@ -366,5 +379,116 @@ async fn thread_configuration_rechiffrage<M>(manager: &'static MaitreDesClesMong
 
         // Sleep cycle
         sleep(DurationTokio::new(30, 0)).await;
+    }
+}
+
+async fn consommer_requete<M>(middleware: &M, message: MessageValide, gestionnaire: &MaitreDesClesMongoDbManager) -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
+where M: ValidateurX509 + GenerateurMessages + MongoDao + CleChiffrageHandler + CleChiffrageCache + ConfigMessages
+{
+    debug!("Consommer requete {:?}", message.type_message);
+
+    let user_id = message.certificat.get_user_id()?;
+    let role_prive = message.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
+
+    if role_prive == true && user_id.is_some() {
+        // OK
+    } else if message.certificat.verifier_exchanges(vec![Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure])? {
+        // Autorisation : On accepte les requetes de tous les echanges
+    } else if message.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
+        // Delegation globale
+    } else {
+        Err(Error::Str("Autorisation requete invalide, acces refuse"))?
+    }
+
+    // Note : aucune verification d'autorisation - tant que le certificat est valide (deja verifie), on repond.
+    let (domaine, action) = get_domaine_action!(message.type_message);
+
+    match domaine.as_str() {
+        DOMAINE_NOM => {
+            match action.as_str() {
+                REQUETE_CERTIFICAT_MAITREDESCLES => requete_certificat_maitredescles(middleware, message).await,
+                REQUETE_DECHIFFRAGE_V2 => requete_dechiffrage_v2(middleware, message, &gestionnaire.handler_rechiffrage).await,
+                MAITREDESCLES_REQUETE_DECHIFFRAGE_MESSAGE => requete_dechiffrage_message(middleware, message).await,
+                REQUETE_TRANSFERT_CLES => requete_transfert_cles(middleware, message, &gestionnaire.handler_rechiffrage).await,
+                _ => {
+                    error!("Message requete/action inconnue : '{}'. Message dropped.", action);
+                    Ok(None)
+                },
+            }
+        },
+        _ => {
+            error!("Message requete/domaine inconnu : '{}'. Message dropped.", domaine);
+            Ok(None)
+        },
+    }
+}
+
+async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnaire: &MaitreDesClesMongoDbManager)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
+    where M: GenerateurMessages + MongoDao + CleChiffrageHandler + ValidateurX509
+{
+    debug!("consommer_commande {:?}", m.type_message);
+
+    let user_id = m.certificat.get_user_id()?;
+    let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
+
+    let (_, action) = get_domaine_action!(m.type_message);
+
+    if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
+        match action.as_str() {
+            // Commandes standard
+            COMMANDE_AJOUTER_CLE_DOMAINES => commande_ajouter_cle_domaines(middleware, m, &gestionnaire.handler_rechiffrage).await,
+            COMMANDE_CERT_MAITREDESCLES => {emettre_certificat_maitredescles(middleware, Some(m)).await?; Ok(None)},
+
+            COMMANDE_RECHIFFRER_BATCH => commande_rechiffrer_batch(middleware, m, &gestionnaire.handler_rechiffrage).await,
+            COMMANDE_CLE_SYMMETRIQUE => commande_cle_symmetrique(middleware, m, &gestionnaire.handler_rechiffrage).await,
+            COMMANDE_VERIFIER_CLE_SYMMETRIQUE => commande_verifier_cle_symmetrique(middleware, &gestionnaire.handler_rechiffrage).await,
+
+            // Commandes inconnues
+            _ => Err(format!("maitredescles_partition.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, action))?,
+        }
+    } else if role_prive == true && user_id.is_some() {
+        match action.as_str() {
+            // Commandes standard
+            COMMANDE_AJOUTER_CLE_DOMAINES => commande_ajouter_cle_domaines(middleware, m, &gestionnaire.handler_rechiffrage).await,
+            COMMANDE_CERT_MAITREDESCLES => {emettre_certificat_maitredescles(middleware, Some(m)).await?; Ok(None)},
+            // Commandes inconnues
+            _ => Err(format!("maitredescles_partition.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, action))?,
+        }
+    } else if m.certificat.verifier_exchanges(vec![Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure])? {
+        match action.as_str() {
+            // Commandes standard
+            COMMANDE_AJOUTER_CLE_DOMAINES => commande_ajouter_cle_domaines(middleware, m, &gestionnaire.handler_rechiffrage).await,
+            COMMANDE_TRANSFERT_CLE => commande_transfert_cle(middleware, m, &gestionnaire.handler_rechiffrage).await,
+            COMMANDE_CERT_MAITREDESCLES => {emettre_certificat_maitredescles(middleware, Some(m)).await?; Ok(None)},
+            COMMANDE_ROTATION_CERTIFICAT => commande_rotation_certificat(middleware, m, &gestionnaire.handler_rechiffrage).await,
+            COMMANDE_CLE_SYMMETRIQUE => commande_cle_symmetrique(middleware, m, &gestionnaire.handler_rechiffrage).await,
+            COMMANDE_DECHIFFRER_CLE => commande_dechiffrer_cle(middleware, m).await,
+            // Commandes inconnues
+            _ => Err(format!("maitredescles_partition.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, action))?,
+        }
+    } else {
+        Err(Error::Str("Autorisation commande invalide, acces refuse"))?
+    }
+}
+
+async fn consommer_evenement<M>(middleware: &M, gestionnaire: &MaitreDesClesMongoDbManager, m: MessageValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
+    where M: ValidateurX509 + GenerateurMessages + MongoDao + CleChiffrageHandler + CleChiffrageCache + ConfigMessages
+{
+    debug!("consommer_evenement Consommer evenement : {:?}", &m.type_message);
+
+    // Autorisation : doit etre de niveau 3.protege ou 4.secure
+    match m.certificat.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure])? {
+        true => Ok(()),
+        false => Err(format!("consommer_evenement: Evenement invalide (pas 3.protege ou 4.secure)")),
+    }?;
+
+    let (_, action) = get_domaine_action!(m.type_message);
+
+    match action.as_str() {
+        EVENEMENT_CLES_MANQUANTES_PARTITION => evenement_cle_manquante(middleware, &m).await,
+        EVENEMENT_CLES_RECHIFFRAGE => evenement_cle_rechiffrage(middleware, m, &gestionnaire.handler_rechiffrage).await,
+        _ => Err(format!("consommer_evenement: Mauvais type d'action pour un evenement : {}", action))?,
     }
 }

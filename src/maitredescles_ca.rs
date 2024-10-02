@@ -31,7 +31,7 @@ use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::{optionform
 use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::{SignatureDomaines, SignatureDomainesVersion};
 use crate::constants::*;
 use crate::maitredescles_commun::*;
-use crate::maitredescles_mongodb::{commande_confirmer_cles_sur_ca, commande_reset_non_dechiffrable_ca, evenement_cle_manquante, evenement_cle_recue_partition, preparer_index_mongodb_custom, requete_cles_non_dechiffrables, requete_compter_cles_non_dechiffrables_ca, requete_synchronizer_cles, transaction_cle, transaction_cle_v2, NOM_COLLECTION_CA_CLES, NOM_COLLECTION_TRANSACTIONS};
+use crate::maitredescles_mongodb::{commande_confirmer_cles_sur_ca, commande_reset_non_dechiffrable_ca, evenement_cle_manquante, evenement_cle_recue_partition, preparer_index_mongodb_custom, requete_cles_non_dechiffrables, requete_compter_cles_non_dechiffrables_ca, requete_synchronizer_cles, transaction_cle, transaction_cle_v2, NOM_COLLECTION_CA_CLES, NOM_COLLECTION_TRANSACTIONS_CA};
 use crate::messages::{RecupererCleCa, RequeteClesNonDechiffrable};
 // pub const NOM_COLLECTION_CLES: &str = "MaitreDesCles/CA/cles";
 // pub const NOM_COLLECTION_TRANSACTIONS: &str = "MaitreDesCles/CA";
@@ -65,7 +65,7 @@ impl TraiterTransaction for GestionnaireMaitreDesClesCa {
 impl GestionnaireDomaine for GestionnaireMaitreDesClesCa {
     fn get_nom_domaine(&self) -> String { String::from(DOMAINE_NOM) }
 
-    fn get_collection_transactions(&self) -> Option<String> { Some(String::from(NOM_COLLECTION_TRANSACTIONS)) }
+    fn get_collection_transactions(&self) -> Option<String> { Some(String::from(NOM_COLLECTION_TRANSACTIONS_CA)) }
 
     fn get_collections_documents(&self) -> Result<Vec<String>, Error> { Ok(vec![String::from(NOM_COLLECTION_CA_CLES)]) }
 
@@ -190,7 +190,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
     // Queue commande de sauvegarde de cle
     queues.push(QueueType::ExchangeQueue (
         ConfigQueue {
-            nom_queue: String::from(format!("{}/sauvegarder", NOM_COLLECTION_TRANSACTIONS)),
+            nom_queue: String::from(format!("{}/sauvegarder", DOMAINE_NOM)),
             routing_keys: rk_sauvegarder_cle,
             ttl: None,
             durable: true,

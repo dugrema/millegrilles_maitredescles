@@ -18,8 +18,8 @@ use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange,
 use millegrilles_common_rust::recepteur_messages::MessageValide;
 
 use crate::constants::*;
-use crate::maitredescles_ca::GestionnaireMaitreDesClesCa;
-use crate::maitredescles_mongodb::{commande_ajouter_cle_domaines, commande_confirmer_cles_sur_ca, commande_reset_non_dechiffrable_ca, commande_transfert_cle_ca, evenement_cle_manquante, evenement_cle_recue_partition, preparer_index_mongodb_custom, requete_cles_non_dechiffrables, requete_compter_cles_non_dechiffrables_ca, requete_synchronizer_cles, transaction_cle, transaction_cle_v2, NOM_COLLECTION_CA_CLES, NOM_COLLECTION_TRANSACTIONS};
+// use crate::maitredescles_ca::GestionnaireMaitreDesClesCa;
+use crate::maitredescles_mongodb::{commande_ajouter_cle_domaines, commande_ajouter_cle_domaines_ca, commande_confirmer_cles_sur_ca, commande_reset_non_dechiffrable_ca, commande_transfert_cle_ca, evenement_cle_manquante, evenement_cle_recue_partition, preparer_index_mongodb_custom, requete_cles_non_dechiffrables, requete_compter_cles_non_dechiffrables_ca, requete_synchronizer_cles, transaction_cle, transaction_cle_v2, NOM_COLLECTION_CA_CLES, NOM_COLLECTION_TRANSACTIONS};
 
 
 #[derive(Clone)]
@@ -57,7 +57,7 @@ impl GestionnaireBusMillegrilles for MaitreDesClesCaManager {
     }
 
     fn preparer_queues(&self) -> Vec<QueueType> {
-        preparer_queues(self)
+        preparer_queues()
     }
 }
 
@@ -105,7 +105,7 @@ impl GestionnaireDomaineSimple for MaitreDesClesCaManager {
     }
 }
 
-fn preparer_queues(manager: &MaitreDesClesCaManager) -> Vec<QueueType> {
+fn preparer_queues() -> Vec<QueueType> {
     let mut rk_volatils = Vec::new();
     let mut rk_sauvegarder_cle = Vec::new();
 
@@ -243,7 +243,7 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
         // Delegation proprietaire
         match action.as_str() {
             // Commandes standard
-            COMMANDE_AJOUTER_CLE_DOMAINES => commande_ajouter_cle_domaines(middleware, m, gestionnaire_ca).await,
+            COMMANDE_AJOUTER_CLE_DOMAINES => commande_ajouter_cle_domaines_ca(middleware, m, gestionnaire_ca).await,
             COMMANDE_RESET_NON_DECHIFFRABLE => commande_reset_non_dechiffrable_ca(middleware, m).await,
 
             // Commandes inconnues
@@ -253,7 +253,7 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
         // Exchanges, serveur protege
         match action.as_str() {
             // Commandes standard
-            COMMANDE_AJOUTER_CLE_DOMAINES => commande_ajouter_cle_domaines(middleware, m, gestionnaire_ca).await,
+            COMMANDE_AJOUTER_CLE_DOMAINES => commande_ajouter_cle_domaines_ca(middleware, m, gestionnaire_ca).await,
             COMMANDE_CONFIRMER_CLES_SUR_CA => commande_confirmer_cles_sur_ca(middleware, m).await,
             COMMANDE_TRANSFERT_CLE_CA => commande_transfert_cle_ca(middleware, m, gestionnaire_ca).await,
 
@@ -264,7 +264,7 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
         // Tous exchanges, serveur
         match action.as_str() {
             // Commandes standard
-            COMMANDE_AJOUTER_CLE_DOMAINES => commande_ajouter_cle_domaines(middleware, m, gestionnaire_ca).await,
+            COMMANDE_AJOUTER_CLE_DOMAINES => commande_ajouter_cle_domaines_ca(middleware, m, gestionnaire_ca).await,
 
             // Commandes inconnues
             _ => Err(format!("maitredescles_ca.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, action))?,
@@ -273,7 +273,7 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
         // Usagers prives
         match action.as_str() {
             // Commandes standard
-            COMMANDE_AJOUTER_CLE_DOMAINES => commande_ajouter_cle_domaines(middleware, m, gestionnaire_ca).await,
+            COMMANDE_AJOUTER_CLE_DOMAINES => commande_ajouter_cle_domaines_ca(middleware, m, gestionnaire_ca).await,
 
             // Commandes inconnues
             _ => Err(format!("maitredescles_ca.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, action))?,
