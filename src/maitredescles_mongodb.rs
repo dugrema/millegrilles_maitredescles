@@ -1,39 +1,40 @@
-use std::collections::HashSet;
-use std::str::from_utf8;
-use log::{debug, error, info, trace, warn};
-use millegrilles_common_rust::chrono::{Duration, Utc};
-use millegrilles_common_rust::bson::doc;
-use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
-use millegrilles_common_rust::configuration::ConfigMessages;
-use millegrilles_common_rust::error::Error;
-use millegrilles_common_rust::constantes::{RolesCertificats, Securite, CHAMP_CREATION, CHAMP_MODIFICATION, COMMANDE_TRANSFERT_CLE, COMMANDE_TRANSFERT_CLE_CA};
-use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
-use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_cles::CleChiffrageHandler;
-use millegrilles_common_rust::millegrilles_cryptographie::{deser_message_buffer, heapless};
-use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::{SignatureDomaines, SignatureDomainesVersion};
-use millegrilles_common_rust::millegrilles_cryptographie::x25519::{dechiffrer_asymmetrique_ed25519, CleSecreteX25519};
-use millegrilles_common_rust::mongodb::options::{CountOptions, FindOneOptions, FindOptions, Hint, UpdateOptions};
-use millegrilles_common_rust::recepteur_messages::{MessageValide, TypeMessage};
-use millegrilles_common_rust::tokio_stream::StreamExt;
-use millegrilles_common_rust::base64::{engine::general_purpose::STANDARD_NO_PAD as base64_nopad, Engine as _};
-use millegrilles_common_rust::chiffrage_cle::CommandeAjouterCleDomaine;
-use millegrilles_common_rust::common_messages::{ReponseRequeteDechiffrageV2, RequeteDechiffrage, ResponseRequestDechiffrageV2Cle};
-use millegrilles_common_rust::db_structs::TransactionValide;
-use millegrilles_common_rust::domaines_traits::{AiguillageTransactions, GestionnaireDomaineV2};
-use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction_serializable_v2;
-use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
-use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, verifier_erreur_duplication_mongo, ChampIndex, IndexOptions, MongoDao};
-use millegrilles_common_rust::{millegrilles_cryptographie, multibase, serde_json};
-use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
-use millegrilles_common_rust::serde_json::json;
 use crate::ca_manager::MaitreDesClesCaManager;
 use crate::constants::*;
-// use crate::maitredescles_ca::GestionnaireMaitreDesClesCa;
-use crate::maitredescles_commun::{effectuer_requete_cles_manquantes, emettre_demande_cle_symmetrique, preparer_rechiffreur, verifier_permission_rechiffrage, CleSecreteRechiffrage, CleSynchronisation, CleTransfert, CleTransfertCa, CommandeCleSymmetrique, CommandeRechiffrerBatch, CommandeRotationCertificat, CommandeTransfertClesCaV2, CommandeTransfertClesV2, DocumentCleRechiffrage, ErreurPermissionRechiffrage, EvenementClesRechiffrage, ReponseConfirmerClesSurCa, ReponseSynchroniserCles, RequeteSynchroniserCles, RequeteTransfert, RowClePartition, RowClePartitionRef, TransactionCle, TransactionCleV2};
-// use crate::maitredescles_partition::GestionnaireMaitreDesClesPartition;
+use crate::maitredescles_commun::{effectuer_requete_cles_manquantes, emettre_demande_cle_symmetrique, preparer_rechiffreur, verifier_permission_rechiffrage, CleSecreteRechiffrage, CleSynchronisation, CleTransfert, CleTransfertCa, CommandeCleSymmetrique, CommandeRechiffrerBatch, CommandeRechiffrerBatchChiffree, CommandeRechiffrerBatchDechiffree, CommandeRotationCertificat, CommandeTransfertClesCaV2, CommandeTransfertClesV2, DocumentCleRechiffrage, ErreurPermissionRechiffrage, EvenementClesRechiffrage, ReponseConfirmerClesSurCa, ReponseSynchroniserCles, RequeteSynchroniserCles, RequeteTransfert, RowCleCaRef, RowClePartition, RowClePartitionRef, TransactionCle, TransactionCleV2};
 use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
 use crate::messages::{RecupererCleCa, RequeteClesNonDechiffrable};
 use crate::mongodb_manager::MaitreDesClesMongoDbManager;
+use log::{debug, error, info, trace, warn};
+use millegrilles_common_rust::base64::{engine::general_purpose::STANDARD_NO_PAD as base64_nopad, Engine as _};
+use millegrilles_common_rust::bson::doc;
+use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
+use millegrilles_common_rust::chiffrage_cle::CommandeAjouterCleDomaine;
+use millegrilles_common_rust::chrono::{DateTime, Duration, Utc};
+use millegrilles_common_rust::common_messages::{ReponseRequeteDechiffrageV2, RequeteDechiffrage, ResponseRequestDechiffrageV2Cle};
+use millegrilles_common_rust::configuration::ConfigMessages;
+use millegrilles_common_rust::constantes::{RolesCertificats, Securite, CHAMP_CREATION, CHAMP_MODIFICATION, COMMANDE_TRANSFERT_CLE, COMMANDE_TRANSFERT_CLE_CA};
+use millegrilles_common_rust::db_structs::TransactionValide;
+use millegrilles_common_rust::domaines_traits::{AiguillageTransactions, GestionnaireDomaineV2};
+use millegrilles_common_rust::error::Error;
+use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
+use millegrilles_common_rust::jwt_simple::prelude::Serialize;
+use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction_serializable_v2;
+use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_cles::CleChiffrageHandler;
+use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::{SignatureDomaines, SignatureDomainesVersion};
+use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::optionepochseconds;
+use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
+use millegrilles_common_rust::millegrilles_cryptographie::x25519::{dechiffrer_asymmetrique_ed25519, CleSecreteX25519};
+use millegrilles_common_rust::millegrilles_cryptographie::{deser_message_buffer, heapless};
+use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, verifier_erreur_duplication_mongo, ChampIndex, IndexOptions, MongoDao};
+use millegrilles_common_rust::mongodb::options::{CountOptions, FindOneOptions, FindOptions, Hint, UpdateOptions};
+use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
+use millegrilles_common_rust::recepteur_messages::{MessageValide, TypeMessage};
+use millegrilles_common_rust::serde_json::json;
+use millegrilles_common_rust::tokio_stream::StreamExt;
+use millegrilles_common_rust::{millegrilles_cryptographie, multibase, serde_json};
+use std::collections::HashSet;
+use std::str::from_utf8;
+use millegrilles_common_rust::dechiffrage::decrypt_document;
 
 pub const NOM_COLLECTION_TRANSACTIONS: &str = DOMAINE_NOM;
 pub const NOM_COLLECTION_TRANSACTIONS_CA: &str = "MaitreDesCles/CA";
@@ -671,6 +672,64 @@ pub async fn requete_cles_non_dechiffrables<M>(middleware: &M, m: MessageValide)
 
     let reponse = json!({ "cles": cles, "date_creation_max": date_creation.as_ref() });
     debug!("requete_cles_non_dechiffrables Reponse {} cles rechiffrable", cles.len());
+    Ok(Some(middleware.build_reponse(&reponse)?.0))
+}
+
+#[derive(Serialize)]
+struct ReponseClesNonDechiffrables {
+    cles: Vec<RecupererCleCa>,
+    #[serde(default, skip_serializing_if="Option::is_none", with="optionepochseconds")]
+    date_creation_max: Option<DateTime<Utc>>,
+    idx: u64,
+}
+
+pub async fn requete_cles_non_dechiffrables_v2<M>(middleware: &M, m: MessageValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
+    where M: GenerateurMessages + MongoDao
+{
+    debug!("requete_rechiffrer_cles Consommer requete : {:?}", m.type_message);
+    let requete: RequeteClesNonDechiffrable = deser_message_buffer!(m.message);
+    let limite_docs = requete.limite.unwrap_or_else(|| 1000) as usize;
+
+    let mut curseur = {
+        let skip_docs_opts = requete.skip.unwrap_or_else(|| 0 as u64);
+
+        let hint = Hint::Name("_id_".to_string());
+        let opts = FindOptions::builder()
+            .hint(hint)
+            .skip(skip_docs_opts)
+            // .limit(Some(limite_docs as i64))
+            .build();
+        let collection = middleware.get_collection_typed::<RowCleCaRef>(NOM_COLLECTION_CA_CLES)?;
+        collection.find(None, opts).await?
+    };
+
+    let mut idx = requete.skip.unwrap_or_else(||0);
+
+    let mut cles = Vec::new();
+    let mut date_creation = None;
+    while curseur.advance().await? {
+        idx += 1;  // Compter toutes les cles pour permettre d'aller chercher la suite dans la prochaine requete.
+        let cle = curseur.deserialize_current()?;
+        // Verifier si la cle est non dechiffrable, skip sinon.
+        if Some(true) == cle.non_dechiffrable {
+            // Conserver date de creation - On est juste interesse en la derniere date (plus recente).
+            date_creation = Some(cle.date_creation.clone());
+
+            let cle: RecupererCleCa = cle.try_into()?;  // Version owned
+            cles.push(cle);
+        }
+        if cles.len() >= limite_docs {
+            break;
+        }
+    }
+
+    let reponse = ReponseClesNonDechiffrables {
+        cles,
+        date_creation_max: date_creation,
+        idx,
+    };
+
     Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
@@ -1373,21 +1432,14 @@ pub async fn commande_rechiffrer_batch<M>(middleware: &M, mut m: MessageValide, 
         _ => Err(Error::Str("commande_rechiffrer_batch Mauvais type de message - doit etre commande"))?
     };
 
-    let enveloppe_privee = middleware.get_enveloppe_signature();
-    let commande: CommandeRechiffrerBatch = message_ref.dechiffrer(enveloppe_privee.as_ref())?;
+    let commande: CommandeRechiffrerBatchChiffree = deser_message_buffer!(m.message);
+    let cles_dechiffrees: CommandeRechiffrerBatchDechiffree = decrypt_document(middleware, commande.cles)?;
 
-    let fingerprint_ca = enveloppe_privee.enveloppe_ca.fingerprint()?;
-    let fingerprint = enveloppe_privee.enveloppe_pub.fingerprint()?;
-
-    // debug!("commande_rechiffrer_batch Consommer commande : {:?}", &m.message);
     let nom_collection_cles = NOM_COLLECTION_SYMMETRIQUE_CLES;
-    let collection = middleware.get_collection(nom_collection_cles)?;
-
     // Traiter chaque cle individuellement
     let mut liste_cle_id: Vec<String> = Vec::new();
-    for cle in commande.cles {
-        let cle_id = sauvegarder_cle_rechiffrage(
-            middleware, handler_rechiffrage, nom_collection_cles, cle).await?;
+    for (cle_id, cle) in cles_dechiffrees.cles {
+        sauvegarder_cle_rechiffrage(middleware, handler_rechiffrage, nom_collection_cles, cle).await?;
         liste_cle_id.push(cle_id);
     }
 

@@ -30,6 +30,7 @@ use millegrilles_common_rust::serde_json::json;
 use millegrilles_common_rust::tokio::{sync::mpsc::Sender, time::{sleep, Duration}};
 use millegrilles_common_rust::{multibase, multibase::Base, serde_json};
 use millegrilles_common_rust::hachages::hacher_bytes;
+use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_docs::EncryptedDocument;
 use millegrilles_common_rust::multibase::Base::Base58Btc;
 use millegrilles_common_rust::multihash::Code;
 use crate::constants::{DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION, EVENEMENT_DEMANDE_CLE_SYMMETRIQUE, REQUETE_TRANSFERT_CLES};
@@ -451,6 +452,17 @@ impl CleSecreteRechiffrage {
 
 }
 
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CommandeRechiffrerBatchChiffree {
+    pub cles: EncryptedDocument
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CommandeRechiffrerBatchDechiffree {
+    pub cles: HashMap<String, CleSecreteRechiffrage>
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CommandeRechiffrerBatch {
     pub cles: Vec<CleSecreteRechiffrage>
@@ -715,10 +727,32 @@ impl RowClePartition {
 
 }
 
+#[derive(Deserialize)]
+pub struct RowCleCaRef<'a> {
+    pub cle_id: &'a str,
+    pub signature: SignatureDomainesRef<'a>,
+    pub dirty: Option<bool>,
+    pub non_dechiffrable: Option<bool>,
+    #[serde(rename(deserialize="_mg-creation"),
+        deserialize_with="bson::serde_helpers::chrono_datetime_as_bson_datetime::deserialize")]
+    pub date_creation: DateTime<Utc>,
+
+    // Information de dechiffrage contenu (utilise avec signature version 0)
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "optionformatchiffragestr")]
+    pub format: Option<FormatChiffrage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iv: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tag: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub header: Option<&'a str>,
+
+}
+
 #[derive(Clone, Deserialize)]
 pub struct RowClePartitionRef<'a> {
     // Identite
-    pub cle_id: String,
+    pub cle_id: &'a str,
     pub signature: SignatureDomainesRef<'a>,
 
     // Cle chiffree

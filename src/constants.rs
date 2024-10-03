@@ -60,5 +60,6 @@ pub const NOM_Q_CA_TRIGGERS: &str = "MaitreDesCles/CA/triggers";
 
 
 pub const REQUETE_CLES_NON_DECHIFFRABLES: &str = "clesNonDechiffrables";
+pub const REQUETE_CLES_NON_DECHIFFRABLES_V2: &str = "clesNonDechiffrablesV2";
 pub const REQUETE_COMPTER_CLES_NON_DECHIFFRABLES: &str = "compterClesNonDechiffrables";
 pub const COMMANDE_RESET_NON_DECHIFFRABLE: &str = "resetNonDechiffrable";

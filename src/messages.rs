@@ -1,4 +1,4 @@
-use crate::maitredescles_commun::RowClePartitionRef;
+use crate::maitredescles_commun::{RowCleCaRef, RowClePartitionRef};
 use log::{debug, error};
 use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::common_messages::DataDechiffre;
@@ -171,6 +171,7 @@ pub struct RequeteClesNonDechiffrable {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RecupererCleCa {
     pub signature: SignatureDomaines,
+    pub cle_id: String,
 
     // Valeurs dechiffrage contenu V1 (obsolete)
     #[serde(default, skip_serializing_if="Option::is_none", with="optionformatchiffragestr")]
@@ -188,6 +189,21 @@ impl<'a> TryFrom<RowClePartitionRef<'a>> for RecupererCleCa {
     fn try_from(value: RowClePartitionRef<'a>) -> Result<Self, Self::Error> {
         Ok(Self {
             signature: value.signature.try_into()?,
+            cle_id: value.cle_id.to_string(),
+            format: value.format,
+            iv: match value.iv { Some(inner) => Some(inner.to_string()), None => None },
+            tag: match value.tag { Some(inner) => Some(inner.to_string()), None => None },
+            header: match value.header { Some(inner) => Some(inner.to_string()), None => None },
+        })
+    }
+}
+
+impl<'a> TryFrom<RowCleCaRef<'a>> for RecupererCleCa {
+    type Error = Error;
+    fn try_from(value: RowCleCaRef<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            signature: value.signature.try_into()?,
+            cle_id: value.cle_id.to_string(),
             format: value.format,
             iv: match value.iv { Some(inner) => Some(inner.to_string()), None => None },
             tag: match value.tag { Some(inner) => Some(inner.to_string()), None => None },
