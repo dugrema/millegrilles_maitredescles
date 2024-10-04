@@ -18,6 +18,7 @@ use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange,
 use millegrilles_common_rust::recepteur_messages::MessageValide;
 
 use crate::constants::*;
+use crate::maintenance::maintenance_ca;
 use crate::maitredescles_mongodb::*;
 
 
@@ -90,11 +91,11 @@ impl AiguillageTransactions for MaitreDesClesCaManager {
 
 #[async_trait]
 impl GestionnaireDomaineSimple for MaitreDesClesCaManager {
-    async fn traiter_cedule<M>(&self, _middleware: &M, _trigger: &MessageCedule) -> Result<(), CommonError>
+    async fn traiter_cedule<M>(&self, middleware: &M, trigger: &MessageCedule) -> Result<(), CommonError>
     where
         M: MiddlewareMessages + BackupStarter + MongoDao
     {
-        Ok(())
+        maintenance_ca(middleware, trigger).await
     }
 }
 

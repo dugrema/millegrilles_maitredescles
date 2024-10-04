@@ -813,6 +813,7 @@ where M: GenerateurMessages + MongoDao + ValidateurX509,
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
+/// Conserver la presence d'une cle dechiffrable par au moins une partition.
 pub async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages + MongoDao
@@ -828,13 +829,13 @@ pub async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValide)
         // CHAMP_HACHAGE_BYTES: {"$in": &requete.liste_hachage_bytes },
         // "$or": CleSynchronisation::get_bson_filter(&requete.liste_cle_id)?,
         "cle_id": {"$in": &requete.liste_cle_id},
-        CHAMP_NON_DECHIFFRABLE: true,
+        // CHAMP_NON_DECHIFFRABLE: true,
     };
 
     // Marquer les cles recues comme dechiffrables sur au moins une partition
     let ops = doc! {
         "$set": { CHAMP_NON_DECHIFFRABLE: false},
-        "$currentDate": { CHAMP_MODIFICATION: true }
+        "$currentDate": { CHAMP_MODIFICATION: true, CHAMP_DERNIERE_PRESENCE: true }
     };
     let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
     let resultat_update = collection.update_many(filtre_update, ops, None).await?;
@@ -895,7 +896,7 @@ pub async fn commande_transfert_cle_ca<M,G>(middleware: &M, m: MessageValide, ge
             .projection(doc! {CHAMP_CLE_ID: 1})
             .build();
         let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
-        let resultat = collection.find_one(filtre, options).await?;
+        let resultat = collection.find_one(filtre.clone(), options).await?;
 
         if resultat.is_none() {
             match cle.signature.version {
@@ -936,6 +937,12 @@ pub async fn commande_transfert_cle_ca<M,G>(middleware: &M, m: MessageValide, ge
                         middleware, &transaction_cle, gestionnaire, DOMAINE_NOM, TRANSACTION_CLE_V2).await?;
                 }
             }
+
+            // Mettre la jour la derniere presence
+            let ops = doc! {"$currentDate": {CHAMP_DERNIERE_PRESENCE: true}};
+            collection.update_one(filtre, ops, None).await?;
+        } else {
+            todo!()
         }
     }
 
@@ -1654,4 +1661,18 @@ pub async fn evenement_cle_rechiffrage<M>(middleware: &M, m: MessageValide, hand
     }
 
     Ok(None)
+}
+
+pub async fn marquer_cles_ca_timeout<M>(middleware: &M) -> Result<(), Error>
+    where M: MongoDao
+{
+    let expired = Utc::now() - Duration::hours(12);
+    let filtre = doc!{CHAMP_DERNIERE_PRESENCE: {"$lte": expired}};
+    let ops = doc!{
+        "$set": {CHAMP_NON_DECHIFFRABLE: true},
+        "$currentDate": {CHAMP_MODIFICATION: true}
+    };
+    let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
+    collection.update_many(filtre, ops, None).await?;
+    Ok(())
 }

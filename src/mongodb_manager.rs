@@ -27,6 +27,7 @@ use millegrilles_common_rust::tokio_stream::StreamExt;
 use crate::builder::MaitreDesClesSymmetricManagerTrait;
 use crate::commands::{commande_dechiffrer_cle, commande_verifier_cle_symmetrique};
 use crate::constants::*;
+use crate::maintenance::maintenance_mongodb;
 use crate::maitredescles_commun::{emettre_certificat_maitredescles, GestionnaireRessources};
 use crate::maitredescles_mongodb::{commande_ajouter_cle_domaines, commande_cle_symmetrique, commande_rechiffrer_batch, commande_rotation_certificat, commande_transfert_cle, confirmer_cles_ca, evenement_cle_manquante, evenement_cle_rechiffrage, preparer_index_mongodb_custom, preparer_index_mongodb_partition, preparer_rechiffreur_mongo, requete_dechiffrage_v2, requete_transfert_cles, synchroniser_cles, NOM_COLLECTION_SYMMETRIQUE_CLES};
 // use crate::maitredescles_partition::GestionnaireMaitreDesClesPartition;
@@ -175,11 +176,11 @@ impl AiguillageTransactions for MaitreDesClesMongoDbManager {
 
 #[async_trait]
 impl GestionnaireDomaineSimple for MaitreDesClesMongoDbManager {
-    async fn traiter_cedule<M>(&self, _middleware: &M, _trigger: &MessageCedule) -> Result<(), CommonError>
+    async fn traiter_cedule<M>(&self, middleware: &M, trigger: &MessageCedule) -> Result<(), CommonError>
     where
         M: MiddlewareMessages + BackupStarter + MongoDao
     {
-        Ok(())
+        maintenance_mongodb(middleware, trigger, &self.handler_rechiffrage).await
     }
 }
 

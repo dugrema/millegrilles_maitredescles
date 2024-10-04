@@ -31,6 +31,7 @@ pub const CHAMP_LISTE_HACHAGE_BYTES: &str = "liste_hachage_bytes";
 pub const CHAMP_LISTE_CLE_REF: &str = "liste_cle_ref";
 pub const CHAMP_LISTE_CLE_ID: &str = "liste_cle_id";
 pub const CHAMP_NON_DECHIFFRABLE: &str = "non_dechiffrable";
+pub const CHAMP_DERNIERE_PRESENCE: &str = "derniere_presence";
 // pub const CHAMP_FINGERPRINT_PK: &str = "fingerprint_pk";
 pub const CHAMP_CLE_ID: &str = "cle_id";
 // pub const CHAMP_CLE_REF: &str = "cle_ref";
