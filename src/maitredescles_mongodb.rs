@@ -942,7 +942,8 @@ pub async fn commande_transfert_cle_ca<M,G>(middleware: &M, m: MessageValide, ge
             let ops = doc! {"$currentDate": {CHAMP_DERNIERE_PRESENCE: true}};
             collection.update_one(filtre, ops, None).await?;
         } else {
-            todo!()
+            // TODO - Voir comment gerer cette situation
+            warn!("commande_transfert_cle Transfert de cle existante: {:?}, SKIPPED", cle_id);
         }
     }
 
