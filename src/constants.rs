@@ -46,6 +46,10 @@ pub const CHAMP_ACCES_CLE_INCONNUE: &str = "4.inconnue";
 
 pub const REQUETE_CERTIFICAT_MAITREDESCLES: &str = COMMANDE_CERT_MAITREDESCLES;
 
+pub const COMMAND_QUERY_REPAIR_SYMMETRIC_KEY: &str = "querySymmetricKeyRepair";
+
+pub const COMMAND_REPAIR_SYMMETRIC_KEY: &str = "repairSymmetricKey";
+
 pub const COMMANDE_RECHIFFRER_BATCH: &str = "rechiffrerBatch";
 
 pub const INDEX_RECHIFFRAGE_PK: &str = "fingerprint_pk";

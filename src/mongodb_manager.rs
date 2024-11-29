@@ -29,7 +29,7 @@ use crate::commands::{commande_dechiffrer_cle, commande_verifier_cle_symmetrique
 use crate::constants::*;
 use crate::maintenance::maintenance_mongodb;
 use crate::maitredescles_commun::{emettre_certificat_maitredescles, GestionnaireRessources};
-use crate::maitredescles_mongodb::{commande_ajouter_cle_domaines, commande_cle_symmetrique, commande_rechiffrer_batch, commande_rotation_certificat, commande_transfert_cle, confirmer_cles_ca, evenement_cle_manquante, evenement_cle_rechiffrage, preparer_index_mongodb_custom, preparer_index_mongodb_partition, preparer_rechiffreur_mongo, requete_dechiffrage_v2, requete_transfert_cles, synchroniser_cles, NOM_COLLECTION_SYMMETRIQUE_CLES};
+use crate::maitredescles_mongodb::{commande_ajouter_cle_domaines, commande_cle_symmetrique, commande_rechiffrer_batch, commande_rotation_certificat, commande_transfert_cle, confirmer_cles_ca, evenement_cle_manquante, evenement_cle_rechiffrage, preparer_index_mongodb_custom, preparer_index_mongodb_partition, preparer_rechiffreur_mongo, query_repair_symmetric_key, requete_dechiffrage_v2, requete_transfert_cles, synchroniser_cles, NOM_COLLECTION_SYMMETRIQUE_CLES};
 // use crate::maitredescles_partition::GestionnaireMaitreDesClesPartition;
 use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
 use crate::requests::{requete_certificat_maitredescles, requete_dechiffrage_message};
@@ -123,6 +123,7 @@ impl GestionnaireBusMillegrilles for MaitreDesClesMongoDbManager {
 
         let mut rks = Vec::new();
         rks.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, fingerprint, COMMANDE_CLE_SYMMETRIQUE), exchange: Securite::L3Protege });
+        rks.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMAND_QUERY_REPAIR_SYMMETRIC_KEY), exchange: Securite::L3Protege });
 
         // Queue volatils
         queues.push(QueueType::ExchangeQueue(
@@ -246,6 +247,7 @@ fn preparer_queues_rechiffrage(manager: &MaitreDesClesMongoDbManager) -> Result<
 
     // Rotation des cles
     rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, nom_partition, COMMANDE_ROTATION_CERTIFICAT), exchange: Securite::L3Protege });
+    rk_commande_cle.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMAND_QUERY_REPAIR_SYMMETRIC_KEY), exchange: Securite::L3Protege });
 
     // Requetes de dechiffrage/preuve re-emise sur le bus 4.secure lorsque la cle est inconnue
     rk_volatils.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_DECHIFFRAGE), exchange: Securite::L4Secure });
@@ -277,7 +279,7 @@ fn preparer_queues_rechiffrage(manager: &MaitreDesClesMongoDbManager) -> Result<
         ));
     }
 
-    // Queue commande de sauvegarde de cle
+    // Queue commande de sauvegarde de cle, recovery
     if let Some(nom_queue) = manager.get_q_sauvegarder_cle()? {
         queues.push(QueueType::ExchangeQueue(
             ConfigQueue {
@@ -444,6 +446,7 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnaire: &
             COMMANDE_RECHIFFRER_BATCH => commande_rechiffrer_batch(middleware, m, &gestionnaire.handler_rechiffrage).await,
             COMMANDE_CLE_SYMMETRIQUE => commande_cle_symmetrique(middleware, m, &gestionnaire.handler_rechiffrage).await,
             COMMANDE_VERIFIER_CLE_SYMMETRIQUE => commande_verifier_cle_symmetrique(middleware, &gestionnaire.handler_rechiffrage).await,
+            COMMAND_QUERY_REPAIR_SYMMETRIC_KEY => query_repair_symmetric_key(middleware, m, &gestionnaire.handler_rechiffrage).await,
 
             // Commandes inconnues
             _ => Err(format!("maitredescles_partition.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, action))?,

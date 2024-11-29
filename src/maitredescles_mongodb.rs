@@ -1469,7 +1469,6 @@ pub async fn commande_cle_symmetrique<M>(middleware: &M, m: MessageValide, handl
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    debug!("commande_cle_symmetrique Consommer commande : {:?}", & m.message);
     let commande: CommandeCleSymmetrique = deser_message_buffer!(m.message);
 
     // Verifier que le certificat est pour l'instance locale
@@ -1479,7 +1478,7 @@ pub async fn commande_cle_symmetrique<M>(middleware: &M, m: MessageValide, handl
     let instance_id = enveloppe_secrete.enveloppe_pub.get_common_name()?;
 
     if commande.fingerprint.as_str() != fingerprint.as_str() {
-        Err(format!("commande_cle_symmetrique Mauvais fingerprint, skip"))?
+        Err("commande_cle_symmetrique Mauvais fingerprint, skip")?
     }
 
     // Dechiffrage de la cle, mise en memoire - si echec, on ne peut pas dechiffrer la cle
@@ -1676,4 +1675,29 @@ pub async fn marquer_cles_ca_timeout<M>(middleware: &M) -> Result<(), Error>
     let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
     collection.update_many(filtre, ops, None).await?;
     Ok(())
+}
+
+pub async fn query_repair_symmetric_key<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage)
+                                           -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
+where M: GenerateurMessages + MongoDao + ValidateurX509 + CleChiffrageHandler
+{
+    if handler_rechiffrage.is_ready() {
+        // Nothing to do, symmetric key already loaded
+        return Ok(None);
+    }
+
+    let enveloppe_privee = middleware.get_enveloppe_signature();
+    let instance_id = enveloppe_privee.enveloppe_pub.get_common_name()?;
+
+    // Load the CA key
+    let collection = middleware.get_collection_typed::<DocumentCleRechiffrage>(NOM_COLLECTION_CONFIGURATION)?;
+    let filtre = doc!{"type": "CA", "instance_id": instance_id.as_str()};
+    if let Some(cle_ca) = collection.find_one(filtre, None).await? {
+        info!("preparer_rechiffreur_mongo CA symmetric key is present");
+        // Emit the symmetric key that was encrypted for the CA.
+        emettre_demande_cle_symmetrique(middleware, cle_ca.cle).await?;
+    }
+
+    // The reply goes through an event - multiple keymasters may be in the same situation
+    Ok(None)
 }
