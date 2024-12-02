@@ -117,8 +117,8 @@ where
         // Pousser l'information des cles locales (dechiffrables) vers le CA
         // La sync de base emet uniquement les cles qui ne sont pas encore confirmees par le CA
         // La sync complet re-emet toutes les cles dechiffrables localement.
-        //let reset_flag_confirmation_ca = hour % 6 == 3 && minute == 18;  // Sync complete
-        let reset_flag_confirmation_ca = true;
+        let reset_flag_confirmation_ca = hour % 6 == 3 && minute == 18;  // Sync complete
+        // let reset_flag_confirmation_ca = true;
         if reset_flag_confirmation_ca || minute % 15 == 3
         {
             debug!("maintenance_mongodb Pousser les cles locales vers le CA");
