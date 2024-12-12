@@ -11,11 +11,12 @@ use millegrilles_common_rust::error::Error;
 use millegrilles_common_rust::messages_generiques::{CommandeCleRechiffree, CommandeDechiffrerCle};
 use millegrilles_common_rust::millegrilles_cryptographie::deser_message_buffer;
 use millegrilles_common_rust::millegrilles_cryptographie::x25519::{chiffrer_asymmetrique_ed25519, dechiffrer_asymmetrique_ed25519};
+use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::multibase;
 use millegrilles_common_rust::multibase::Base;
 // use crate::maitredescles_partition::GestionnaireMaitreDesClesPartition;
 
-pub async fn commande_verifier_cle_symmetrique<M>(middleware: &M, handler_rechiffrage: &HandlerCleRechiffrage)
+pub async fn commande_verifier_cle_symmetrique<M>(middleware: &M, handler_rechiffrage: &HandlerCleRechiffrage, session: &mut ClientSession)
                                                   -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
 where M: ValidateurX509 + GenerateurMessages + MongoDao
 {
@@ -32,7 +33,7 @@ where M: ValidateurX509 + GenerateurMessages + MongoDao
     Ok(None)
 }
 
-pub async fn commande_dechiffrer_cle<M>(middleware: &M, m: MessageValide)
+pub async fn commande_dechiffrer_cle<M>(middleware: &M, m: MessageValide, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages
 {

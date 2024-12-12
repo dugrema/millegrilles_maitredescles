@@ -17,7 +17,8 @@ use millegrilles_common_rust::messages_generiques::MessageCedule;
 use millegrilles_common_rust::middleware::{Middleware, MiddlewareMessages, RabbitMqTrait};
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_cles::CleChiffrageHandler;
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
-use millegrilles_common_rust::mongo_dao::MongoDao;
+use millegrilles_common_rust::mongo_dao::{start_transaction_regular, MongoDao};
+use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange, NamedQueue, QueueType, TypeMessageOut};
 use millegrilles_common_rust::recepteur_messages::{MessageValide, TypeMessage};
 use millegrilles_common_rust::tokio::spawn;
@@ -166,7 +167,7 @@ impl ConsommateurMessagesBus for MaitreDesClesMongoDbManager {
 
 #[async_trait]
 impl AiguillageTransactions for MaitreDesClesMongoDbManager {
-    async fn aiguillage_transaction<M>(&self, _middleware: &M, transaction: TransactionValide) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    async fn aiguillage_transaction<M>(&self, _middleware: &M, transaction: TransactionValide, session: &mut ClientSession) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where
         M: ValidateurX509 + GenerateurMessages + MongoDao
     {
@@ -437,16 +438,19 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnaire: &
 
     let (_, action) = get_domaine_action!(m.type_message);
 
-    if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
+    let mut session = middleware.get_session().await?;
+    start_transaction_regular(&mut session).await?;
+
+    let result = if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
         match action.as_str() {
             // Commandes standard
-            COMMANDE_AJOUTER_CLE_DOMAINES => commande_ajouter_cle_domaines(middleware, m, &gestionnaire.handler_rechiffrage).await,
+            COMMANDE_AJOUTER_CLE_DOMAINES => commande_ajouter_cle_domaines(middleware, m, &gestionnaire.handler_rechiffrage, &mut session).await,
             COMMANDE_CERT_MAITREDESCLES => {emettre_certificat_maitredescles(middleware, Some(m)).await?; Ok(None)},
 
-            COMMANDE_RECHIFFRER_BATCH => commande_rechiffrer_batch(middleware, m, &gestionnaire.handler_rechiffrage).await,
-            COMMANDE_CLE_SYMMETRIQUE => commande_cle_symmetrique(middleware, m, &gestionnaire.handler_rechiffrage).await,
-            COMMANDE_VERIFIER_CLE_SYMMETRIQUE => commande_verifier_cle_symmetrique(middleware, &gestionnaire.handler_rechiffrage).await,
-            COMMAND_QUERY_REPAIR_SYMMETRIC_KEY => query_repair_symmetric_key(middleware, m, &gestionnaire.handler_rechiffrage).await,
+            COMMANDE_RECHIFFRER_BATCH => commande_rechiffrer_batch(middleware, m, &gestionnaire.handler_rechiffrage, &mut session).await,
+            COMMANDE_CLE_SYMMETRIQUE => commande_cle_symmetrique(middleware, m, &gestionnaire.handler_rechiffrage, &mut session).await,
+            COMMANDE_VERIFIER_CLE_SYMMETRIQUE => commande_verifier_cle_symmetrique(middleware, &gestionnaire.handler_rechiffrage, &mut session).await,
+            COMMAND_QUERY_REPAIR_SYMMETRIC_KEY => query_repair_symmetric_key(middleware, m, &gestionnaire.handler_rechiffrage, &mut session).await,
 
             // Commandes inconnues
             _ => Err(format!("maitredescles_partition.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, action))?,
@@ -454,7 +458,7 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnaire: &
     } else if role_prive == true && user_id.is_some() {
         match action.as_str() {
             // Commandes standard
-            COMMANDE_AJOUTER_CLE_DOMAINES => commande_ajouter_cle_domaines(middleware, m, &gestionnaire.handler_rechiffrage).await,
+            COMMANDE_AJOUTER_CLE_DOMAINES => commande_ajouter_cle_domaines(middleware, m, &gestionnaire.handler_rechiffrage, &mut session).await,
             COMMANDE_CERT_MAITREDESCLES => {emettre_certificat_maitredescles(middleware, Some(m)).await?; Ok(None)},
             // Commandes inconnues
             _ => Err(format!("maitredescles_partition.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, action))?,
@@ -462,17 +466,28 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnaire: &
     } else if m.certificat.verifier_exchanges(vec![Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure])? {
         match action.as_str() {
             // Commandes standard
-            COMMANDE_AJOUTER_CLE_DOMAINES => commande_ajouter_cle_domaines(middleware, m, &gestionnaire.handler_rechiffrage).await,
-            COMMANDE_TRANSFERT_CLE => commande_transfert_cle(middleware, m, &gestionnaire.handler_rechiffrage).await,
+            COMMANDE_AJOUTER_CLE_DOMAINES => commande_ajouter_cle_domaines(middleware, m, &gestionnaire.handler_rechiffrage, &mut session).await,
+            COMMANDE_TRANSFERT_CLE => commande_transfert_cle(middleware, m, &gestionnaire.handler_rechiffrage, &mut session).await,
             COMMANDE_CERT_MAITREDESCLES => {emettre_certificat_maitredescles(middleware, Some(m)).await?; Ok(None)},
-            COMMANDE_ROTATION_CERTIFICAT => commande_rotation_certificat(middleware, m, &gestionnaire.handler_rechiffrage).await,
-            COMMANDE_CLE_SYMMETRIQUE => commande_cle_symmetrique(middleware, m, &gestionnaire.handler_rechiffrage).await,
-            COMMANDE_DECHIFFRER_CLE => commande_dechiffrer_cle(middleware, m).await,
+            COMMANDE_ROTATION_CERTIFICAT => commande_rotation_certificat(middleware, m, &gestionnaire.handler_rechiffrage, &mut session).await,
+            COMMANDE_CLE_SYMMETRIQUE => commande_cle_symmetrique(middleware, m, &gestionnaire.handler_rechiffrage, &mut session).await,
+            COMMANDE_DECHIFFRER_CLE => commande_dechiffrer_cle(middleware, m, &mut session).await,
             // Commandes inconnues
             _ => Err(format!("maitredescles_partition.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, action))?,
         }
     } else {
         Err(Error::Str("Autorisation commande invalide, acces refuse"))?
+    };
+
+    match result {
+        Ok(result) => {
+            session.commit_transaction().await?;
+            Ok(result)
+        }
+        Err(e) => {
+            session.abort_transaction().await?;
+            Err(e)
+        }
     }
 }
 
@@ -490,9 +505,23 @@ async fn consommer_evenement<M>(middleware: &M, gestionnaire: &MaitreDesClesMong
 
     let (_, action) = get_domaine_action!(m.type_message);
 
-    match action.as_str() {
-        EVENEMENT_CLES_MANQUANTES_PARTITION => evenement_cle_manquante(middleware, &m).await,
-        EVENEMENT_CLES_RECHIFFRAGE => evenement_cle_rechiffrage(middleware, m, &gestionnaire.handler_rechiffrage).await,
+    let mut session = middleware.get_session().await?;
+    start_transaction_regular(&mut session).await?;
+
+    let result = match action.as_str() {
+        EVENEMENT_CLES_MANQUANTES_PARTITION => evenement_cle_manquante(middleware, &m, &mut session).await,
+        EVENEMENT_CLES_RECHIFFRAGE => evenement_cle_rechiffrage(middleware, m, &gestionnaire.handler_rechiffrage, &mut session).await,
         _ => Err(format!("consommer_evenement: Mauvais type d'action pour un evenement : {}", action))?,
+    };
+
+    match result {
+        Ok(result) => {
+            session.commit_transaction().await?;
+            Ok(result)
+        }
+        Err(e) => {
+            session.abort_transaction().await?;
+            Err(e)
+        }
     }
 }

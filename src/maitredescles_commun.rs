@@ -31,6 +31,7 @@ use millegrilles_common_rust::tokio::{sync::mpsc::Sender, time::{sleep, Duration
 use millegrilles_common_rust::{multibase, multibase::Base, serde_json};
 use millegrilles_common_rust::hachages::hacher_bytes;
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_docs::EncryptedDocument;
+use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::multibase::Base::Base58Btc;
 use millegrilles_common_rust::multihash::Code;
 use crate::constants::{DOMAINE_NOM, EVENEMENT_CLES_MANQUANTES_PARTITION, EVENEMENT_DEMANDE_CLE_SYMMETRIQUE, REQUETE_TRANSFERT_CLES};

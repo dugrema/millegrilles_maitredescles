@@ -13,7 +13,8 @@ use millegrilles_common_rust::get_domaine_action;
 use millegrilles_common_rust::messages_generiques::MessageCedule;
 use millegrilles_common_rust::middleware::{Middleware, MiddlewareMessages};
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
-use millegrilles_common_rust::mongo_dao::MongoDao;
+use millegrilles_common_rust::mongo_dao::{start_transaction_regular, MongoDao};
+use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange, QueueType, TypeMessageOut};
 use millegrilles_common_rust::recepteur_messages::MessageValide;
 
@@ -81,11 +82,12 @@ impl ConsommateurMessagesBus for MaitreDesClesCaManager {
 
 #[async_trait]
 impl AiguillageTransactions for MaitreDesClesCaManager {
-    async fn aiguillage_transaction<M>(&self, middleware: &M, transaction: TransactionValide) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    async fn aiguillage_transaction<M>(&self, middleware: &M, transaction: TransactionValide, session: &mut ClientSession)
+        -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where
         M: ValidateurX509 + GenerateurMessages + MongoDao
     {
-        aiguillage_transaction(middleware, transaction).await
+        aiguillage_transaction(middleware, transaction, session).await
     }
 }
 
@@ -235,12 +237,15 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
 
     let (_, action) = get_domaine_action!(m.type_message);
 
-    if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
+    let mut session = middleware.get_session().await?;
+    start_transaction_regular(&mut session).await?;
+
+    let result = if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
         // Delegation proprietaire
         match action.as_str() {
             // Commandes standard
-            COMMANDE_AJOUTER_CLE_DOMAINES => commande_ajouter_cle_domaines_ca(middleware, m, gestionnaire_ca).await,
-            COMMANDE_RESET_NON_DECHIFFRABLE => commande_reset_non_dechiffrable_ca(middleware, m).await,
+            COMMANDE_AJOUTER_CLE_DOMAINES => commande_ajouter_cle_domaines_ca(middleware, m, gestionnaire_ca, &mut session).await,
+            COMMANDE_RESET_NON_DECHIFFRABLE => commande_reset_non_dechiffrable_ca(middleware, m, &mut session).await,
 
             // Commandes inconnues
             _ => Err(format!("maitredescles_ca.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, action))?,
@@ -249,9 +254,9 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
         // Exchanges, serveur protege
         match action.as_str() {
             // Commandes standard
-            COMMANDE_AJOUTER_CLE_DOMAINES => commande_ajouter_cle_domaines_ca(middleware, m, gestionnaire_ca).await,
-            COMMANDE_CONFIRMER_CLES_SUR_CA => commande_confirmer_cles_sur_ca(middleware, m).await,
-            COMMANDE_TRANSFERT_CLE_CA => commande_transfert_cle_ca(middleware, m, gestionnaire_ca).await,
+            COMMANDE_AJOUTER_CLE_DOMAINES => commande_ajouter_cle_domaines_ca(middleware, m, gestionnaire_ca, &mut session).await,
+            COMMANDE_CONFIRMER_CLES_SUR_CA => commande_confirmer_cles_sur_ca(middleware, m, &mut session).await,
+            COMMANDE_TRANSFERT_CLE_CA => commande_transfert_cle_ca(middleware, m, gestionnaire_ca, &mut session).await,
 
             // Commandes inconnues
             _ => Err(format!("maitredescles_ca.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, action))?,
@@ -260,7 +265,7 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
         // Tous exchanges, serveur
         match action.as_str() {
             // Commandes standard
-            COMMANDE_AJOUTER_CLE_DOMAINES => commande_ajouter_cle_domaines_ca(middleware, m, gestionnaire_ca).await,
+            COMMANDE_AJOUTER_CLE_DOMAINES => commande_ajouter_cle_domaines_ca(middleware, m, gestionnaire_ca, &mut session).await,
 
             // Commandes inconnues
             _ => Err(format!("maitredescles_ca.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, action))?,
@@ -269,13 +274,24 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
         // Usagers prives
         match action.as_str() {
             // Commandes standard
-            COMMANDE_AJOUTER_CLE_DOMAINES => commande_ajouter_cle_domaines_ca(middleware, m, gestionnaire_ca).await,
+            COMMANDE_AJOUTER_CLE_DOMAINES => commande_ajouter_cle_domaines_ca(middleware, m, gestionnaire_ca, &mut session).await,
 
             // Commandes inconnues
             _ => Err(format!("maitredescles_ca.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, action))?,
         }
     } else {
         Err(format!("maitredescles_ca.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, action))?
+    };
+
+    match result {
+        Ok(result) => {
+            session.commit_transaction().await?;
+            Ok(result)
+        }
+        Err(e) => {
+            session.abort_transaction().await?;
+            Err(e)
+        }
     }
 
 }
@@ -294,16 +310,30 @@ where
 
     let (_, action) = get_domaine_action!(m.type_message);
 
-    match action.as_str() {
-        EVENEMENT_CLES_MANQUANTES_PARTITION => evenement_cle_manquante(middleware, &m).await,
-        EVENEMENT_CLE_RECUE_PARTITION => evenement_cle_recue_partition(middleware, &m).await,
+    let mut session = middleware.get_session().await?;
+    start_transaction_regular(&mut session).await?;
+
+    let result = match action.as_str() {
+        EVENEMENT_CLES_MANQUANTES_PARTITION => evenement_cle_manquante(middleware, &m, &mut session).await,
+        EVENEMENT_CLE_RECUE_PARTITION => evenement_cle_recue_partition(middleware, &m, &mut session).await,
         _ => Err(format!("maitredescles_ca.consommer_transaction: Mauvais type d'action pour une transaction : {}", action))?,
+    };
+
+    match result {
+        Ok(result) => {
+            session.commit_transaction().await?;
+            Ok(result)
+        }
+        Err(e) => {
+            session.abort_transaction().await?;
+            Err(e)
+        }
     }
 }
 
-async fn aiguillage_transaction<M>(middleware: &M, transaction: TransactionValide)
-                                   -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
-where M: ValidateurX509 + GenerateurMessages + MongoDao
+async fn aiguillage_transaction<M>(middleware: &M, transaction: TransactionValide, session: &mut ClientSession)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
+    where M: ValidateurX509 + GenerateurMessages + MongoDao
 {
     let routage = match transaction.transaction.routage.as_ref() {
         Some(inner) => inner,
@@ -316,8 +346,8 @@ where M: ValidateurX509 + GenerateurMessages + MongoDao
     };
 
     match action {
-        TRANSACTION_CLE => transaction_cle(middleware, transaction).await,
-        TRANSACTION_CLE_V2 => transaction_cle_v2(middleware, transaction).await,
+        TRANSACTION_CLE => transaction_cle(middleware, transaction, session).await,
+        TRANSACTION_CLE_V2 => transaction_cle_v2(middleware, transaction, session).await,
         _ => Err(Error::String(format!("maitredescles.aiguillage_transaction: Transaction {} est de type non gere : {}", transaction.transaction.id, action))),
     }
 }

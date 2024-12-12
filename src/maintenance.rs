@@ -7,6 +7,7 @@ use crate::builder::{MaitreDesClesManager, MaitreDesClesSymmetricManager};
 use millegrilles_common_rust::error::Error;
 use millegrilles_common_rust::messages_generiques::MessageCedule;
 use millegrilles_common_rust::mongo_dao::MongoDao;
+use millegrilles_common_rust::mongodb::ClientSession;
 use crate::maitredescles_commun::{emettre_certificat_maitredescles, emettre_cles_symmetriques};
 use crate::maitredescles_mongodb::{confirmer_cles_ca, marquer_cles_ca_timeout, synchroniser_cles};
 use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;

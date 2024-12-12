@@ -35,6 +35,7 @@ use millegrilles_common_rust::{millegrilles_cryptographie, multibase, serde_json
 use std::collections::HashSet;
 use std::str::from_utf8;
 use millegrilles_common_rust::dechiffrage::decrypt_document;
+use millegrilles_common_rust::mongodb::ClientSession;
 
 pub const NOM_COLLECTION_TRANSACTIONS: &str = DOMAINE_NOM;
 pub const NOM_COLLECTION_TRANSACTIONS_CA: &str = "MaitreDesCles/CA";
@@ -783,7 +784,7 @@ pub async fn requete_synchronizer_cles<M>(middleware: &M, m: MessageValide)
     Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
-pub async fn commande_ajouter_cle_domaines_ca<M, G>(middleware: &M, m: MessageValide, gestionnaire: &G)
+pub async fn commande_ajouter_cle_domaines_ca<M, G>(middleware: &M, m: MessageValide, gestionnaire: &G, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
 where M: GenerateurMessages + MongoDao + ValidateurX509,
       G: GestionnaireDomaineV2 + AiguillageTransactions
@@ -806,7 +807,7 @@ where M: GenerateurMessages + MongoDao + ValidateurX509,
         let transaction_cle = TransactionCleV2 { signature: commande.signature };
         debug!("commande_ajouter_cle_domaines Sauvegarder transaction nouvelle cle {}", cle_id);
         sauvegarder_traiter_transaction_serializable_v2(
-            middleware, &transaction_cle, gestionnaire, DOMAINE_NOM, TRANSACTION_CLE_V2).await?;
+            middleware, &transaction_cle, gestionnaire, session, DOMAINE_NOM, TRANSACTION_CLE_V2).await?;
     }
 
     // Confirmer le traitement de la cle
@@ -814,7 +815,7 @@ where M: GenerateurMessages + MongoDao + ValidateurX509,
 }
 
 /// Conserver la presence d'une cle dechiffrable par au moins une partition.
-pub async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValide)
+pub async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValide, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages + MongoDao
 {
@@ -873,7 +874,7 @@ pub async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValide)
     Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
-pub async fn commande_transfert_cle_ca<M,G>(middleware: &M, m: MessageValide, gestionnaire: &G)
+pub async fn commande_transfert_cle_ca<M,G>(middleware: &M, m: MessageValide, gestionnaire: &G, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages + MongoDao + ValidateurX509,
           G: GestionnaireDomaineV2 + AiguillageTransactions
@@ -927,14 +928,14 @@ pub async fn commande_transfert_cle_ca<M,G>(middleware: &M, m: MessageValide, ge
                         partition: None,
                     };
                     sauvegarder_traiter_transaction_serializable_v2(
-                        middleware, &transaction_cle, gestionnaire, DOMAINE_NOM, TRANSACTION_CLE).await?;
+                        middleware, &transaction_cle, gestionnaire, session, DOMAINE_NOM, TRANSACTION_CLE).await?;
                 },
                 _ => {
                     // Version courante
                     let transaction_cle = TransactionCleV2 { signature: cle.signature.clone() };
                     debug!("commande_ajouter_cle_domaines Sauvegarder transaction nouvelle cle {}", cle_id);
                     sauvegarder_traiter_transaction_serializable_v2(
-                        middleware, &transaction_cle, gestionnaire, DOMAINE_NOM, TRANSACTION_CLE_V2).await?;
+                        middleware, &transaction_cle, gestionnaire, session, DOMAINE_NOM, TRANSACTION_CLE_V2).await?;
                 }
             }
 
@@ -951,7 +952,7 @@ pub async fn commande_transfert_cle_ca<M,G>(middleware: &M, m: MessageValide, ge
 }
 
 /// Reset toutes les cles a non_dechiffrable=true
-pub async fn commande_reset_non_dechiffrable_ca<M>(middleware: &M, m: MessageValide)
+pub async fn commande_reset_non_dechiffrable_ca<M>(middleware: &M, m: MessageValide, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
 where M: GenerateurMessages + MongoDao,
 {
@@ -970,7 +971,7 @@ where M: GenerateurMessages + MongoDao,
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-pub async fn evenement_cle_manquante<M>(middleware: &M, m: &MessageValide) -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
+pub async fn evenement_cle_manquante<M>(middleware: &M, m: &MessageValide, session: &mut ClientSession) -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: ValidateurX509 + GenerateurMessages + MongoDao,
 {
     debug!("evenement_cle_manquante Marquer cles comme non dechiffrables correlation_id : {:?}", m.type_message);
@@ -991,7 +992,7 @@ pub async fn evenement_cle_manquante<M>(middleware: &M, m: &MessageValide) -> Re
 }
 
 /// Marquer les cles existantes comme recues (implique dechiffrable) par au moins une partition
-pub async fn evenement_cle_recue_partition<M>(middleware: &M, m: &MessageValide) -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
+pub async fn evenement_cle_recue_partition<M>(middleware: &M, m: &MessageValide, session: &mut ClientSession) -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
 where M: ValidateurX509 + GenerateurMessages + MongoDao,
 {
     debug!("evenement_cle_recue_partition Marquer cle comme confirmee (dechiffrable) par la partition {:?}", m.type_message);
@@ -1014,7 +1015,7 @@ where M: ValidateurX509 + GenerateurMessages + MongoDao,
 }
 
 /// Transaction cle Version 1 (obsolete)
-pub async fn transaction_cle<M>(middleware: &M, transaction: TransactionValide) -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
+pub async fn transaction_cle<M>(middleware: &M, transaction: TransactionValide, session: &mut ClientSession) -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
 where M: GenerateurMessages + MongoDao
 {
     debug!("transaction_cle Consommer transaction : {:?}", transaction.transaction.routage);
@@ -1082,7 +1083,7 @@ where M: GenerateurMessages + MongoDao
     Ok(None)
 }
 
-pub async fn transaction_cle_v2<M>(middleware: &M, transaction: TransactionValide) -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
+pub async fn transaction_cle_v2<M>(middleware: &M, transaction: TransactionValide, session: &mut ClientSession) -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
 where M: GenerateurMessages + MongoDao
 {
     debug!("transaction_cle Consommer transaction : {:?}\n{}", transaction.transaction.routage,
@@ -1397,7 +1398,7 @@ where M: GenerateurMessages + MongoDao
     Ok(())
 }
 
-pub async fn commande_ajouter_cle_domaines<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage)
+pub async fn commande_ajouter_cle_domaines<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage, session: &mut ClientSession)
                                               -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
 where M: GenerateurMessages + MongoDao + CleChiffrageHandler
 {
@@ -1427,7 +1428,7 @@ where M: GenerateurMessages + MongoDao + CleChiffrageHandler
 
 /// Commande recue d'un client (e.g. Coup D'Oeil) avec une batch de cles secretes dechiffrees.
 /// La commande est chiffree pour tous les MaitreDesComptes (kind:8)
-pub async fn commande_rechiffrer_batch<M>(middleware: &M, mut m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage)
+pub async fn commande_rechiffrer_batch<M>(middleware: &M, mut m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages + MongoDao + CleChiffrageHandler
 {
@@ -1465,7 +1466,7 @@ pub async fn commande_rechiffrer_batch<M>(middleware: &M, mut m: MessageValide, 
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-pub async fn commande_cle_symmetrique<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage)
+pub async fn commande_cle_symmetrique<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -1499,7 +1500,7 @@ pub async fn commande_cle_symmetrique<M>(middleware: &M, m: MessageValide, handl
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-pub async fn commande_transfert_cle<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage)
+pub async fn commande_transfert_cle<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages + MongoDao + CleChiffrageHandler + ValidateurX509
 {
@@ -1554,7 +1555,7 @@ pub async fn commande_transfert_cle<M>(middleware: &M, m: MessageValide, handler
     Ok(None)
 }
 
-pub async fn commande_rotation_certificat<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage)
+pub async fn commande_rotation_certificat<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -1594,7 +1595,7 @@ pub async fn commande_rotation_certificat<M>(middleware: &M, m: MessageValide, h
     }
 }
 
-pub async fn evenement_cle_rechiffrage<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage)
+pub async fn evenement_cle_rechiffrage<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: ValidateurX509 + GenerateurMessages + MongoDao + CleChiffrageHandler + ConfigMessages
 {
@@ -1677,7 +1678,7 @@ pub async fn marquer_cles_ca_timeout<M>(middleware: &M) -> Result<(), Error>
     Ok(())
 }
 
-pub async fn query_repair_symmetric_key<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage)
+pub async fn query_repair_symmetric_key<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage, session: &mut ClientSession)
                                            -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
 where M: GenerateurMessages + MongoDao + ValidateurX509 + CleChiffrageHandler
 {
