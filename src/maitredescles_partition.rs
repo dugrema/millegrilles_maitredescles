@@ -717,87 +717,87 @@ async fn requete_verifier_preuve<M>(middleware: &M, m: MessageValide, gestionnai
     // Ok(Some(reponse))
 }
 
-async fn rechiffrer_cles<M>(
-    _middleware: &M,
-    gestionnaire: &GestionnaireMaitreDesClesPartition,
-    _m: &MessageValide,
-    _requete: &RequeteDechiffrage,
-    enveloppe_privee: Arc<EnveloppePrivee>,
-    certificat: &EnveloppeCertificat,
-    _requete_autorisee_globalement: bool,
-    // _permission: Option<EnveloppePermission>,
-    curseur: &mut Cursor<Document>
-)
-    -> Result<(HashMap<String, RowClePartition>, bool), Error>
-    where M: ValidateurX509
-{
-    let mut cles: HashMap<String, RowClePartition> = HashMap::new();
-    let mut cles_trouvees = false;  // Flag pour dire qu'on a matche au moins 1 cle
+// async fn rechiffrer_cles<M>(
+//     _middleware: &M,
+//     gestionnaire: &GestionnaireMaitreDesClesPartition,
+//     _m: &MessageValide,
+//     _requete: &RequeteDechiffrage,
+//     enveloppe_privee: Arc<EnveloppePrivee>,
+//     certificat: &EnveloppeCertificat,
+//     _requete_autorisee_globalement: bool,
+//     // _permission: Option<EnveloppePermission>,
+//     curseur: &mut Cursor<Document>
+// )
+//     -> Result<(HashMap<String, RowClePartition>, bool), Error>
+//     where M: ValidateurX509
+// {
+//     let mut cles: HashMap<String, RowClePartition> = HashMap::new();
+//     let mut cles_trouvees = false;  // Flag pour dire qu'on a matche au moins 1 cle
+//
+//     let rechiffreur = &gestionnaire.handler_rechiffrage;
+//
+//     while let Some(rc) = curseur.next().await {
+//         debug!("rechiffrer_cles document {:?}", rc);
+//         cles_trouvees = true;  // On a trouve au moins une cle
+//         match rc {
+//             Ok(doc_cle) => {
+//                 let mut cle: RowClePartition = match convertir_bson_deserializable(doc_cle) {
+//                     Ok(c) => c,
+//                     Err(e) => {
+//                         error!("rechiffrer_cles Erreur conversion bson vers TransactionCle : {:?}", e);
+//                         continue
+//                     }
+//                 };
+//                 todo!("fix me")
+//                 // let hachage_bytes = cle.hachage_bytes.clone();
+//                 //
+//                 // // match rechiffrer_cle(&mut cle, enveloppe_privee.as_ref(), certificat) {
+//                 // match rechiffrer_cle(&mut cle, rechiffreur, certificat) {
+//                 //     Ok(()) => {
+//                 //         cles.insert(hachage_bytes, cle);
+//                 //     },
+//                 //     Err(e) => {
+//                 //         error!("rechiffrer_cles Erreur rechiffrage cle {:?}", e);
+//                 //         continue;  // Skip cette cle
+//                 //     }
+//                 // }
+//             },
+//             Err(e) => error!("rechiffrer_cles: Erreur lecture curseur cle : {:?}", e)
+//         }
+//     }
+//
+//     Ok((cles, cles_trouvees))
+// }
 
-    let rechiffreur = &gestionnaire.handler_rechiffrage;
-
-    while let Some(rc) = curseur.next().await {
-        debug!("rechiffrer_cles document {:?}", rc);
-        cles_trouvees = true;  // On a trouve au moins une cle
-        match rc {
-            Ok(doc_cle) => {
-                let mut cle: RowClePartition = match convertir_bson_deserializable(doc_cle) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        error!("rechiffrer_cles Erreur conversion bson vers TransactionCle : {:?}", e);
-                        continue
-                    }
-                };
-                todo!("fix me")
-                // let hachage_bytes = cle.hachage_bytes.clone();
-                //
-                // // match rechiffrer_cle(&mut cle, enveloppe_privee.as_ref(), certificat) {
-                // match rechiffrer_cle(&mut cle, rechiffreur, certificat) {
-                //     Ok(()) => {
-                //         cles.insert(hachage_bytes, cle);
-                //     },
-                //     Err(e) => {
-                //         error!("rechiffrer_cles Erreur rechiffrage cle {:?}", e);
-                //         continue;  // Skip cette cle
-                //     }
-                // }
-            },
-            Err(e) => error!("rechiffrer_cles: Erreur lecture curseur cle : {:?}", e)
-        }
-    }
-
-    Ok((cles, cles_trouvees))
-}
-
-/// Prepare le curseur sur les cles demandees
-async fn preparer_curseur_cles<M>(
-    middleware: &M,
-    gestionnaire: &GestionnaireMaitreDesClesPartition,
-    requete: &RequeteDechiffrage,
-    // permission: Option<&EnveloppePermission>,
-    domaines_permis: Option<&Vec<String>>
-)
-    -> Result<Cursor<Document>, Error>
-    where M: MongoDao
-{
-    let nom_collection = match gestionnaire.get_collection_cles()? {
-        Some(n) => n,
-        None => Err(Error::Str("maitredescles_partition.preparer_curseur_cles Collection cles n'est pas definie"))?
-    };
-
-    // if permission.is_some() {
-    //     Err(format!("Permission non supporte - FIX ME"))?;
-    // }
-
-    let mut filtre = doc! {CHAMP_HACHAGE_BYTES: {"$in": &requete.liste_hachage_bytes}};
-    if let Some(d) = domaines_permis {
-        filtre.insert("domaine", doc!{"$in": d});
-    }
-    debug!("requete_dechiffrage Filtre cles sur collection {} : {:?}", nom_collection, filtre);
-
-    let collection = middleware.get_collection(nom_collection.as_str())?;
-    Ok(collection.find(filtre, None).await?)
-}
+// /// Prepare le curseur sur les cles demandees
+// async fn preparer_curseur_cles<M>(
+//     middleware: &M,
+//     gestionnaire: &GestionnaireMaitreDesClesPartition,
+//     requete: &RequeteDechiffrage,
+//     // permission: Option<&EnveloppePermission>,
+//     domaines_permis: Option<&Vec<String>>
+// )
+//     -> Result<Cursor<Document>, Error>
+//     where M: MongoDao
+// {
+//     let nom_collection = match gestionnaire.get_collection_cles()? {
+//         Some(n) => n,
+//         None => Err(Error::Str("maitredescles_partition.preparer_curseur_cles Collection cles n'est pas definie"))?
+//     };
+//
+//     // if permission.is_some() {
+//     //     Err(format!("Permission non supporte - FIX ME"))?;
+//     // }
+//
+//     let mut filtre = doc! {CHAMP_HACHAGE_BYTES: {"$in": &requete.liste_hachage_bytes}};
+//     if let Some(d) = domaines_permis {
+//         filtre.insert("domaine", doc!{"$in": d});
+//     }
+//     debug!("requete_dechiffrage Filtre cles sur collection {} : {:?}", nom_collection, filtre);
+//
+//     let collection = middleware.get_collection(nom_collection.as_str())?;
+//     Ok(collection.find(filtre, None).await?)
+// }
 
 async fn evenement_cle_manquante<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireMaitreDesClesPartition)
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>

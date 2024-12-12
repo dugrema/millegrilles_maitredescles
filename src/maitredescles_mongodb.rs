@@ -25,7 +25,7 @@ use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::opti
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
 use millegrilles_common_rust::millegrilles_cryptographie::x25519::{dechiffrer_asymmetrique_ed25519, CleSecreteX25519};
 use millegrilles_common_rust::millegrilles_cryptographie::{deser_message_buffer, heapless};
-use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, verifier_erreur_duplication_mongo, ChampIndex, IndexOptions, MongoDao};
+use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, start_transaction_regular, verifier_erreur_duplication_mongo, ChampIndex, IndexOptions, MongoDao};
 use millegrilles_common_rust::mongodb::options::{CountOptions, FindOneOptions, FindOptions, Hint, UpdateOptions};
 use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
 use millegrilles_common_rust::recepteur_messages::{MessageValide, TypeMessage};
@@ -121,8 +121,27 @@ where M: MongoDao + ConfigMessages
 }
 
 pub async fn preparer_rechiffreur_mongo<M>(middleware: &M, handler_rechiffrage: &HandlerCleRechiffrage)
-                                           -> Result<(), Error>
-where M: GenerateurMessages + ValidateurX509 + MongoDao
+    -> Result<(), Error>
+    where M: GenerateurMessages + ValidateurX509 + MongoDao
+{
+    let mut session = middleware.get_session().await?;
+    start_transaction_regular(&mut session).await?;
+    let result = preparer_rechiffreur_mongo_session(middleware, handler_rechiffrage, &mut session).await;
+    match result {
+        Ok(()) => {
+            session.commit_transaction().await?;
+            Ok(())
+        },
+        Err(e) => {
+            session.abort_transaction().await?;
+            Err(e)
+        }
+    }
+}
+
+async fn preparer_rechiffreur_mongo_session<M>(middleware: &M, handler_rechiffrage: &HandlerCleRechiffrage, session: &mut ClientSession)
+    -> Result<(), Error>
+    where M: GenerateurMessages + ValidateurX509 + MongoDao
 {
 
     let enveloppe_privee = middleware.get_enveloppe_signature();
@@ -131,7 +150,7 @@ where M: GenerateurMessages + ValidateurX509 + MongoDao
     // Verifier si les cles de dechiffrage existent deja.
     let collection = middleware.get_collection(NOM_COLLECTION_CONFIGURATION)?;
     let filtre = doc!{"type": "CA", "instance_id": instance_id.as_str()};
-    match collection.find_one(filtre, None).await? {
+    match collection.find_one_with_session(filtre, None, session).await? {
         Some(doc_cle_ca) => {
             info!("preparer_rechiffreur_mongo Cle de rechiffrage CA est presente");
 
@@ -141,7 +160,7 @@ where M: GenerateurMessages + ValidateurX509 + MongoDao
                 "fingerprint": enveloppe_privee.fingerprint()?,
             };
 
-            match collection.find_one(filtre, None).await? {
+            match collection.find_one_with_session(filtre, None, session).await? {
                 Some(doc_cle_locale) => {
                     let cle_locale: DocumentCleRechiffrage = convertir_bson_deserializable(doc_cle_locale)?;
                     handler_rechiffrage.set_cle_symmetrique(cle_locale.cle)?;
@@ -173,7 +192,7 @@ where M: GenerateurMessages + ValidateurX509 + MongoDao
                 "instance_id": instance_id.as_str(),
                 "cle": cle_secrete_chiffree_ca,
             };
-            collection.insert_one(cle_ca, None).await?;
+            collection.insert_one_with_session(cle_ca, None, session).await?;
 
             let cle_locale = doc! {
                 "type": "local",
@@ -181,7 +200,7 @@ where M: GenerateurMessages + ValidateurX509 + MongoDao
                 "fingerprint": enveloppe_privee.fingerprint()?,
                 "cle": cle_secrete_chiffree_local,
             };
-            collection.insert_one(cle_locale, None).await?;
+            collection.insert_one_with_session(cle_locale, None, session).await?;
         }
     }
 
@@ -189,6 +208,24 @@ where M: GenerateurMessages + ValidateurX509 + MongoDao
 }
 
 pub async fn synchroniser_cles<M>(middleware: &M, handler_rechiffrage: &HandlerCleRechiffrage) -> Result<(), Error>
+where M: GenerateurMessages + MongoDao +  CleChiffrageHandler
+{
+    let mut session = middleware.get_session().await?;
+    start_transaction_regular(&mut session).await?;
+    let result = synchroniser_cles_session(middleware, handler_rechiffrage, &mut session).await;
+    match result {
+        Ok(()) => {
+            session.commit_transaction().await?;
+            Ok(())
+        }
+        Err(e) => {
+            session.abort_transaction().await?;
+            Err(e)
+        }
+    }
+}
+
+async fn synchroniser_cles_session<M>(middleware: &M, handler_rechiffrage: &HandlerCleRechiffrage, session: &mut ClientSession) -> Result<(), Error>
 where M: GenerateurMessages + MongoDao +  CleChiffrageHandler
 {
     debug!("synchroniser_cles Debut");
@@ -222,7 +259,7 @@ where M: GenerateurMessages + MongoDao +  CleChiffrageHandler
             break
         }
 
-        if let Err(e) = traiter_batch_synchroniser_cles(middleware, handler_rechiffrage, reponse).await {
+        if let Err(e) = traiter_batch_synchroniser_cles(middleware, handler_rechiffrage, reponse, session).await {
             error!("synchroniser_cles Erreur traitement batch cles : {:?}", e);
         }
     }
@@ -232,7 +269,7 @@ where M: GenerateurMessages + MongoDao +  CleChiffrageHandler
     Ok(())
 }
 
-async fn traiter_batch_synchroniser_cles<M>(middleware: &M, handler_rechiffrage: &HandlerCleRechiffrage, reponse: ReponseSynchroniserCles)
+async fn traiter_batch_synchroniser_cles<M>(middleware: &M, handler_rechiffrage: &HandlerCleRechiffrage, reponse: ReponseSynchroniserCles, session: &mut ClientSession)
                                             -> Result<(), Error>
 where M: MongoDao + GenerateurMessages
 {
@@ -251,8 +288,8 @@ where M: MongoDao + GenerateurMessages
     let nom_collection = NOM_COLLECTION_SYMMETRIQUE_CLES;
 
     let collection = middleware.get_collection_typed::<CleSynchronisation>(nom_collection)?;
-    let mut cles = collection.find(filtre_cles, Some(find_options)).await?;
-    while let Some(row) = cles.next().await {
+    let mut cles = collection.find_with_session(filtre_cles, Some(find_options), session).await?;
+    while let Some(row) = cles.next(session).await {
         match row {
             Ok(inner) => {
                 cles_hashset.remove(inner.cle_id.as_str());
@@ -287,7 +324,7 @@ where M: MongoDao + GenerateurMessages
         if let Some(data_reponse) = data_reponse {
             debug!("traiter_batch_synchroniser_cles Recu {} cles suite a la requete de cles manquantes", data_reponse.cles.len());
             for cle in data_reponse.cles {
-                sauvegarder_cle_transfert(middleware, handler_rechiffrage, &cle).await?;
+                sauvegarder_cle_transfert(middleware, handler_rechiffrage, &cle, session).await?;
             }
         }
 
@@ -300,7 +337,7 @@ where M: MongoDao + GenerateurMessages
 }
 
 pub async fn sauvegarder_cle_transfert<M>(
-    middleware: &M, handler_rechiffrage: &HandlerCleRechiffrage, cle: &CleTransfert)
+    middleware: &M, handler_rechiffrage: &HandlerCleRechiffrage, cle: &CleTransfert, session: &mut ClientSession)
     -> Result<(), Error>
 where M: MongoDao
 {
@@ -330,7 +367,7 @@ where M: MongoDao
                 header,
             };
 
-            if let Err(e) = sauvegarder_cle_rechiffrage(middleware, handler_rechiffrage, nom_collection_cles, cle_secrete_rechiffrage).await {
+            if let Err(e) = sauvegarder_cle_rechiffrage(middleware, handler_rechiffrage, nom_collection_cles, cle_secrete_rechiffrage, session).await {
                 error!("traiter_batch_synchroniser_cles Erreur sauvegarde cle {} : {:?}", cle_id, e);
             }
         }
@@ -339,7 +376,7 @@ where M: MongoDao
             let mut cle_secrete_bytes = [0u8; 32];
             cle_secrete_bytes.copy_from_slice(&base64_nopad.decode(cle.cle_secrete_base64.as_str())?[0..32]);
             let cle_secrete = CleSecreteX25519 { 0: cle_secrete_bytes };
-            if let Err(e) = sauvegarder_cle_secrete(middleware, handler_rechiffrage, cle.signature.clone(), &cle_secrete).await {
+            if let Err(e) = sauvegarder_cle_secrete(middleware, handler_rechiffrage, cle.signature.clone(), &cle_secrete, session).await {
                 error!("traiter_batch_synchroniser_cles Erreur sauvegarde cle {} : {:?}", cle_id, e);
             }
         }
@@ -350,7 +387,7 @@ where M: MongoDao
 pub async fn sauvegarder_cle_rechiffrage<M>(middleware: &M,
                                         handler_rechiffrage: &HandlerCleRechiffrage,
                                         nom_collection_cles: &str,
-                                        cle: CleSecreteRechiffrage)
+                                        cle: CleSecreteRechiffrage, session: &mut ClientSession)
                                         -> Result<String, Error>
 where M: MongoDao
 {
@@ -384,14 +421,14 @@ where M: MongoDao
     };
 
     let opts = UpdateOptions::builder().upsert(true).build();
-    collection.update_one(filtre, ops, opts).await?;
+    collection.update_one_with_session(filtre, ops, opts, session).await?;
 
     Ok(cle_id)
 }
 
 pub async fn sauvegarder_cle_secrete<M>(
     middleware: &M, handler_rechiffrage: &HandlerCleRechiffrage,
-    signature: SignatureDomaines, cle_secrete: &CleSecreteX25519
+    signature: SignatureDomaines, cle_secrete: &CleSecreteX25519, session: &mut ClientSession
 )
     -> Result<(), Error>
 where M: MongoDao
@@ -419,12 +456,30 @@ where M: MongoDao
         "$currentDate": {CHAMP_MODIFICATION: true}
     };
     let options = UpdateOptions::builder().upsert(true).build();
-    collection.update_one(filtre, ops, options).await?;
+    collection.update_one_with_session(filtre, ops, options, session).await?;
     Ok(())
 }
 
-/// S'assurer que le CA a toutes les cles de la partition. Permet aussi de resetter le flag non-dechiffrable.
 pub async fn confirmer_cles_ca<M>(middleware: &M, reset_flag: Option<bool>) -> Result<(), Error>
+where M: GenerateurMessages + MongoDao +  CleChiffrageHandler
+{
+    let mut session = middleware.get_session().await?;
+    start_transaction_regular(&mut session).await?;
+    let result = confirmer_cles_ca_session(middleware, reset_flag, &mut session).await;
+    match result {
+        Ok(()) => {
+            session.commit_transaction().await?;
+            Ok(())
+        }
+        Err(e) => {
+            session.abort_transaction().await?;
+            Err(e)
+        }
+    }
+}
+
+/// S'assurer que le CA a toutes les cles de la partition. Permet aussi de resetter le flag non-dechiffrable.
+async fn confirmer_cles_ca_session<M>(middleware: &M, reset_flag: Option<bool>, session: &mut ClientSession) -> Result<(), Error>
 where M: GenerateurMessages + MongoDao +  CleChiffrageHandler
 {
     let batch_size = 200;
@@ -436,7 +491,7 @@ where M: GenerateurMessages + MongoDao +  CleChiffrageHandler
         let filtre = doc! { CHAMP_CONFIRMATION_CA: true };
         let ops = doc! { "$set": {CHAMP_CONFIRMATION_CA: false } };
         let collection = middleware.get_collection(nom_collection)?;
-        collection.update_many(filtre, ops, None).await?;
+        collection.update_many_with_session(filtre, ops, None, session).await?;
     }
 
     let mut curseur = {
@@ -446,19 +501,19 @@ where M: GenerateurMessages + MongoDao +  CleChiffrageHandler
             // .limit(limit_cles)
             .build();
         let collection = middleware.get_collection(nom_collection)?;
-        let curseur = collection.find(filtre, opts).await?;
+        let curseur = collection.find_with_session(filtre, opts, session).await?;
         curseur
     };
 
     let mut cles = Vec::new();
-    while let Some(d) = curseur.next().await {
+    while let Some(d) = curseur.next(session).await {
         match d {
             Ok(cle) => {
                 let cle_synchronisation: CleSynchronisation = convertir_bson_deserializable(cle)?;
                 cles.push(cle_synchronisation.cle_id);
 
                 if cles.len() == batch_size {
-                    emettre_cles_vers_ca(middleware, &cles).await?;
+                    emettre_cles_vers_ca(middleware, &cles, session).await?;
                     cles.clear();  // Retirer toutes les cles pour prochaine page
                 }
             },
@@ -468,7 +523,7 @@ where M: GenerateurMessages + MongoDao +  CleChiffrageHandler
 
     // Derniere batch de cles
     if cles.len() > 0 {
-        emettre_cles_vers_ca(middleware, &cles).await?;
+        emettre_cles_vers_ca(middleware, &cles, session).await?;
         cles.clear();
     }
 
@@ -481,7 +536,7 @@ where M: GenerateurMessages + MongoDao +  CleChiffrageHandler
 /// Marque les cles presentes sur la partition et CA comme confirmation_ca=true
 /// Rechiffre et emet vers le CA les cles manquantes
 async fn emettre_cles_vers_ca<M>(
-    middleware: &M, liste_cles: &Vec<String>)
+    middleware: &M, liste_cles: &Vec<String>, session: &mut ClientSession)
     -> Result<(), Error>
 where M: GenerateurMessages + MongoDao +  CleChiffrageHandler
 {
@@ -502,7 +557,7 @@ where M: GenerateurMessages + MongoDao +  CleChiffrageHandler
                     debug!("emettre_cles_vers_ca Reponse confirmer cle sur CA : {:?}", reponse.type_message);
                     let reponse_cles_manquantes: ReponseConfirmerClesSurCa = deser_message_buffer!(reponse.message);
                     let cles_manquantes = reponse_cles_manquantes.cles_manquantes;
-                    traiter_cles_manquantes_ca(middleware, &commande.liste_cle_id, &cles_manquantes).await?;
+                    traiter_cles_manquantes_ca(middleware, &commande.liste_cle_id, &cles_manquantes, session).await?;
                 },
                 _ => Err(Error::Str("emettre_cles_vers_ca Recu mauvais type de reponse "))?
             }
@@ -519,7 +574,7 @@ where M: GenerateurMessages + MongoDao +  CleChiffrageHandler
 async fn traiter_cles_manquantes_ca<M>(
     middleware: &M,
     cles_emises: &Vec<String>,
-    cles_manquantes: &Vec<String>
+    cles_manquantes: &Vec<String>, session: &mut ClientSession
 )
     -> Result<(), Error>
 where M: MongoDao + GenerateurMessages + CleChiffrageHandler
@@ -541,7 +596,7 @@ where M: MongoDao + GenerateurMessages + CleChiffrageHandler
                 "$currentDate": {CHAMP_MODIFICATION: true}
             };
             let collection = middleware.get_collection(nom_collection)?;
-            let resultat_confirmees = collection.update_many(filtre_confirmees, ops, None).await?;
+            let resultat_confirmees = collection.update_many_with_session(filtre_confirmees, ops, None, session).await?;
             debug!("traiter_cles_manquantes_ca Resultat maj cles confirmees: {:?}", resultat_confirmees);
         }
     }
@@ -550,9 +605,9 @@ where M: MongoDao + GenerateurMessages + CleChiffrageHandler
     if ! cles_manquantes.is_empty() {
         let filtre_manquantes = doc! { "cle_id": { "$in": &cles_manquantes } };
         let collection = middleware.get_collection_typed::<RowClePartition>(nom_collection)?;
-        let mut curseur = collection.find(filtre_manquantes, None).await?;
+        let mut curseur = collection.find_with_session(filtre_manquantes, None, session).await?;
         let mut cles = Vec::new();
-        while let Some(d) = curseur.next().await {
+        while let Some(d) = curseur.next(session).await {
             match d {
                 Ok(cle) => {
                     let cle_transfert_ca = CleTransfertCa {
@@ -607,7 +662,7 @@ pub async fn requete_compter_cles_non_dechiffrables_ca<M>(middleware: &M, m: Mes
     Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
-pub async fn requete_cles_non_dechiffrables<M>(middleware: &M, m: MessageValide)
+pub async fn requete_cles_non_dechiffrables<M>(middleware: &M, m: MessageValide, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages + MongoDao
 {
@@ -656,12 +711,12 @@ pub async fn requete_cles_non_dechiffrables<M>(middleware: &M, m: MessageValide)
             .build();
         debug!("requete_cles_non_dechiffrables filtre cles a rechiffrer : filtre {:?} opts {:?}", filtre, opts);
         let collection = middleware.get_collection_typed::<RowClePartitionRef>(NOM_COLLECTION_CA_CLES)?;
-        collection.find(filtre, opts).await?
+        collection.find_with_session(filtre, opts, session).await?
     };
 
     let mut cles = Vec::new();
     let mut date_creation = None;
-    while curseur.advance().await? {
+    while curseur.advance(session).await? {
         let cle = curseur.deserialize_current()?;
 
         // Conserver date de creation - On est juste interesse en la derniere date (plus recente).
@@ -684,7 +739,7 @@ struct ReponseClesNonDechiffrables {
     idx: u64,
 }
 
-pub async fn requete_cles_non_dechiffrables_v2<M>(middleware: &M, m: MessageValide)
+pub async fn requete_cles_non_dechiffrables_v2<M>(middleware: &M, m: MessageValide, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages + MongoDao
 {
@@ -702,14 +757,14 @@ pub async fn requete_cles_non_dechiffrables_v2<M>(middleware: &M, m: MessageVali
             // .limit(Some(limite_docs as i64))
             .build();
         let collection = middleware.get_collection_typed::<RowCleCaRef>(NOM_COLLECTION_CA_CLES)?;
-        collection.find(None, opts).await?
+        collection.find_with_session(None, opts, session).await?
     };
 
     let mut idx = requete.skip.unwrap_or_else(||0);
 
     let mut cles = Vec::new();
     let mut date_creation = None;
-    while curseur.advance().await? {
+    while curseur.advance(session).await? {
         idx += 1;  // Compter toutes les cles pour permettre d'aller chercher la suite dans la prochaine requete.
         let cle = curseur.deserialize_current()?;
         // Verifier si la cle est non dechiffrable, skip sinon.
@@ -734,7 +789,7 @@ pub async fn requete_cles_non_dechiffrables_v2<M>(middleware: &M, m: MessageVali
     Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
-pub async fn requete_synchronizer_cles<M>(middleware: &M, m: MessageValide)
+pub async fn requete_synchronizer_cles<M>(middleware: &M, m: MessageValide, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages + MongoDao
 {
@@ -760,11 +815,11 @@ pub async fn requete_synchronizer_cles<M>(middleware: &M, m: MessageValide)
             .build();
         let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
 
-        collection.find(filtre, opts).await?
+        collection.find_with_session(filtre, opts, session).await?
     };
 
     let mut cles = Vec::new();
-    while let Some(d) = curseur.next().await {
+    while let Some(d) = curseur.next(session).await {
         match d {
             Ok(doc_cle) => {
                 match convertir_bson_deserializable::<CleSynchronisation>(doc_cle) {
@@ -801,7 +856,7 @@ where M: GenerateurMessages + MongoDao + ValidateurX509,
         .projection(doc!{CHAMP_CLE_ID: 1})
         .build();
     let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
-    let resultat = collection.find_one(filtre, options).await?;
+    let resultat = collection.find_one_with_session(filtre, options, session).await?;
 
     if resultat.is_none() {
         let transaction_cle = TransactionCleV2 { signature: commande.signature };
@@ -839,7 +894,7 @@ pub async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValide,
         "$currentDate": { CHAMP_MODIFICATION: true, CHAMP_DERNIERE_PRESENCE: true }
     };
     let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
-    let resultat_update = collection.update_many(filtre_update, ops, None).await?;
+    let resultat_update = collection.update_many_with_session(filtre_update, ops, None, session).await?;
     debug!("commande_confirmer_cles_sur_ca Resultat update : {:?}", resultat_update);
 
     // let filtre = doc! { "$or": CleSynchronisation::get_bson_filter(&requete.liste_cle_id)? };
@@ -847,8 +902,8 @@ pub async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValide,
     debug!("commande_confirmer_cles_sur_ca Filtre cles CA: {:?}", filtre);
     let projection = doc! { CHAMP_CLE_ID: 1 };
     let opts = FindOptions::builder().projection(projection).build();
-    let mut curseur = collection.find(filtre, opts).await?;
-    while let Some(d) = curseur.next().await {
+    let mut curseur = collection.find_with_session(filtre, opts, session).await?;
+    while let Some(d) = curseur.next(session).await {
         match d {
             Ok(d) => {
                 match convertir_bson_deserializable::<CleSynchronisation>(d) {
@@ -897,7 +952,7 @@ pub async fn commande_transfert_cle_ca<M,G>(middleware: &M, m: MessageValide, ge
             .projection(doc! {CHAMP_CLE_ID: 1})
             .build();
         let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
-        let resultat = collection.find_one(filtre.clone(), options).await?;
+        let resultat = collection.find_one_with_session(filtre.clone(), options, session).await?;
 
         if resultat.is_none() {
             match cle.signature.version {
@@ -941,7 +996,7 @@ pub async fn commande_transfert_cle_ca<M,G>(middleware: &M, m: MessageValide, ge
 
             // Mettre la jour la derniere presence
             let ops = doc! {"$currentDate": {CHAMP_DERNIERE_PRESENCE: true}};
-            collection.update_one(filtre, ops, None).await?;
+            collection.update_one_with_session(filtre, ops, None, session).await?;
         } else {
             // TODO - Voir comment gerer cette situation
             warn!("commande_transfert_cle Transfert de cle existante: {:?}, SKIPPED", cle_id);
@@ -966,7 +1021,7 @@ where M: GenerateurMessages + MongoDao,
         "$currentDate": {CHAMP_MODIFICATION: true},
     };
     let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
-    collection.update_many(filtre, ops, None).await?;
+    collection.update_many_with_session(filtre, ops, None, session).await?;
 
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
@@ -985,7 +1040,7 @@ pub async fn evenement_cle_manquante<M>(middleware: &M, m: &MessageValide, sessi
         "$currentDate": { CHAMP_MODIFICATION: true },
     };
     let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
-    let resultat_update = collection.update_many(filtre, ops, None).await?;
+    let resultat_update = collection.update_many_with_session(filtre, ops, None, session).await?;
     debug!("evenement_cle_manquante Resultat update : {:?}", resultat_update);
 
     Ok(None)
@@ -1008,7 +1063,7 @@ where M: ValidateurX509 + GenerateurMessages + MongoDao,
         "$currentDate": { CHAMP_MODIFICATION: true },
     };
     let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
-    let resultat_update = collection.update_many(filtre, ops, None).await?;
+    let resultat_update = collection.update_many_with_session(filtre, ops, None, session).await?;
     debug!("evenement_cle_recue_partition Resultat update : {:?}", resultat_update);
 
     Ok(None)
@@ -1074,7 +1129,7 @@ where M: GenerateurMessages + MongoDao
     let opts = UpdateOptions::builder().upsert(true).build();
     let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
     debug!("transaction_cle update ops : {:?}", ops);
-    let resultat = match collection.update_one(filtre, ops, opts).await {
+    let resultat = match collection.update_one_with_session(filtre, ops, opts, session).await {
         Ok(r) => r,
         Err(e) => Err(format!("maitredescles_ca.transaction_cle Erreur update_one sur transaction : {:?}", e))?
     };
@@ -1108,7 +1163,7 @@ where M: GenerateurMessages + MongoDao
     let opts = UpdateOptions::builder().upsert(true).build();
     let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
     debug!("transaction_cle update ops : {:?}", ops);
-    let resultat = match collection.update_one(filtre, ops, opts).await {
+    let resultat = match collection.update_one_with_session(filtre, ops, opts, session).await {
         Ok(r) => r,
         Err(e) => Err(format!("maitredescles_ca.transaction_cle Erreur update_one sur transaction : {:?}", e))?
     };
@@ -1117,7 +1172,7 @@ where M: GenerateurMessages + MongoDao
     Ok(None)
 }
 
-pub async fn requete_dechiffrage_v2<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage)
+pub async fn requete_dechiffrage_v2<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages + MongoDao + ValidateurX509 + CleChiffrageHandler
 {
@@ -1178,7 +1233,7 @@ pub async fn requete_dechiffrage_v2<M>(middleware: &M, m: MessageValide, handler
     };
     // filtre.insert("signature.domaines", doc!{"$in": vec![&requete.domaine]});
     let collection = middleware.get_collection_typed::<RowClePartition>(nom_collection)?;
-    let mut curseur = collection.find(filtre, None).await?;
+    let mut curseur = collection.find_with_session(filtre, None, session).await?;
     let domaine: heapless::String<40> = requete.domaine.as_str().try_into()
         .map_err(|_| Error::Str("Erreur map domain dans heapless::String<40>"))?;
 
@@ -1186,7 +1241,7 @@ pub async fn requete_dechiffrage_v2<M>(middleware: &M, m: MessageValide, handler
     // mais elles comptent sur le total trouve.
     let mut cles_trouvees = 0;
 
-    while let Some(row) = curseur.next().await {
+    while let Some(row) = curseur.next(session).await {
         match row {
             Ok(inner) => {
                 cles_trouvees += 1;
@@ -1247,7 +1302,7 @@ pub async fn requete_dechiffrage_v2<M>(middleware: &M, m: MessageValide, handler
             debug!("traiter_batch_synchroniser_cles Recu {}/{} cles suite a requete de cles manquantes",
                 data_reponse.cles.len(), cles_hashset.len());
             for cle in data_reponse.cles {
-                sauvegarder_cle_transfert(middleware, handler_rechiffrage, &cle).await?;
+                sauvegarder_cle_transfert(middleware, handler_rechiffrage, &cle, session).await?;
             }
         }
     }
@@ -1278,7 +1333,7 @@ pub async fn requete_dechiffrage_v2<M>(middleware: &M, m: MessageValide, handler
 /// Methode qui repond a un maitre des cles avec la liste complete des cles demandees. Si la liste
 /// ne peut etre completee, une commande de transfert de cles emets la liste partielle chiffrees
 /// pour tous les maitre des cles.
-pub async fn requete_transfert_cles<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage)
+pub async fn requete_transfert_cles<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages + MongoDao + ValidateurX509 + CleChiffrageHandler
 {
@@ -1319,9 +1374,9 @@ pub async fn requete_transfert_cles<M>(middleware: &M, m: MessageValide, handler
 
     let filtre = doc! { CHAMP_CLE_ID: {"$in": &requete.cle_ids} };
     let collection = middleware.get_collection_typed::<RowClePartition>(nom_collection)?;
-    let mut curseur = collection.find(filtre, None).await?;
+    let mut curseur = collection.find_with_session(filtre, None, session).await?;
 
-    while let Some(row) = curseur.next().await {
+    while let Some(row) = curseur.next(session).await {
         match row {
             Ok(row_cle) => {
                 let signature = row_cle.signature.clone();
@@ -1383,7 +1438,7 @@ pub async fn requete_transfert_cles<M>(middleware: &M, m: MessageValide, handler
 
 async fn sauvegarder_cle_domaine<M>(
     middleware: &M, handler_rechiffrage: &HandlerCleRechiffrage,
-    commande: CommandeAjouterCleDomaine
+    commande: CommandeAjouterCleDomaine, session: &mut ClientSession
 )
     -> Result<(), Error>
 where M: GenerateurMessages + MongoDao
@@ -1393,7 +1448,7 @@ where M: GenerateurMessages + MongoDao
     // Dechiffrer la cle
     let cle_secrete = commande.get_cle_secrete(enveloppe_signature.as_ref())?;
 
-    sauvegarder_cle_secrete(middleware, &handler_rechiffrage, commande.signature, &cle_secrete).await?;
+    sauvegarder_cle_secrete(middleware, &handler_rechiffrage, commande.signature, &cle_secrete, session).await?;
 
     Ok(())
 }
@@ -1416,7 +1471,7 @@ where M: GenerateurMessages + MongoDao + CleChiffrageHandler
         return Ok(Some(middleware.reponse_err(2, None, Some("Signature domaines invalide"))?))
     }
 
-    if let Err(e) = sauvegarder_cle_domaine(middleware, handler_rechiffrage, commande).await {
+    if let Err(e) = sauvegarder_cle_domaine(middleware, handler_rechiffrage, commande, session).await {
         warn!("commande_ajouter_cle_domaines Erreur sauvegarde cle : {:?}", e);
         return Ok(Some(middleware.reponse_err(3, None, Some("Erreur sauvegarde cle"))?))
     }
@@ -1448,7 +1503,7 @@ pub async fn commande_rechiffrer_batch<M>(middleware: &M, mut m: MessageValide, 
     // Traiter chaque cle individuellement
     let mut liste_cle_id: Vec<String> = Vec::new();
     for (cle_id, cle) in cles_dechiffrees.cles {
-        sauvegarder_cle_rechiffrage(middleware, handler_rechiffrage, nom_collection_cles, cle).await?;
+        sauvegarder_cle_rechiffrage(middleware, handler_rechiffrage, nom_collection_cles, cle, session).await?;
         liste_cle_id.push(cle_id);
     }
 
@@ -1495,7 +1550,7 @@ pub async fn commande_cle_symmetrique<M>(middleware: &M, m: MessageValide, handl
     debug!("commande_cle_symmetrique Inserer cle configuration locale {:?}", commande.cle);
 
     let collection = middleware.get_collection(NOM_COLLECTION_CONFIGURATION)?;
-    collection.insert_one(cle_locale, None).await?;
+    collection.insert_one_with_session(cle_locale, None, session).await?;
 
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
@@ -1535,7 +1590,7 @@ pub async fn commande_transfert_cle<M>(middleware: &M, m: MessageValide, handler
             .projection(doc!{CHAMP_CLE_ID: 1})
             .build();
         let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
-        let resultat = collection.find_one(filtre, options).await?;
+        let resultat = collection.find_one_with_session(filtre, options, session).await?;
 
         if resultat.is_none() {
             let cle_secrete_vec = base64_nopad.decode(&cle.cle_secrete_base64)?;
@@ -1548,7 +1603,7 @@ pub async fn commande_transfert_cle<M>(middleware: &M, m: MessageValide, handler
 
             let mut cle_secrete = CleSecreteX25519 {0: [0u8;32]};
             cle_secrete.0.copy_from_slice(&cle_secrete_vec[0..32]);
-            sauvegarder_cle_secrete(middleware, &handler_rechiffrage, cle.signature.clone(), &cle_secrete).await?;
+            sauvegarder_cle_secrete(middleware, &handler_rechiffrage, cle.signature.clone(), &cle_secrete, session).await?;
         }
     }
 
@@ -1586,7 +1641,7 @@ pub async fn commande_rotation_certificat<M>(middleware: &M, m: MessageValide, h
         debug!("commande_rotation_certificat Inserer cle configuration locale {:?}", cle_locale);
 
         let collection = middleware.get_collection(NOM_COLLECTION_CONFIGURATION)?;
-        collection.insert_one(cle_locale, None).await?;
+        collection.insert_one_with_session(cle_locale, None, session).await?;
 
         Ok(Some(middleware.reponse_ok(None, None)?))
     } else {
@@ -1629,7 +1684,7 @@ pub async fn evenement_cle_rechiffrage<M>(middleware: &M, m: MessageValide, hand
         "$currentDate": {CHAMP_MODIFICATION: true}
     };
     let options_ca = UpdateOptions::builder().upsert(true).build();
-    collection.update_one(filtre_ca, ops_ca, Some(options_ca)).await?;
+    collection.update_one_with_session(filtre_ca, ops_ca, Some(options_ca), session).await?;
 
     // Dechiffrer cle du tiers, rechiffrer en symmetrique local
     if let Some(cle_tierce) = evenement.cles_dechiffrage.get(fingerprint_local.as_str()) {
@@ -1658,7 +1713,7 @@ pub async fn evenement_cle_rechiffrage<M>(middleware: &M, m: MessageValide, hand
             "$currentDate": {CHAMP_MODIFICATION: true}
         };
         let options_cle = UpdateOptions::builder().upsert(true).build();
-        collection.update_one(filtre_cle, ops_cle, Some(options_cle)).await?;
+        collection.update_one_with_session(filtre_cle, ops_cle, Some(options_cle), session).await?;
     }
 
     Ok(None)
@@ -1674,8 +1729,18 @@ pub async fn marquer_cles_ca_timeout<M>(middleware: &M) -> Result<(), Error>
         "$currentDate": {CHAMP_MODIFICATION: true}
     };
     let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
-    collection.update_many(filtre, ops, None).await?;
-    Ok(())
+    let mut session = middleware.get_session().await?;
+    start_transaction_regular(&mut session);
+    match collection.update_many_with_session(filtre, ops, None, &mut session).await {
+        Ok(_) => {
+            session.commit_transaction().await?;
+            Ok(())
+        }
+        Err(e) => {
+            session.abort_transaction().await?;
+            Err(e)?
+        }
+    }
 }
 
 pub async fn query_repair_symmetric_key<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage, session: &mut ClientSession)
@@ -1693,7 +1758,7 @@ where M: GenerateurMessages + MongoDao + ValidateurX509 + CleChiffrageHandler
     // Load the CA key
     let collection = middleware.get_collection_typed::<DocumentCleRechiffrage>(NOM_COLLECTION_CONFIGURATION)?;
     let filtre = doc!{"type": "CA", "instance_id": instance_id.as_str()};
-    if let Some(cle_ca) = collection.find_one(filtre, None).await? {
+    if let Some(cle_ca) = collection.find_one_with_session(filtre, None, session).await? {
         info!("preparer_rechiffreur_mongo CA symmetric key is present");
         // Emit the symmetric key that was encrypted for the CA.
         emettre_demande_cle_symmetrique(middleware, cle_ca.cle).await?;

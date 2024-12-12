@@ -206,13 +206,16 @@ async fn consommer_requete<M>(middleware: &M, message: MessageValide)
 
     let (domaine, action) = get_domaine_action!(message.type_message);
 
-    match domaine.as_str() {
+    let mut session = middleware.get_session().await?;
+    start_transaction_regular(&mut session);
+
+    let result = match domaine.as_str() {
         DOMAINE_NOM => {
             match action.as_str() {
                 REQUETE_COMPTER_CLES_NON_DECHIFFRABLES => requete_compter_cles_non_dechiffrables_ca(middleware, message).await,
-                REQUETE_CLES_NON_DECHIFFRABLES => requete_cles_non_dechiffrables(middleware, message).await,
-                REQUETE_SYNCHRONISER_CLES => requete_synchronizer_cles(middleware, message).await,
-                REQUETE_CLES_NON_DECHIFFRABLES_V2 => requete_cles_non_dechiffrables_v2(middleware, message).await,
+                REQUETE_CLES_NON_DECHIFFRABLES => requete_cles_non_dechiffrables(middleware, message, &mut session).await,
+                REQUETE_SYNCHRONISER_CLES => requete_synchronizer_cles(middleware, message, &mut session).await,
+                REQUETE_CLES_NON_DECHIFFRABLES_V2 => requete_cles_non_dechiffrables_v2(middleware, message, &mut session).await,
                 _ => {
                     error!("Message requete/action inconnue : '{}'. Message dropped.", action);
                     Ok(None)
@@ -223,6 +226,17 @@ async fn consommer_requete<M>(middleware: &M, message: MessageValide)
             error!("Message requete/domaine inconnu : '{}'. Message dropped.", domaine);
             Ok(None)
         },
+    };
+
+    match result {
+        Ok(result) => {
+            session.commit_transaction().await?;
+            Ok(result)
+        }
+        Err(e) => {
+            session.abort_transaction().await?;
+            Err(e)
+        }
     }
 }
 

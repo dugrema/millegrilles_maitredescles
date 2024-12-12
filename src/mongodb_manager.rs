@@ -407,13 +407,16 @@ where M: ValidateurX509 + GenerateurMessages + MongoDao + CleChiffrageHandler + 
     // Note : aucune verification d'autorisation - tant que le certificat est valide (deja verifie), on repond.
     let (domaine, action) = get_domaine_action!(message.type_message);
 
-    match domaine.as_str() {
+    let mut session = middleware.get_session().await?;
+    start_transaction_regular(&mut session).await?;
+
+    let result = match domaine.as_str() {
         DOMAINE_NOM => {
             match action.as_str() {
                 REQUETE_CERTIFICAT_MAITREDESCLES => requete_certificat_maitredescles(middleware, message).await,
-                REQUETE_DECHIFFRAGE_V2 => requete_dechiffrage_v2(middleware, message, &gestionnaire.handler_rechiffrage).await,
+                REQUETE_DECHIFFRAGE_V2 => requete_dechiffrage_v2(middleware, message, &gestionnaire.handler_rechiffrage, &mut session).await,
                 MAITREDESCLES_REQUETE_DECHIFFRAGE_MESSAGE => requete_dechiffrage_message(middleware, message).await,
-                REQUETE_TRANSFERT_CLES => requete_transfert_cles(middleware, message, &gestionnaire.handler_rechiffrage).await,
+                REQUETE_TRANSFERT_CLES => requete_transfert_cles(middleware, message, &gestionnaire.handler_rechiffrage, &mut session).await,
                 _ => {
                     error!("Message requete/action inconnue : '{}'. Message dropped.", action);
                     Ok(None)
@@ -424,6 +427,17 @@ where M: ValidateurX509 + GenerateurMessages + MongoDao + CleChiffrageHandler + 
             error!("Message requete/domaine inconnu : '{}'. Message dropped.", domaine);
             Ok(None)
         },
+    };
+
+    match result {
+        Ok(result) => {
+            session.commit_transaction().await?;
+            Ok(result)
+        }
+        Err(e) => {
+            session.abort_transaction().await?;
+            Err(e)
+        }
     }
 }
 
