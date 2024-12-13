@@ -745,7 +745,7 @@ pub async fn requete_cles_non_dechiffrables_v2<M>(middleware: &M, m: MessageVali
 {
     debug!("requete_rechiffrer_cles Consommer requete : {:?}", m.type_message);
     let requete: RequeteClesNonDechiffrable = deser_message_buffer!(m.message);
-    let limite_docs = requete.limite.unwrap_or_else(|| 1000) as usize;
+    let limite_docs = requete.limite.unwrap_or_else(|| 100) as usize;
 
     let mut curseur = {
         let skip_docs_opts = requete.skip.unwrap_or_else(|| 0 as u64);
