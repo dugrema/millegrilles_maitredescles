@@ -6,7 +6,7 @@ use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::constantes::{RolesCertificats, Securite, COMMANDE_AJOUTER_CLE_DOMAINES, COMMANDE_SAUVEGARDER_CLE, COMMANDE_TRANSFERT_CLE, COMMANDE_TRANSFERT_CLE_CA, DEFAULT_Q_TTL, DELEGATION_GLOBALE_PROPRIETAIRE};
 use millegrilles_common_rust::db_structs::TransactionValide;
 use millegrilles_common_rust::domaines_traits::{AiguillageTransactions, ConsommateurMessagesBus, GestionnaireBusMillegrilles, GestionnaireDomaineV2};
-use millegrilles_common_rust::domaines_v2::GestionnaireDomaineSimple;
+use millegrilles_common_rust::domaines_v2::{prepare_mongodb_domain_indexes, GestionnaireDomaineSimple};
 use millegrilles_common_rust::error::{Error as CommonError, Error};
 use millegrilles_common_rust::generateur_messages::GenerateurMessages;
 use millegrilles_common_rust::get_domaine_action;
@@ -93,6 +93,17 @@ impl AiguillageTransactions for MaitreDesClesCaManager {
 
 #[async_trait]
 impl GestionnaireDomaineSimple for MaitreDesClesCaManager {
+    async fn preparer_database_mongodb<M>(&self, middleware: &M) -> Result<(), CommonError>
+    where
+        M: MongoDao + ConfigMessages
+    {
+        if let Some(nom_collection_transactions) = self.get_collection_transactions() {
+            prepare_mongodb_domain_indexes(middleware, nom_collection_transactions).await?;
+            preparer_index_mongodb_ca(middleware).await?;
+        }
+        Ok(())
+    }
+
     async fn traiter_cedule<M>(&self, middleware: &M, trigger: &MessageCedule) -> Result<(), CommonError>
     where
         M: MiddlewareMessages + BackupStarter + MongoDao
@@ -207,7 +218,7 @@ async fn consommer_requete<M>(middleware: &M, message: MessageValide)
     let (domaine, action) = get_domaine_action!(message.type_message);
 
     let mut session = middleware.get_session().await?;
-    start_transaction_regular(&mut session);
+    start_transaction_regular(&mut session).await?;
 
     let result = match domaine.as_str() {
         DOMAINE_NOM => {
