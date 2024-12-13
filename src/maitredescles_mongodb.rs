@@ -1099,13 +1099,22 @@ where M: GenerateurMessages + MongoDao
         signature: hachage_bytes.try_into().map_err(|_|Error::Str("transaction_cle Erreur mapping hachage_bytes to heapless::String"))?,
     };
 
+    // let mut set_on_insert = doc! {
+    //     // CHAMP_HACHAGE_BYTES: hachage_bytes,
+    //     // "domaine": &transaction_cle.domaine,
+    //     // "cle": &transaction_cle.cle,
+    //     "signature": convertir_to_bson(signature)?,
+    //     CHAMP_NON_DECHIFFRABLE: true,
+    //     CHAMP_CREATION: Utc::now(),
+    // };
+
     let mut set_on_insert = doc! {
-        // CHAMP_HACHAGE_BYTES: hachage_bytes,
-        // "domaine": &transaction_cle.domaine,
-        // "cle": &transaction_cle.cle,
+        "cle_id": hachage_bytes,
+        "dirty": false,
         "signature": convertir_to_bson(signature)?,
         CHAMP_NON_DECHIFFRABLE: true,
         CHAMP_CREATION: Utc::now(),
+        CHAMP_MODIFICATION: Utc::now(),
     };
 
     if let Some(inner) = transaction_cle.iv { set_on_insert.insert("iv", inner); }
@@ -1121,19 +1130,37 @@ where M: GenerateurMessages + MongoDao
     // doc_bson_transaction.insert(CHAMP_CREATION, DateTime::now());  // Flag non-dechiffrable par defaut (setOnInsert seulement)
 
     // let filtre = doc! {CHAMP_HACHAGE_BYTES: hachage_bytes};
-    let ops = doc! {
-        "$set": {"dirty": false},
-        "$setOnInsert": set_on_insert,
-        "$currentDate": {CHAMP_MODIFICATION: true}
-    };
-    let opts = UpdateOptions::builder().upsert(true).build();
     let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
-    debug!("transaction_cle update ops : {:?}", ops);
-    let resultat = match collection.update_one_with_session(filtre, ops, opts, session).await {
-        Ok(r) => r,
-        Err(e) => Err(format!("maitredescles_ca.transaction_cle Erreur update_one sur transaction : {:?}", e))?
-    };
-    debug!("transaction_cle Resultat transaction update : {:?}", resultat);
+    // if middleware.get_mode_regeneration() {
+    //     let mut doc = set_on_insert;
+    //     doc.insert("dirty", false);
+    //     doc.insert(CHAMP_MODIFICATION, Utc::now());
+    if middleware.get_mode_regeneration() {
+        // Ignore session - this allows handling key duplication errors (by cle_id)
+        match collection.insert_one(set_on_insert, None).await {
+            Ok(r) => (),
+            Err(e) => Err(format!("maitredescles_ca.transaction_cle Erreur update_one sur transaction : {:?}", e))?
+        }
+    } else {
+        match collection.insert_one_with_session(set_on_insert, None, session).await {
+            Ok(r) => (),
+            Err(e) => Err(format!("maitredescles_ca.transaction_cle Erreur update_one sur transaction : {:?}", e))?
+        }
+    }
+    // } else {
+    //     let ops = doc! {
+    //         "$set": {"dirty": false},
+    //         "$setOnInsert": set_on_insert,
+    //         "$currentDate": {CHAMP_MODIFICATION: true}
+    //     };
+    //     debug!("transaction_cle update ops : {:?}", ops);
+    //     let opts = UpdateOptions::builder().upsert(true).build();
+    //     let resultat = match collection.update_one_with_session(filtre, ops, opts, session).await {
+    //         Ok(r) => r,
+    //         Err(e) => Err(format!("maitredescles_ca.transaction_cle Erreur update_one sur transaction : {:?}", e))?
+    //     };
+    //     debug!("transaction_cle Resultat transaction update : {:?}", resultat);
+    // }
 
     Ok(None)
 }
@@ -1148,26 +1175,47 @@ where M: GenerateurMessages + MongoDao
     let signature = transaction_cle.signature;
     let cle_id = signature.get_cle_ref()?.to_string();
 
-    let mut set_on_insert = doc! {
+    let set_on_insert = doc! {
+        "cle_id": cle_id,
+        "dirty": false,
         "signature": convertir_to_bson(signature)?,
         CHAMP_NON_DECHIFFRABLE: true,
         CHAMP_CREATION: Utc::now(),
+        CHAMP_MODIFICATION: Utc::now(),
     };
 
-    let filtre = doc! {"cle_id": cle_id};
-    let ops = doc! {
-        "$set": {"dirty": false},
-        "$setOnInsert": set_on_insert,
-        "$currentDate": {CHAMP_MODIFICATION: true}
-    };
-    let opts = UpdateOptions::builder().upsert(true).build();
+    // let filtre = doc! {"cle_id": cle_id};
+    // let ops = doc! {
+    //     "$set": {"dirty": false},
+    //     "$setOnInsert": set_on_insert,
+    //     "$currentDate": {CHAMP_MODIFICATION: true}
+    // };
+    // let opts = UpdateOptions::builder().upsert(true).build();
     let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
-    debug!("transaction_cle update ops : {:?}", ops);
-    let resultat = match collection.update_one_with_session(filtre, ops, opts, session).await {
-        Ok(r) => r,
-        Err(e) => Err(format!("maitredescles_ca.transaction_cle Erreur update_one sur transaction : {:?}", e))?
-    };
-    debug!("transaction_cle Resultat transaction update : {:?}", resultat);
+    // debug!("transaction_cle update ops : {:?}", ops);
+    // let resultat = if middleware.get_mode_regeneration() {
+    //     let mut doc = set_on_insert;
+    //     doc.insert("dirty", false);
+    //     doc.insert(CHAMP_MODIFICATION, Utc::now());
+    if middleware.get_mode_regeneration() {
+        // Ignore session - this allows handling key duplication errors (by cle_id)
+        match collection.insert_one(set_on_insert, None).await {
+            Ok(r) => (),
+            Err(e) => Err(format!("maitredescles_ca.transaction_cle_v2 Erreur update_one sur transaction : {:?}", e))?
+        }
+    } else {
+        match collection.insert_one_with_session(set_on_insert, None, session).await {
+            Ok(r) => (),
+            Err(e) => Err(format!("maitredescles_ca.transaction_cle_v2 Erreur update_one sur transaction : {:?}", e))?
+        }
+    }
+    // } else {
+    //     match collection.update_one_with_session(filtre, ops, opts, session).await {
+    //         Ok(r) => r,
+    //         Err(e) => Err(format!("maitredescles_ca.transaction_cle Erreur update_one sur transaction : {:?}", e))?
+    //     }
+    // };
+    // debug!("transaction_cle Resultat transaction update : {:?}", resultat);
 
     Ok(None)
 }
@@ -1730,7 +1778,7 @@ pub async fn marquer_cles_ca_timeout<M>(middleware: &M) -> Result<(), Error>
     };
     let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
     let mut session = middleware.get_session().await?;
-    start_transaction_regular(&mut session);
+    start_transaction_regular(&mut session).await?;
     match collection.update_many_with_session(filtre, ops, None, &mut session).await {
         Ok(_) => {
             session.commit_transaction().await?;
