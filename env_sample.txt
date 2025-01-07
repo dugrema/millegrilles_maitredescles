@@ -3,7 +3,7 @@ run --package millegrilles_maitredescles --bin millegrilles_maitredescles
 Cargo: maitredescles CA + partition (level: WORKSPACE)
 CAFILE=/var/opt/millegrilles/configuration/pki.millegrille.cert
 CERTFILE=/var/opt/millegrilles/secrets/pki.maitredescles.cert
-KEYFILE=/var/opt/millegrilles/secrets/pki.maitredescles.cle
+KEYFILE=/var/opt/millegrilles/secrets/pki.maitredescles.key
 MG_MAITREDESCLES_MODE=CA_partition
 MG_MONGO_HOST=localhost
 MG_MQ_HOST=localhost
@@ -15,7 +15,7 @@ RUST_LOG=warn,millegrilles_maitredescles=info,millegrilles_maitredescles::maitre
 Cargo: maitredescles CA + partvolatil (level: WORKSPACE)
 CAFILE=/var/opt/millegrilles/configuration/pki.millegrille.cert
 CERTFILE=/var/opt/millegrilles/secrets/pki.maitredescles_ca_partvolatil.cert
-KEYFILE=/var/opt/millegrilles/secrets/pki.maitredescles_ca_partvolatil.cle
+KEYFILE=/var/opt/millegrilles/secrets/pki.maitredescles_ca_partvolatil.key
 MG_MAITREDESCLES_MODE=CA_partition
 MG_MONGO_HOST=localhost
 MG_MQ_HOST=localhost
@@ -27,7 +27,7 @@ RUST_LOG=warn,millegrilles_maitredescles=info,millegrilles_maitredescles::maitre
 Cargo: maitredescles CA (level: WORKSPACE)
 CAFILE=/var/opt/millegrilles/configuration/pki.millegrille.cert
 CERTFILE=/var/opt/millegrilles/secrets/pki.maitredescles.cert
-KEYFILE=/var/opt/millegrilles/secrets/pki.maitredescles.cle
+KEYFILE=/var/opt/millegrilles/secrets/pki.maitredescles.key
 MG_MAITREDESCLES_MODE=CA
 MG_MONGO_HOST=localhost
 MG_MQ_HOST=localhost
@@ -39,7 +39,7 @@ RUST_LOG=warn,millegrilles_maitredescles=info,millegrilles_maitredescles::maitre
 Cargo: maitredescles partition (level: WORKSPACE)
 CAFILE=/var/opt/millegrilles/configuration/pki.millegrille.cert
 CERTFILE=/var/opt/millegrilles/secrets/pki.maitredescles.cert
-KEYFILE=/var/opt/millegrilles/secrets/pki.maitredescles.cle
+KEYFILE=/var/opt/millegrilles/secrets/pki.maitredescles.key
 MG_MAITREDESCLES_MODE=partition
 MG_MONGO_HOST=localhost
 MG_MQ_HOST=localhost
@@ -51,7 +51,7 @@ RUST_LOG=warn,millegrilles_maitredescles=info,millegrilles_maitredescles::maitre
 Cargo: maitredescles sqlite1 no redis (level: WORKSPACE)
 CAFILE=/var/opt/millegrilles/configuration/pki.millegrille.cert
 CERTFILE=/var/opt/millegrilles/secrets/pki.maitredescles_sqlite1.cert
-KEYFILE=/var/opt/millegrilles/secrets/pki.maitredescles_sqlite1.cle
+KEYFILE=/var/opt/millegrilles/secrets/pki.maitredescles_sqlite1.key
 MG_MAITREDESCLES_MODE=sqlite
 MG_MONGO_HOST=localhost
 MG_MQ_HOST=localhost
@@ -62,7 +62,7 @@ RUST_LOG=warn,millegrilles_maitredescles=info,millegrilles_maitredescles::maitre
 Cargo: maitredescles sqlite1 (level: WORKSPACE)
 CAFILE=/var/opt/millegrilles/configuration/pki.millegrille.cert
 CERTFILE=/var/opt/millegrilles/secrets/pki.maitredescles_sqlite1.cert
-KEYFILE=/var/opt/millegrilles/secrets/pki.maitredescles_sqlite1.cle
+KEYFILE=/var/opt/millegrilles/secrets/pki.maitredescles_sqlite1.key
 MG_MAITREDESCLES_MODE=sqlite
 MG_MONGO_HOST=localhost
 MG_MQ_HOST=localhost
