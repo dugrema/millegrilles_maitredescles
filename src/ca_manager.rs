@@ -118,7 +118,7 @@ fn preparer_queues() -> Vec<QueueType> {
 
     // RK 3.protege et 4.secure
     let requetes_protegees: Vec<&str> = vec![
-        REQUETE_CLES_NON_DECHIFFRABLES,
+        // REQUETE_CLES_NON_DECHIFFRABLES,
         REQUETE_CLES_NON_DECHIFFRABLES_V2,
         REQUETE_COMPTER_CLES_NON_DECHIFFRABLES,
         REQUETE_SYNCHRONISER_CLES,
@@ -224,7 +224,7 @@ async fn consommer_requete<M>(middleware: &M, message: MessageValide)
         DOMAINE_NOM => {
             match action.as_str() {
                 REQUETE_COMPTER_CLES_NON_DECHIFFRABLES => requete_compter_cles_non_dechiffrables_ca(middleware, message).await,
-                REQUETE_CLES_NON_DECHIFFRABLES => requete_cles_non_dechiffrables(middleware, message, &mut session).await,
+                // REQUETE_CLES_NON_DECHIFFRABLES => requete_cles_non_dechiffrables(middleware, message, &mut session).await,
                 REQUETE_SYNCHRONISER_CLES => requete_synchronizer_cles(middleware, message, &mut session).await,
                 REQUETE_CLES_NON_DECHIFFRABLES_V2 => requete_cles_non_dechiffrables_v2(middleware, message, &mut session).await,
                 _ => {

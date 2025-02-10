@@ -795,7 +795,6 @@ pub async fn requete_synchronizer_cles<M>(middleware: &M, m: MessageValide, sess
 {
     debug!("requete_synchronizer_cles Consommer requete : {:?}", m.type_message);
     let requete: RequeteSynchroniserCles = deser_message_buffer!(m.message);
-    // debug!("requete_synchronizer_cles cle parsed : {:?}", requete);
 
     let mut curseur = {
         let limite_docs = requete.limite;
