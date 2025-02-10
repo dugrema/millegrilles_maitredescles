@@ -30,7 +30,7 @@ use crate::commands::{commande_dechiffrer_cle, commande_verifier_cle_symmetrique
 use crate::constants::*;
 use crate::maintenance::maintenance_mongodb;
 use crate::maitredescles_commun::{emettre_certificat_maitredescles, GestionnaireRessources};
-use crate::maitredescles_mongodb::{commande_ajouter_cle_domaines, commande_cle_symmetrique, commande_rechiffrer_batch, commande_rotation_certificat, commande_transfert_cle, confirmer_cles_ca, evenement_cle_manquante, evenement_cle_rechiffrage, preparer_index_mongodb_custom, preparer_index_mongodb_partition, preparer_rechiffreur_mongo, query_repair_symmetric_key, requete_dechiffrage_v2, requete_transfert_cles, synchroniser_cles, NOM_COLLECTION_SYMMETRIQUE_CLES};
+use crate::maitredescles_mongodb::{commande_ajouter_cle_domaines, commande_cle_symmetrique, commande_rechiffrer_batch, commande_rotation_certificat, commande_transfert_cle, confirmer_cles_ca, evenement_cle_manquante, evenement_cle_rechiffrage, preparer_index_mongodb_custom, preparer_index_mongodb_partition, preparer_rechiffreur_mongo, query_repair_symmetric_key, request_keys_for_ca, requete_dechiffrage_v2, requete_transfert_cles, synchroniser_cles, NOM_COLLECTION_SYMMETRIQUE_CLES};
 use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
 use crate::requests::{requete_certificat_maitredescles, requete_dechiffrage_message};
 
@@ -42,22 +42,6 @@ pub struct MaitreDesClesMongoDbManager {
 impl MaitreDesClesMongoDbManager {
     pub fn new(handler_rechiffrage: HandlerCleRechiffrage) -> MaitreDesClesMongoDbManager {
         MaitreDesClesMongoDbManager { handler_rechiffrage, ressources: Mutex::new(None) }
-    }
-
-    /// Verifie si le CA a des cles qui ne sont pas connues localement
-    pub async fn synchroniser_cles<M>(&self, middleware: &M) -> Result<(), Error>
-    where M: GenerateurMessages + MongoDao + CleChiffrageHandler
-    {
-        synchroniser_cles(middleware, &self.handler_rechiffrage).await?;
-        Ok(())
-    }
-
-    /// S'assure que le CA a toutes les cles presentes dans la partition
-    pub async fn confirmer_cles_ca<M>(&self, middleware: &M, reset_flag: Option<bool>) -> Result<(), Error>
-    where M: GenerateurMessages + MongoDao + CleChiffrageHandler
-    {
-        confirmer_cles_ca(middleware, reset_flag).await?;
-        Ok(())
     }
 
     /// Preparer les Qs une fois le certificat pret
@@ -73,16 +57,6 @@ impl MaitreDesClesMongoDbManager {
     fn get_q_volatils(&self) -> Result<Option<String>, Error> {
         let fingerprint = self.handler_rechiffrage.fingerprint()?;
         Ok(Some(format!("MaitreDesCles/{}/volatils", fingerprint)))
-    }
-
-    pub async fn emettre_certificat_maitredescles<M>(&self, middleware: &M, m: Option<MessageValide>) -> Result<(), Error>
-    where M: GenerateurMessages
-    {
-        if self.handler_rechiffrage.is_ready() {
-            emettre_certificat_maitredescles(middleware, m).await
-        } else {
-            Ok(())
-        }
     }
 }
 
@@ -124,6 +98,7 @@ impl GestionnaireBusMillegrilles for MaitreDesClesMongoDbManager {
         let mut rks = Vec::new();
         rks.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, fingerprint, COMMANDE_CLE_SYMMETRIQUE), exchange: Securite::L3Protege });
         rks.push(ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMAND_QUERY_REPAIR_SYMMETRIC_KEY), exchange: Securite::L3Protege });
+        rks.push(ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUEST_KEYS_FOR_CA), exchange: Securite::L3Protege });
 
         // Queue volatils
         queues.push(QueueType::ExchangeQueue(
@@ -416,6 +391,7 @@ where M: ValidateurX509 + GenerateurMessages + MongoDao + CleChiffrageHandler + 
                 REQUETE_DECHIFFRAGE_V2 => requete_dechiffrage_v2(middleware, message, &gestionnaire.handler_rechiffrage, &mut session).await,
                 MAITREDESCLES_REQUETE_DECHIFFRAGE_MESSAGE => requete_dechiffrage_message(middleware, message).await,
                 REQUETE_TRANSFERT_CLES => requete_transfert_cles(middleware, message, &gestionnaire.handler_rechiffrage, &mut session).await,
+                REQUEST_KEYS_FOR_CA => request_keys_for_ca(middleware, message, &gestionnaire.handler_rechiffrage, &mut session).await,
                 _ => {
                     error!("Message requete/action inconnue : '{}'. Message dropped.", action);
                     Ok(None)

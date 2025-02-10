@@ -176,12 +176,14 @@ impl AsRef<Self> for CleSynchronisation {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReponseSynchroniserCles {
-    pub liste_cle_id: Vec<String>
+    pub liste_cle_id: Vec<String>,
+    pub done: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReponseConfirmerClesSurCa {
-    pub cles_manquantes: Vec<String>
+    pub ok: Option<bool>,
+    // pub cles_manquantes: Vec<String>
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -12,6 +12,8 @@ pub const REQUETE_DECHIFFRAGE: &str = "dechiffrage";
 pub const REQUETE_DECHIFFRAGE_V2: &str = "dechiffrageV2";
 pub const REQUETE_VERIFIER_PREUVE: &str = "verifierPreuve";
 pub const REQUETE_TRANSFERT_CLES: &str = "transfertCles";
+pub const REQUEST_KEYS_FOR_CA: &str = "requestKeysForCa";
+
 // pub const COMMANDE_SAUVEGARDER_CLE: &str = "sauvegarderCle";
 pub const COMMANDE_CONFIRMER_CLES_SUR_CA: &str = "confirmerClesSurCa";
 pub const COMMANDE_CLE_SYMMETRIQUE: &str = "cleSymmetrique";

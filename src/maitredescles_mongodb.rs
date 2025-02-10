@@ -17,7 +17,6 @@ use millegrilles_common_rust::db_structs::TransactionValide;
 use millegrilles_common_rust::domaines_traits::{AiguillageTransactions, GestionnaireDomaineV2};
 use millegrilles_common_rust::error::Error;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
-use millegrilles_common_rust::jwt_simple::prelude::Serialize;
 use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction_serializable_v2;
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_cles::CleChiffrageHandler;
 use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::{SignatureDomaines, SignatureDomainesVersion};
@@ -26,7 +25,7 @@ use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::Mess
 use millegrilles_common_rust::millegrilles_cryptographie::x25519::{dechiffrer_asymmetrique_ed25519, CleSecreteX25519};
 use millegrilles_common_rust::millegrilles_cryptographie::{deser_message_buffer, heapless};
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, start_transaction_regular, verifier_erreur_duplication_mongo, ChampIndex, IndexOptions, MongoDao};
-use millegrilles_common_rust::mongodb::options::{CountOptions, FindOneOptions, FindOptions, Hint, UpdateOptions};
+use millegrilles_common_rust::mongodb::options::{AggregateOptions, CountOptions, FindOneOptions, FindOptions, Hint, UpdateOptions};
 use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
 use millegrilles_common_rust::recepteur_messages::{MessageValide, TypeMessage};
 use millegrilles_common_rust::serde_json::json;
@@ -34,12 +33,16 @@ use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::{millegrilles_cryptographie, multibase, serde_json};
 use std::collections::HashSet;
 use std::str::from_utf8;
+use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::dechiffrage::decrypt_document;
 use millegrilles_common_rust::mongodb::ClientSession;
 
 pub const NOM_COLLECTION_TRANSACTIONS: &str = DOMAINE_NOM;
 pub const NOM_COLLECTION_TRANSACTIONS_CA: &str = "MaitreDesCles/CA";
 pub const NOM_COLLECTION_CA_CLES: &str = "MaitreDesCles/CA/cles";
+pub const NOM_COLLECTION_CA_TEMP_KEYSYNC: &str = "MaitreDesCles/CA/temp_keysync";
+pub const NOM_COLLECTION_CA_TEMP_KEYSYNC_DONE: &str = "MaitreDesCles/CA/temp_keysync_done";
+pub const NOM_COLLECTION_CA_MISSING: &str = "MaitreDesCles/CA/keys_missing";
 pub const NOM_COLLECTION_SYMMETRIQUE_CLES: &str = "MaitreDesCles/cles";
 
 /// Creer index MongoDB
@@ -460,29 +463,17 @@ where M: MongoDao
     Ok(())
 }
 
-pub async fn confirmer_cles_ca<M>(middleware: &M, reset_flag: Option<bool>) -> Result<(), Error>
+pub async fn confirmer_cles_ca<M>(middleware: &M) -> Result<(), Error>
 where M: GenerateurMessages + MongoDao +  CleChiffrageHandler
 {
-    let batch_size = 200;
+    let batch_size = 1_000;
     let nom_collection = NOM_COLLECTION_SYMMETRIQUE_CLES;
 
-    debug!("confirmer_cles_ca Debut confirmation cles locales avec confirmation_ca=false (reset flag: {:?}", reset_flag);
-    if let Some(true) = reset_flag {
-        info!("Reset flag confirmation_ca a false");
-        let filtre = doc! { CHAMP_CONFIRMATION_CA: true };
-        let ops = doc! { "$set": {CHAMP_CONFIRMATION_CA: false } };
-        let collection = middleware.get_collection(nom_collection)?;
-        collection.update_many(filtre, ops, None).await?;
-    }
-
+    debug!("confirmer_cles_ca Debut confirmation cles locales");
     let mut curseur = {
-        // let limit_cles = 1000000;
-        let filtre = doc! { CHAMP_CONFIRMATION_CA: false };
-        let opts = FindOptions::builder()
-            // .limit(limit_cles)
-            .build();
+        let filtre = doc! {};
         let collection = middleware.get_collection(nom_collection)?;
-        let curseur = collection.find(filtre, opts).await?;
+        let curseur = collection.find(filtre, None).await?;
         curseur
     };
 
@@ -494,7 +485,7 @@ where M: GenerateurMessages + MongoDao +  CleChiffrageHandler
                 cles.push(cle_synchronisation.cle_id);
 
                 if cles.len() == batch_size {
-                    emettre_cles_vers_ca(middleware, &cles).await?;
+                    emettre_cles_vers_ca(middleware, &cles, false).await?;
                     cles.clear();  // Retirer toutes les cles pour prochaine page
                 }
             },
@@ -502,11 +493,8 @@ where M: GenerateurMessages + MongoDao +  CleChiffrageHandler
         };
     }
 
-    // Derniere batch de cles
-    if cles.len() > 0 {
-        emettre_cles_vers_ca(middleware, &cles).await?;
-        cles.clear();
-    }
+    // Last batch of keys and confirmation that the sync is done
+    emettre_cles_vers_ca(middleware, &cles, true).await?;
 
     debug!("confirmer_cles_ca Fin confirmation cles locales");
 
@@ -517,18 +505,15 @@ where M: GenerateurMessages + MongoDao +  CleChiffrageHandler
 /// Marque les cles presentes sur la partition et CA comme confirmation_ca=true
 /// Rechiffre et emet vers le CA les cles manquantes
 async fn emettre_cles_vers_ca<M>(
-    middleware: &M, liste_cles: &Vec<String>)
+    middleware: &M, liste_cles: &Vec<String>, done: bool)
     -> Result<(), Error>
 where M: GenerateurMessages + MongoDao +  CleChiffrageHandler
 {
-    // let hachage_bytes: Vec<String> = cles.keys().into_iter().map(|h| h.to_owned()).collect();
-    // let liste_cles: Vec<CleSynchronisation> = cles.into_iter().map(|h| {
-    //     CleSynchronisation { hachage_bytes: h.hachage_bytes.clone(), domaine: h.domaine.clone() }
-    // }).collect();
     debug!("emettre_cles_vers_ca Batch {:?} cles", liste_cles.len());
 
-    let commande = ReponseSynchroniserCles { liste_cle_id: liste_cles.clone() };
-    let routage = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_CONFIRMER_CLES_SUR_CA, vec![Securite::L4Secure])
+    let commande = ReponseSynchroniserCles { liste_cle_id: liste_cles.clone(), done: Some(done) };
+    let routage = RoutageMessageAction::builder(
+        DOMAINE_NOM, COMMANDE_CONFIRMER_CLES_SUR_CA, vec![Securite::L4Secure])
         .build();
     let option_reponse = middleware.transmettre_commande(routage, &commande).await?;
     match option_reponse {
@@ -537,16 +522,15 @@ where M: GenerateurMessages + MongoDao +  CleChiffrageHandler
                 TypeMessage::Valide(reponse) => {
                     debug!("emettre_cles_vers_ca Reponse confirmer cle sur CA : {:?}", reponse.type_message);
                     let reponse_cles_manquantes: ReponseConfirmerClesSurCa = deser_message_buffer!(reponse.message);
-                    let cles_manquantes = reponse_cles_manquantes.cles_manquantes;
-                    traiter_cles_manquantes_ca(middleware, &commande.liste_cle_id, &cles_manquantes).await?;
+                    if reponse_cles_manquantes.ok != Some(true) {
+                        Err(Error::Str("emettre_cles_vers_ca Error sending list of keys to CA, cancelling job"))?
+                    }
                 },
-                _ => Err(Error::Str("emettre_cles_vers_ca Recu mauvais type de reponse "))?
+                _ => Err(Error::Str("emettre_cles_vers_ca Bad response type, cancelling job"))?
             }
         },
-        None => info!("emettre_cles_vers_ca Aucune reponse du serveur")
+        None => Err(Error::Str("emettre_cles_vers_ca No response from server"))?
     }
-
-    // liste_cles.clear();  // Retirer toutes les cles pour prochaine page
 
     Ok(())
 }
@@ -815,7 +799,7 @@ pub async fn requete_synchronizer_cles<M>(middleware: &M, m: MessageValide, sess
         }
     }
 
-    let reponse = ReponseSynchroniserCles { liste_cle_id: cles };
+    let reponse = ReponseSynchroniserCles { liste_cle_id: cles, done: None };
     Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
@@ -826,9 +810,36 @@ where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
     debug!("commande_ajouter_cle_domaines Consommer commande : {:?}", &m.type_message);
     let commande: CommandeAjouterCleDomaine = deser_message_buffer!(m.message);
+    save_new_ca_key(middleware, commande.signature, gestionnaire, session).await?;
+    // // Verifier si on a deja la cle - sinon, creer une nouvelle transaction
+    // let cle_id = commande.signature.get_cle_ref()?.to_string();
+    //
+    // let filtre = doc! { CHAMP_CLE_ID: &cle_id };
+    // let options = FindOneOptions::builder()
+    //     .hint(Hint::Name("index_cle_id".to_string()))
+    //     .projection(doc!{CHAMP_CLE_ID: 1})
+    //     .build();
+    // let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
+    // let resultat = collection.find_one_with_session(filtre, options, session).await?;
+    //
+    // if resultat.is_none() {
+    //     let transaction_cle = TransactionCleV2 { signature: commande.signature };
+    //     debug!("commande_ajouter_cle_domaines Sauvegarder transaction nouvelle cle {}", cle_id);
+    //     sauvegarder_traiter_transaction_serializable_v2(
+    //         middleware, &transaction_cle, gestionnaire, session, DOMAINE_NOM, TRANSACTION_CLE_V2).await?;
+    // }
 
-    // Verifier si on a deja la cle - sinon, creer une nouvelle transaction
-    let cle_id = commande.signature.get_cle_ref()?.to_string();
+    // Confirmer le traitement de la cle
+    Ok(Some(middleware.reponse_ok(None, None)?))
+}
+
+async fn save_new_ca_key<M,G>(middleware: &M, signature: SignatureDomaines, gestionnaire: &G, session: &mut ClientSession)
+    ->Result<(), Error>
+    where M: GenerateurMessages + MongoDao + ValidateurX509,
+          G: GestionnaireDomaineV2 + AiguillageTransactions
+{
+    // Check if the key already exists.
+    let cle_id = signature.get_cle_ref()?.to_string();
 
     let filtre = doc! { CHAMP_CLE_ID: &cle_id };
     let options = FindOneOptions::builder()
@@ -839,26 +850,68 @@ where M: GenerateurMessages + MongoDao + ValidateurX509,
     let resultat = collection.find_one_with_session(filtre, options, session).await?;
 
     if resultat.is_none() {
-        let transaction_cle = TransactionCleV2 { signature: commande.signature };
+        // Key is new - save it as a transaction
+        let transaction_cle = TransactionCleV2 { signature };
         debug!("commande_ajouter_cle_domaines Sauvegarder transaction nouvelle cle {}", cle_id);
         sauvegarder_traiter_transaction_serializable_v2(
             middleware, &transaction_cle, gestionnaire, session, DOMAINE_NOM, TRANSACTION_CLE_V2).await?;
     }
 
-    // Confirmer le traitement de la cle
-    Ok(Some(middleware.reponse_ok(None, None)?))
+    Ok(())
 }
 
 /// Conserver la presence d'une cle dechiffrable par au moins une partition.
 pub async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValide, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
-    where M: GenerateurMessages + MongoDao
+    where M: ConfigMessages + GenerateurMessages + MongoDao
 {
     debug!("commande_confirmer_cles_sur_ca Consommer commande : {:?}", m.type_message);
     let requete: ReponseSynchroniserCles = deser_message_buffer!(m.message);
     debug!("requete_synchronizer_cles cle parsed : {:?}", requete);
 
+    let collection_temp_keysync = middleware.get_collection(NOM_COLLECTION_CA_TEMP_KEYSYNC)?;
 
+    const BATCH_SIZE: usize = 100;
+
+    let mut batch_insert = Vec::with_capacity(BATCH_SIZE);
+    for key in requete.liste_cle_id {
+        batch_insert.push(doc!{CHAMP_CLE_ID: key});
+        if batch_insert.len() >= BATCH_SIZE {
+            collection_temp_keysync.insert_many(&batch_insert, None).await?;
+            batch_insert.clear();
+        }
+    }
+
+    if batch_insert.len() > 0 {
+        // Last batch
+        collection_temp_keysync.insert_many(&batch_insert, None).await?;
+        batch_insert.clear();
+    }
+
+    if requete.done == Some(true) {
+        // The key transfer is complete. Rename the table for internal sync.
+        let collection_temp_keysync_done = middleware.get_collection(NOM_COLLECTION_CA_TEMP_KEYSYNC_DONE)?;
+        let current_count = collection_temp_keysync_done.count_documents(None, None).await?;
+        if current_count > 0 {
+            warn!("The keysync table has not been processed yet - wait for cleanup");
+        } else {
+            // Move the temp table to done, create index
+            middleware.rename_collection(NOM_COLLECTION_CA_TEMP_KEYSYNC, NOM_COLLECTION_CA_TEMP_KEYSYNC_DONE).await?;
+            let options_cle_id = IndexOptions {
+                nom_index: Some(String::from(INDEX_CLE_ID)),
+                unique: false,  // There may be duplicates from multiple keymasters or missed sync sessions
+            };
+            let champs_index_cle_id = vec!(
+                ChampIndex {nom_champ: String::from(CHAMP_CLE_ID), direction: 1},
+            );
+            middleware.create_index(
+                middleware,
+                NOM_COLLECTION_CA_TEMP_KEYSYNC_DONE,
+                champs_index_cle_id,
+                Some(options_cle_id)
+            ).await?;
+        }
+    }
 
     Ok(Some(middleware.reponse_ok(None, None)?))
 
@@ -1751,6 +1804,128 @@ pub async fn evenement_cle_rechiffrage<M>(middleware: &M, m: MessageValide, hand
     Ok(None)
 }
 
+#[derive(Deserialize)]
+struct MissingKeyRow {
+    cle_id: String,
+}
+
+/// Processes the temp_keysync_done table filled by the active keymasters.
+pub async fn process_ca_key_sync<M,G>(middleware: &M, gestionnaire: &G) -> Result<(), Error>
+where M: GenerateurMessages + MongoDao + ValidateurX509,
+      G: GestionnaireDomaineV2 + AiguillageTransactions
+{
+    info!("process_ca_key_sync Starting");
+    let collection = middleware.get_collection(NOM_COLLECTION_CA_TEMP_KEYSYNC_DONE)?;
+    let db_name = collection.namespace().db;
+
+    // Flag all keys that have been received but are missing from the main table
+    let pipeline = vec![
+        doc!("$sort": {CHAMP_CLE_ID: 1}),           // Use the index
+        doc!("$group": {"_id": format!("${}", CHAMP_CLE_ID)}),      // Group by indexed field to de-duplicate
+        doc!{"$replaceWith": {CHAMP_CLE_ID: "$_id"}},   // Recover the cle_id field name
+        doc!{"$lookup": {
+            "from": NOM_COLLECTION_CA_CLES,
+            "localField": CHAMP_CLE_ID,
+            "foreignField": CHAMP_CLE_ID,
+            "as": "caKeys"
+        }},
+        doc!{"$match": {"caKeys.0": {"$exists": false}}},
+        doc!{"$out": {"db": db_name, "coll": NOM_COLLECTION_CA_MISSING}},
+    ];
+    // Go through all keys using the index - makes the keys sorted for de-duplication
+    let options = AggregateOptions::builder().hint(Hint::Name(String::from(INDEX_CLE_ID))).build();
+    collection.aggregate(pipeline, options).await?;
+    // Drop the sync collection - output saved in the CA MISSING table.
+    collection.drop(None).await?;
+
+    // Request all missing keys
+    let collection_ca_missing = middleware.get_collection_typed::<MissingKeyRow>(NOM_COLLECTION_CA_MISSING)?;
+    let mut cursor = collection_ca_missing.find(None, None).await?;
+    const BATCH_SIZE: usize = 50;
+    let mut batch = Vec::with_capacity(BATCH_SIZE);
+    let mut total_keys_missing = 0;
+    let mut keys_received = 0;
+    let mut session = middleware.get_session().await?;
+    while cursor.advance().await? {
+        let row = cursor.deserialize_current()?;
+        batch.push(row.cle_id);
+
+        start_transaction_regular(&mut session).await?;
+        if batch.len() >= BATCH_SIZE {
+            total_keys_missing += batch.len();
+            debug!("Requesting {} missing keys for CA", batch.len());
+            let new_keys = get_missing_ca_keys(middleware, batch, gestionnaire, &mut session).await?;
+            keys_received += new_keys;
+            batch = Vec::with_capacity(BATCH_SIZE);
+        }
+        session.commit_transaction().await?;
+    }
+
+    if batch.len() > 0 {
+        total_keys_missing += batch.len();
+        debug!("Requesting {} missing keys for CA", batch.len());
+        start_transaction_regular(&mut session).await?;
+        let new_keys = get_missing_ca_keys(middleware, batch, gestionnaire, &mut session).await?;
+        session.commit_transaction().await?;
+        keys_received += new_keys;
+    }
+
+    if total_keys_missing == keys_received {
+        // All missing keys received, cleanup temp collection
+        collection_ca_missing.drop(None).await?;
+    }
+
+    info!("process_ca_key_sync Done, requested {} missing keys, received {} keys", total_keys_missing, keys_received);
+    Ok(())
+}
+
+#[derive(Serialize, Deserialize)]
+struct RequestMissingCaKeys {
+    cle_ids: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ResponseMissinCaKeys {
+    ok: Option<bool>,
+    cles: Option<Vec<SignatureDomaines>>,
+}
+
+async fn get_missing_ca_keys<M,G>(middleware: &M, missing_keys: Vec<String>, gestionnaire: &G, session: &mut ClientSession) -> Result<usize, Error>
+    where M: GenerateurMessages + MongoDao + ValidateurX509,
+          G: GestionnaireDomaineV2 + AiguillageTransactions
+{
+
+    let request = RequestMissingCaKeys { cle_ids: missing_keys };
+    let routage = RoutageMessageAction::builder(DOMAINE_NOM, REQUEST_KEYS_FOR_CA, vec![Securite::L3Protege])
+        .build();
+
+    let response = match middleware.transmettre_requete(routage, &request).await {
+        Ok(Some(TypeMessage::Valide(response))) => {
+            let response: ResponseMissinCaKeys = deser_message_buffer!(response.message);
+            response
+        },
+        Ok(None) => Err("get_missing_ca_keys No response for key request")?,
+        Err(e) => Err(format!("get_missing_ca_keys Error receiving response for key request: {:?}", e))?,
+        _ => Err("get_missing_ca_keys Wrong response type for key request")?,
+    };
+
+    if response.ok != Some(true) {
+        Err("get_missing_ca_keys KeyMaster error response when requesting CA keys, aborting")?
+    }
+
+    let keys = match response.cles {
+        Some(inner) => inner,
+        None => Err("get_missing_ca_keys KeyMaster - no key response provided for CA missing keys")?
+    };
+
+    let key_count = keys.len();
+    for key in keys {
+        save_new_ca_key(middleware, key, gestionnaire, session).await?;
+    }
+
+    Ok(key_count)
+}
+
 pub async fn marquer_cles_ca_timeout<M>(middleware: &M) -> Result<(), Error>
     where M: MongoDao
 {
@@ -1798,4 +1973,23 @@ where M: GenerateurMessages + MongoDao + ValidateurX509 + CleChiffrageHandler
 
     // The reply goes through an event - multiple keymasters may be in the same situation
     Ok(None)
+}
+
+pub async fn request_keys_for_ca<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage, session: &mut ClientSession)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
+    where M: GenerateurMessages + MongoDao + ValidateurX509 + CleChiffrageHandler
+{
+    let request: RequestMissingCaKeys = deser_message_buffer!(m.message);
+
+    let mut response_keys = Vec::with_capacity(request.cle_ids.len());
+    let filtre = doc!{CHAMP_CLE_ID: {"$in": request.cle_ids}};
+    let collection = middleware.get_collection_typed::<RowClePartition>(NOM_COLLECTION_SYMMETRIQUE_CLES)?;
+    let mut cursor = collection.find_with_session(filtre, None, session).await?;
+    while cursor.advance(session).await? {
+        let row = cursor.deserialize_current()?;
+        response_keys.push(row.signature);
+    }
+
+    let response = ResponseMissinCaKeys { ok: Some(true), cles: Some(response_keys) };
+    Ok(Some(middleware.build_reponse(response)?.0))
 }

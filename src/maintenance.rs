@@ -1,6 +1,8 @@
 use log::{debug, error, info, warn};
+use millegrilles_common_rust::certificats::ValidateurX509;
 use millegrilles_common_rust::chrono;
 use millegrilles_common_rust::chrono::Timelike;
+use millegrilles_common_rust::domaines_traits::{AiguillageTransactions, GestionnaireDomaineV2};
 use millegrilles_common_rust::middleware::{Middleware, MiddlewareMessages};
 use millegrilles_common_rust::tokio::time::{sleep, Duration as DurationTokio};
 use crate::builder::{MaitreDesClesManager, MaitreDesClesSymmetricManager};
@@ -9,7 +11,7 @@ use millegrilles_common_rust::messages_generiques::MessageCedule;
 use millegrilles_common_rust::mongo_dao::MongoDao;
 use millegrilles_common_rust::mongodb::ClientSession;
 use crate::maitredescles_commun::{emettre_certificat_maitredescles, emettre_cles_symmetriques};
-use crate::maitredescles_mongodb::{confirmer_cles_ca, marquer_cles_ca_timeout, synchroniser_cles};
+use crate::maitredescles_mongodb::{confirmer_cles_ca, marquer_cles_ca_timeout, process_ca_key_sync, synchroniser_cles};
 use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
 
 const DUREE_ATTENTE: u64 = 20000;
@@ -90,12 +92,22 @@ where M: Middleware
     info!("thread_entretien : Fin thread");
 }
 
-pub async fn maintenance_ca<M>(middleware: &M, trigger: &MessageCedule) -> Result<(), Error>
+pub async fn maintenance_ca<M,G>(middleware: &M, gestionnaire: &G, trigger: &MessageCedule) -> Result<(), Error>
 where
-    M: MiddlewareMessages + MongoDao
+    M: MiddlewareMessages + MongoDao + ValidateurX509,
+    G: GestionnaireDomaineV2 + AiguillageTransactions
 {
     let hour = trigger.get_date().hour();
     let minute = trigger.get_date().minute();
+
+    // The sync content is produced every hour at minute 42.
+    // Try to process twice per hour in case the first pass is missed
+    if minute % 30 == 25
+    {
+        if let Err(e) = process_ca_key_sync(middleware, gestionnaire).await {
+            warn!("maintenance_ca Error processing CA key sync : {:?}", e);
+        }
+    }
 
     if hour % 6 == 3 && minute == 25 {
         if let Err(e) = marquer_cles_ca_timeout(middleware).await {
@@ -115,27 +127,23 @@ where
     let hour = trigger.get_date().hour();
 
     if handler_rechiffrage.is_ready() {
-        // Pousser l'information des cles locales (dechiffrables) vers le CA
-        // La sync de base emet uniquement les cles qui ne sont pas encore confirmees par le CA
-        // La sync complet re-emet toutes les cles dechiffrables localement.
-        let reset_flag_confirmation_ca = hour % 6 == 3 && minute == 18;  // Sync complete
-        // let reset_flag_confirmation_ca = true;
-        if reset_flag_confirmation_ca || minute % 15 == 3
+        if minute == 42
         {
             debug!("maintenance_mongodb Pousser les cles locales vers le CA");
-            if let Err(e) = confirmer_cles_ca(middleware, Some(reset_flag_confirmation_ca)).await {
+            if let Err(e) = confirmer_cles_ca(middleware).await {
                 warn!("maintenance_mongodb Partition Pousser les cles locales vers le CA : {:?}", e);
             }
         }
     }
 
-    if hour % 6 == 4 && minute == 47
-    {
-        debug!("thread_entretien Effectuer sync des cles du CA non disponibles localement");
-        if let Err(e) = synchroniser_cles(middleware, handler_rechiffrage).await {
-            warn!("thread_entretien Partition Erreur syncrhonization cles avec CA : {:?}", e)
-        }
-    }
+    // TODO - optimise, and only needed if more than 1 instance has keymasters
+    // if hour % 6 == 4 && minute == 47
+    // {
+    //     debug!("thread_entretien Effectuer sync des cles du CA non disponibles localement");
+    //     if let Err(e) = synchroniser_cles(middleware, handler_rechiffrage).await {
+    //         warn!("thread_entretien Partition Erreur syncrhonization cles avec CA : {:?}", e)
+    //     }
+    // }
 
     Ok(())
 }

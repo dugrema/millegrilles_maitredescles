@@ -108,7 +108,7 @@ impl GestionnaireDomaineSimple for MaitreDesClesCaManager {
     where
         M: MiddlewareMessages + BackupStarter + MongoDao
     {
-        maintenance_ca(middleware, trigger).await
+        maintenance_ca(middleware, self, trigger).await
     }
 }
 
@@ -253,7 +253,7 @@ async fn consommer_requete<M>(middleware: &M, message: MessageValide)
 
 async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnaire_ca: &MaitreDesClesCaManager)
                                -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
-where M: GenerateurMessages + MongoDao + ValidateurX509
+where M: ConfigMessages + GenerateurMessages + MongoDao + ValidateurX509
 {
     debug!("consommer_commande {:?}", m.type_message);
 
