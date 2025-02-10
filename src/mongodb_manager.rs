@@ -31,7 +31,6 @@ use crate::constants::*;
 use crate::maintenance::maintenance_mongodb;
 use crate::maitredescles_commun::{emettre_certificat_maitredescles, GestionnaireRessources};
 use crate::maitredescles_mongodb::{commande_ajouter_cle_domaines, commande_cle_symmetrique, commande_rechiffrer_batch, commande_rotation_certificat, commande_transfert_cle, confirmer_cles_ca, evenement_cle_manquante, evenement_cle_rechiffrage, preparer_index_mongodb_custom, preparer_index_mongodb_partition, preparer_rechiffreur_mongo, query_repair_symmetric_key, requete_dechiffrage_v2, requete_transfert_cles, synchroniser_cles, NOM_COLLECTION_SYMMETRIQUE_CLES};
-// use crate::maitredescles_partition::GestionnaireMaitreDesClesPartition;
 use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
 use crate::requests::{requete_certificat_maitredescles, requete_dechiffrage_message};
 

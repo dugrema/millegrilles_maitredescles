@@ -463,25 +463,6 @@ where M: MongoDao
 pub async fn confirmer_cles_ca<M>(middleware: &M, reset_flag: Option<bool>) -> Result<(), Error>
 where M: GenerateurMessages + MongoDao +  CleChiffrageHandler
 {
-    let mut session = middleware.get_session().await?;
-    start_transaction_regular(&mut session).await?;
-    let result = confirmer_cles_ca_session(middleware, reset_flag, &mut session).await;
-    match result {
-        Ok(()) => {
-            session.commit_transaction().await?;
-            Ok(())
-        }
-        Err(e) => {
-            session.abort_transaction().await?;
-            Err(e)
-        }
-    }
-}
-
-/// S'assurer que le CA a toutes les cles de la partition. Permet aussi de resetter le flag non-dechiffrable.
-async fn confirmer_cles_ca_session<M>(middleware: &M, reset_flag: Option<bool>, session: &mut ClientSession) -> Result<(), Error>
-where M: GenerateurMessages + MongoDao +  CleChiffrageHandler
-{
     let batch_size = 200;
     let nom_collection = NOM_COLLECTION_SYMMETRIQUE_CLES;
 
@@ -491,7 +472,7 @@ where M: GenerateurMessages + MongoDao +  CleChiffrageHandler
         let filtre = doc! { CHAMP_CONFIRMATION_CA: true };
         let ops = doc! { "$set": {CHAMP_CONFIRMATION_CA: false } };
         let collection = middleware.get_collection(nom_collection)?;
-        collection.update_many_with_session(filtre, ops, None, session).await?;
+        collection.update_many(filtre, ops, None).await?;
     }
 
     let mut curseur = {
@@ -501,19 +482,19 @@ where M: GenerateurMessages + MongoDao +  CleChiffrageHandler
             // .limit(limit_cles)
             .build();
         let collection = middleware.get_collection(nom_collection)?;
-        let curseur = collection.find_with_session(filtre, opts, session).await?;
+        let curseur = collection.find(filtre, opts).await?;
         curseur
     };
 
     let mut cles = Vec::new();
-    while let Some(d) = curseur.next(session).await {
+    while let Some(d) = curseur.next().await {
         match d {
             Ok(cle) => {
                 let cle_synchronisation: CleSynchronisation = convertir_bson_deserializable(cle)?;
                 cles.push(cle_synchronisation.cle_id);
 
                 if cles.len() == batch_size {
-                    emettre_cles_vers_ca(middleware, &cles, session).await?;
+                    emettre_cles_vers_ca(middleware, &cles).await?;
                     cles.clear();  // Retirer toutes les cles pour prochaine page
                 }
             },
@@ -523,7 +504,7 @@ where M: GenerateurMessages + MongoDao +  CleChiffrageHandler
 
     // Derniere batch de cles
     if cles.len() > 0 {
-        emettre_cles_vers_ca(middleware, &cles, session).await?;
+        emettre_cles_vers_ca(middleware, &cles).await?;
         cles.clear();
     }
 
@@ -536,7 +517,7 @@ where M: GenerateurMessages + MongoDao +  CleChiffrageHandler
 /// Marque les cles presentes sur la partition et CA comme confirmation_ca=true
 /// Rechiffre et emet vers le CA les cles manquantes
 async fn emettre_cles_vers_ca<M>(
-    middleware: &M, liste_cles: &Vec<String>, session: &mut ClientSession)
+    middleware: &M, liste_cles: &Vec<String>)
     -> Result<(), Error>
 where M: GenerateurMessages + MongoDao +  CleChiffrageHandler
 {
@@ -557,7 +538,7 @@ where M: GenerateurMessages + MongoDao +  CleChiffrageHandler
                     debug!("emettre_cles_vers_ca Reponse confirmer cle sur CA : {:?}", reponse.type_message);
                     let reponse_cles_manquantes: ReponseConfirmerClesSurCa = deser_message_buffer!(reponse.message);
                     let cles_manquantes = reponse_cles_manquantes.cles_manquantes;
-                    traiter_cles_manquantes_ca(middleware, &commande.liste_cle_id, &cles_manquantes, session).await?;
+                    traiter_cles_manquantes_ca(middleware, &commande.liste_cle_id, &cles_manquantes).await?;
                 },
                 _ => Err(Error::Str("emettre_cles_vers_ca Recu mauvais type de reponse "))?
             }
@@ -574,7 +555,7 @@ where M: GenerateurMessages + MongoDao +  CleChiffrageHandler
 async fn traiter_cles_manquantes_ca<M>(
     middleware: &M,
     cles_emises: &Vec<String>,
-    cles_manquantes: &Vec<String>, session: &mut ClientSession
+    cles_manquantes: &Vec<String>
 )
     -> Result<(), Error>
 where M: MongoDao + GenerateurMessages + CleChiffrageHandler
@@ -596,7 +577,7 @@ where M: MongoDao + GenerateurMessages + CleChiffrageHandler
                 "$currentDate": {CHAMP_MODIFICATION: true}
             };
             let collection = middleware.get_collection(nom_collection)?;
-            let resultat_confirmees = collection.update_many_with_session(filtre_confirmees, ops, None, session).await?;
+            let resultat_confirmees = collection.update_many(filtre_confirmees, ops, None).await?;
             debug!("traiter_cles_manquantes_ca Resultat maj cles confirmees: {:?}", resultat_confirmees);
         }
     }
@@ -605,9 +586,9 @@ where M: MongoDao + GenerateurMessages + CleChiffrageHandler
     if ! cles_manquantes.is_empty() {
         let filtre_manquantes = doc! { "cle_id": { "$in": &cles_manquantes } };
         let collection = middleware.get_collection_typed::<RowClePartition>(nom_collection)?;
-        let mut curseur = collection.find_with_session(filtre_manquantes, None, session).await?;
+        let mut curseur = collection.find(filtre_manquantes, None).await?;
         let mut cles = Vec::new();
-        while let Some(d) = curseur.next(session).await {
+        while let Some(d) = curseur.next().await {
             match d {
                 Ok(cle) => {
                     let cle_transfert_ca = CleTransfertCa {
@@ -875,57 +856,61 @@ pub async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValide,
 {
     debug!("commande_confirmer_cles_sur_ca Consommer commande : {:?}", m.type_message);
     let requete: ReponseSynchroniserCles = deser_message_buffer!(m.message);
-    // debug!("requete_synchronizer_cles cle parsed : {:?}", requete);
+    debug!("requete_synchronizer_cles cle parsed : {:?}", requete);
 
-    let mut cles_manquantes = HashSet::new();
-    cles_manquantes.extend(&requete.liste_cle_id);
 
-    let filtre_update = doc! {
-        // CHAMP_HACHAGE_BYTES: {"$in": &requete.liste_hachage_bytes },
-        // "$or": CleSynchronisation::get_bson_filter(&requete.liste_cle_id)?,
-        "cle_id": {"$in": &requete.liste_cle_id},
-        // CHAMP_NON_DECHIFFRABLE: true,
-    };
 
-    // Marquer les cles recues comme dechiffrables sur au moins une partition
-    let ops = doc! {
-        "$set": { CHAMP_NON_DECHIFFRABLE: false},
-        "$currentDate": { CHAMP_MODIFICATION: true, CHAMP_DERNIERE_PRESENCE: true }
-    };
-    let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
-    let resultat_update = collection.update_many_with_session(filtre_update, ops, None, session).await?;
-    debug!("commande_confirmer_cles_sur_ca Resultat update : {:?}", resultat_update);
+    Ok(Some(middleware.reponse_ok(None, None)?))
 
-    // let filtre = doc! { "$or": CleSynchronisation::get_bson_filter(&requete.liste_cle_id)? };
-    let filtre = doc! { "cle_id": {"$in": &requete.liste_cle_id } };
-    debug!("commande_confirmer_cles_sur_ca Filtre cles CA: {:?}", filtre);
-    let projection = doc! { CHAMP_CLE_ID: 1 };
-    let opts = FindOptions::builder().projection(projection).build();
-    let mut curseur = collection.find_with_session(filtre, opts, session).await?;
-    while let Some(d) = curseur.next(session).await {
-        match d {
-            Ok(d) => {
-                match convertir_bson_deserializable::<CleSynchronisation>(d) {
-                    //match d.get(CHAMP_HACHAGE_BYTES) {
-                    Ok(c) => {
-                        // Enlever la cle de la liste de cles manquantes
-                        trace!("Cle CA confirmee (presente) : {:?}", c);
-                        cles_manquantes.remove(&c.cle_id);
-                    },
-                    Err(e) => {
-                        info!("commande_confirmer_cles_sur_ca Erreur conversion CleSynchronisation : {:?}", e);
-                    }
-                }
-            },
-            Err(e) => warn!("commande_confirmer_cles_sur_ca Erreur traitement curseur mongo : {:?}", e)
-        }
-    }
-
-    let mut vec_cles_manquantes = Vec::new();
-    debug!("commande_confirmer_cles_sur_ca Demander {} cles manquantes sur CA", cles_manquantes.len());
-    vec_cles_manquantes.extend(cles_manquantes.iter().map(|v| v.to_string()));
-    let reponse = ReponseConfirmerClesSurCa { cles_manquantes: vec_cles_manquantes };
-    Ok(Some(middleware.build_reponse(&reponse)?.0))
+    // let mut cles_manquantes = HashSet::new();
+    // cles_manquantes.extend(&requete.liste_cle_id);
+    //
+    // let filtre_update = doc! {
+    //     // CHAMP_HACHAGE_BYTES: {"$in": &requete.liste_hachage_bytes },
+    //     // "$or": CleSynchronisation::get_bson_filter(&requete.liste_cle_id)?,
+    //     "cle_id": {"$in": &requete.liste_cle_id},
+    //     // CHAMP_NON_DECHIFFRABLE: true,
+    // };
+    //
+    // // Marquer les cles recues comme dechiffrables sur au moins une partition
+    // let ops = doc! {
+    //     "$set": { CHAMP_NON_DECHIFFRABLE: false},
+    //     "$currentDate": { CHAMP_MODIFICATION: true, CHAMP_DERNIERE_PRESENCE: true }
+    // };
+    // let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
+    // let resultat_update = collection.update_many_with_session(filtre_update, ops, None, session).await?;
+    // debug!("commande_confirmer_cles_sur_ca Resultat update : {:?}", resultat_update);
+    //
+    // // let filtre = doc! { "$or": CleSynchronisation::get_bson_filter(&requete.liste_cle_id)? };
+    // let filtre = doc! { "cle_id": {"$in": &requete.liste_cle_id } };
+    // debug!("commande_confirmer_cles_sur_ca Filtre cles CA: {:?}", filtre);
+    // let projection = doc! { CHAMP_CLE_ID: 1 };
+    // let opts = FindOptions::builder().projection(projection).build();
+    // let mut curseur = collection.find_with_session(filtre, opts, session).await?;
+    // while let Some(d) = curseur.next(session).await {
+    //     match d {
+    //         Ok(d) => {
+    //             match convertir_bson_deserializable::<CleSynchronisation>(d) {
+    //                 //match d.get(CHAMP_HACHAGE_BYTES) {
+    //                 Ok(c) => {
+    //                     // Enlever la cle de la liste de cles manquantes
+    //                     trace!("Cle CA confirmee (presente) : {:?}", c);
+    //                     cles_manquantes.remove(&c.cle_id);
+    //                 },
+    //                 Err(e) => {
+    //                     info!("commande_confirmer_cles_sur_ca Erreur conversion CleSynchronisation : {:?}", e);
+    //                 }
+    //             }
+    //         },
+    //         Err(e) => warn!("commande_confirmer_cles_sur_ca Erreur traitement curseur mongo : {:?}", e)
+    //     }
+    // }
+    //
+    // let mut vec_cles_manquantes = Vec::new();
+    // debug!("commande_confirmer_cles_sur_ca Demander {} cles manquantes sur CA", cles_manquantes.len());
+    // vec_cles_manquantes.extend(cles_manquantes.iter().map(|v| v.to_string()));
+    // let reponse = ReponseConfirmerClesSurCa { cles_manquantes: vec_cles_manquantes };
+    // Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
 pub async fn commande_transfert_cle_ca<M,G>(middleware: &M, m: MessageValide, gestionnaire: &G, session: &mut ClientSession)
