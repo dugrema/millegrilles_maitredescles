@@ -1,13 +1,13 @@
 [package]
 name = "millegrilles_maitredescles"
-version = "2025.1.52"
+version = "2025.1.53"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-# millegrilles_common_rust = { git = "https://github.com/dugrema/millegrilles_common_rust.git", tag = "2024.9-release" }
-millegrilles_common_rust = { git = "https://github.com/dugrema/millegrilles_common_rust.git", branch = "master" }
+millegrilles_common_rust = { git = "https://github.com/dugrema/millegrilles_common_rust.git", tag = "2025.1-release" }
+# millegrilles_common_rust = { git = "https://github.com/dugrema/millegrilles_common_rust.git", branch = "master" }
 # millegrilles_common_rust = { path = "/home/mathieu/RustroverProjects/millegrilles_common_rust" }
 
 log = { version = "0.4", features = ["max_level_trace", "release_max_level_info"] }
