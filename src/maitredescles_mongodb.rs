@@ -896,7 +896,7 @@ pub async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValide,
             warn!("The keysync table has not been processed yet - wait for cleanup");
         } else {
             // Move the temp table to done, create index
-            middleware.rename_collection(NOM_COLLECTION_CA_TEMP_KEYSYNC, NOM_COLLECTION_CA_TEMP_KEYSYNC_DONE).await?;
+            middleware.rename_collection(NOM_COLLECTION_CA_TEMP_KEYSYNC, NOM_COLLECTION_CA_TEMP_KEYSYNC_DONE, false).await?;
             let options_cle_id = IndexOptions {
                 nom_index: Some(String::from(INDEX_CLE_ID)),
                 unique: false,  // There may be duplicates from multiple keymasters or missed sync sessions
