@@ -4,12 +4,12 @@ use std::str::from_utf8;
 use std::sync::Arc;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
+use crate::constants::{DOMAINE_NOM, EVENEMENT_DEMANDE_CLE_SYMMETRIQUE, REQUETE_TRANSFERT_CLES};
+use crate::maitredescles_rechiffrage::{CleInterneChiffree, HandlerCleRechiffrage};
 use millegrilles_common_rust::base64::{engine::general_purpose::STANDARD_NO_PAD as base64_nopad, Engine as _};
 use millegrilles_common_rust::bson;
 use millegrilles_common_rust::bson::{bson, doc, Bson};
-use millegrilles_common_rust::certificats::ordered_map;
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
-use millegrilles_common_rust::chiffrage_cle::CommandeSauvegarderCle;
 use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::common_messages::RequeteDechiffrage;
 use millegrilles_common_rust::constantes::*;
@@ -17,6 +17,7 @@ use millegrilles_common_rust::error::Error;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::{optionformatchiffragestr, CleSecrete, FormatChiffrage};
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_cles::{CleChiffrageHandler, CleSecreteSerialisee};
+use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_docs::EncryptedDocument;
 use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::{SignatureDomaines, SignatureDomainesRef, SignatureDomainesVersion};
 use millegrilles_common_rust::millegrilles_cryptographie::x25519::CleSecreteX25519;
 use millegrilles_common_rust::millegrilles_cryptographie::x509::EnveloppeCertificat;
@@ -25,9 +26,6 @@ use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
 use millegrilles_common_rust::recepteur_messages::{MessageValide, TypeMessage};
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::json;
-use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_docs::EncryptedDocument;
-use crate::constants::{DOMAINE_NOM, EVENEMENT_DEMANDE_CLE_SYMMETRIQUE, REQUETE_TRANSFERT_CLES};
-use crate::maitredescles_rechiffrage::{CleInterneChiffree, HandlerCleRechiffrage};
 
 /// Emet le certificat de maitre des cles
 /// Le message n'a aucun contenu, c'est l'enveloppe qui permet de livrer le certificat
@@ -114,13 +112,6 @@ pub async fn preparer_rechiffreur<M>(_middleware: &M, handler_rechiffrage: &Hand
 {
     info!("preparer_rechiffreur Generer nouvelle cle symmetrique de rechiffrage");
     handler_rechiffrage.generer_cle_symmetrique()
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct PermissionDechiffrage {
-    pub permission_hachage_bytes: Vec<String>,
-    pub domaines_permis: Option<Vec<String>>,
-    pub permission_duree: u32,
 }
 
 /// Requete utilisee pour parcourir toutes les cles du CA a partir d'une partition
@@ -229,11 +220,6 @@ pub struct CommandeRechiffrerBatchChiffree {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CommandeRechiffrerBatchDechiffree {
     pub cles: HashMap<String, CleSecreteRechiffrage>
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CommandeRechiffrerBatch {
-    pub cles: Vec<CleSecreteRechiffrage>
 }
 
 /// Transaction de sauvegarde de cle CA version 2.
@@ -369,49 +355,8 @@ pub struct RowClePartitionRef<'a> {
     #[serde(rename(deserialize="_mg-creation"),
     serialize_with="epochseconds::serialize",
     deserialize_with="bson::serde_helpers::chrono_datetime_as_bson_datetime::deserialize")]
+    #[allow(unused)]
     pub date_creation: DateTime<Utc>,
-}
-
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct DocCleSymmetrique {
-    // Identite de la cle
-    pub hachage_bytes: String,
-    pub domaine: String,
-    #[serde(serialize_with = "ordered_map")]
-    pub identificateurs_document: HashMap<String, String>,
-    // pub signature_identite: String,
-
-    // Cles chiffrees
-    //#[serde(serialize_with = "ordered_map")]
-    // pub cles: HashMap<String, String>,
-    pub cle_symmetrique: Option<String>,
-    pub nonce_symmetrique: Option<String>,
-
-    // Information de dechiffrage
-    pub format: FormatChiffrage,
-    pub iv: Option<String>,
-    pub tag: Option<String>,
-    pub header: Option<String>,
-}
-
-impl Into<CommandeSauvegarderCle> for DocCleSymmetrique {
-    fn into(self) -> CommandeSauvegarderCle {
-        CommandeSauvegarderCle {
-            hachage_bytes: self.hachage_bytes.clone(),
-            domaine: self.domaine.clone(),
-            identificateurs_document: self.identificateurs_document.clone(),
-            // signature_identite: self.signature_identite.clone(),
-            // cles: self.cles.clone(),
-            cles: HashMap::new(),
-            format: self.format.clone(),
-            iv: self.iv.clone(),
-            tag: self.tag.clone(),
-            header: self.header.clone(),
-            partition: None,
-            fingerprint_partitions: None
-        }
-    }
 }
 
 pub struct GestionnaireRessources {

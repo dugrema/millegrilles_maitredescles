@@ -1,3 +1,4 @@
+#![allow(unused)]
 use millegrilles_common_rust::constantes::COMMANDE_CERT_MAITREDESCLES;
 
 pub const DOMAINE_NOM: &str = "MaitreDesCles";

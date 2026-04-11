@@ -16,7 +16,7 @@ use millegrilles_common_rust::multibase;
 use millegrilles_common_rust::multibase::Base;
 // use crate::maitredescles_partition::GestionnaireMaitreDesClesPartition;
 
-pub async fn commande_verifier_cle_symmetrique<M>(middleware: &M, handler_rechiffrage: &HandlerCleRechiffrage, session: &mut ClientSession)
+pub async fn commande_verifier_cle_symmetrique<M>(middleware: &M, handler_rechiffrage: &HandlerCleRechiffrage, _session: &mut ClientSession)
                                                   -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
 where M: ValidateurX509 + GenerateurMessages + MongoDao
 {
@@ -33,7 +33,7 @@ where M: ValidateurX509 + GenerateurMessages + MongoDao
     Ok(None)
 }
 
-pub async fn commande_dechiffrer_cle<M>(middleware: &M, m: MessageValide, session: &mut ClientSession)
+pub async fn commande_dechiffrer_cle<M>(middleware: &M, m: MessageValide, _session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages
 {

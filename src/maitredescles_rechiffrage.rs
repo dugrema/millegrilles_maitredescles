@@ -79,7 +79,7 @@ impl Debug for HandlerCleRechiffrage {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let fingerprint = match self.fingerprint() {
             Ok(inner) => inner,
-            Err(e) => Err(std::fmt::Error{})?
+            Err(_e) => Err(std::fmt::Error{})?
         };
         f.write_str(format!("HandlerCleRechiffrage fingerprint {}", fingerprint).as_str())
         // match self.fingerprint() {
@@ -104,7 +104,7 @@ impl HandlerCleRechiffrage {
     // }
 
     pub fn with_certificat(enveloppe_privee: Arc<EnveloppePrivee>) -> Self {
-        let cle_privee = enveloppe_privee.cle_privee.to_owned();
+        // let cle_privee = enveloppe_privee.cle_privee.to_owned();
         Self {
             // cle_rechiffrage: cle_privee,
             // certificat_maitredescles: Mutex::new(Some(enveloppe)),
@@ -198,15 +198,6 @@ impl HandlerCleRechiffrage {
         self.cle_symmetrique.lock().expect("lock").is_some()
     }
 
-    pub fn get_enveloppe_privee(&self) -> Arc<EnveloppePrivee> {
-        // let guard = self.enveloppe_privee.lock().expect("maitredescles_volatil.is_ready lock");
-        // match guard.as_ref() {
-        //     Some(e) => Some(e.clone()),
-        //     None => None
-        // }
-        self.enveloppe_privee.clone()
-    }
-
     pub fn generer_cle_symmetrique(&self) -> Result<(), Error> {
         // Generer une cle secrete 32 bytes pour chiffrage symmetrique
         let mut guard = self.cle_symmetrique.lock().expect("lock");
@@ -247,7 +238,7 @@ impl HandlerCleRechiffrage {
                 Some(inner) => {
                     // let key = XChaCha20Poly1305::generate_key(&mut OsRng);
                     // let cipher = XChaCha20Poly1305::new(&inner.0[0..32]);
-                    let mut cipher = XChaCha20Poly1305::new((&inner.0).into());
+                    let cipher = XChaCha20Poly1305::new((&inner.0).into());
                     let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
                     let ciphertext = match cipher.encrypt(&nonce, cle) {
                         Ok(inner) => inner,
@@ -260,7 +251,7 @@ impl HandlerCleRechiffrage {
         };
 
         let nonce_string: String = multibase::encode(Base::Base64, &nonce[..]);
-        let cle_chiffree = multibase::encode(Base::Base64, &ciphertext[..]);;
+        let cle_chiffree = multibase::encode(Base::Base64, &ciphertext[..]);
 
         // Ok((nonce_string, cle_chiffree))
         Ok(CleInterneChiffree {cle: cle_chiffree, nonce: nonce_string})
@@ -273,7 +264,7 @@ impl HandlerCleRechiffrage {
         let guard = self.cle_symmetrique.lock().expect("lock");
         match guard.as_ref() {
             Some(inner) => {
-                let mut cipher = XChaCha20Poly1305::new((&inner.0).into());
+                let cipher = XChaCha20Poly1305::new((&inner.0).into());
                 let cle_secrete = match cipher.decrypt((&nonce.1[..]).into(), &cle_chiffree.1[..]) {
                     Ok(inner) => {
                         let mut buffer = [0u8; 32];
