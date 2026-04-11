@@ -1,8 +1,8 @@
-use std::sync::Mutex;
+use crate::constants::*;
+use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::backup::BackupStarter;
 use millegrilles_common_rust::certificats::ValidateurX509;
-use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::db_structs::TransactionValide;
 use millegrilles_common_rust::domaines_traits::{AiguillageTransactions, ConsommateurMessagesBus, GestionnaireBusMillegrilles, GestionnaireDomaineV2};
 use millegrilles_common_rust::domaines_v2::GestionnaireDomaineSimple;
@@ -15,22 +15,19 @@ use millegrilles_common_rust::mongo_dao::MongoDao;
 use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::rabbitmq_dao::QueueType;
 use millegrilles_common_rust::recepteur_messages::MessageValide;
-use sqlite::Connection;
-use crate::constants::*;
-use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
 
 pub struct MaitreDesClesSqliteManager {
     pub handler_rechiffrage: HandlerCleRechiffrage,
-    connexion_read_only: Mutex<Option<Connection>>,
-    connexion_sauvegarder_cle: Mutex<Option<Connection>>,
+    // connexion_read_only: Mutex<Option<Connection>>,
+    // connexion_sauvegarder_cle: Mutex<Option<Connection>>,
 }
 
 impl MaitreDesClesSqliteManager {
     pub fn new(handler_rechiffrage: HandlerCleRechiffrage) -> MaitreDesClesSqliteManager {
         MaitreDesClesSqliteManager {
             handler_rechiffrage,
-            connexion_read_only: Mutex::new(None),
-            connexion_sauvegarder_cle: Mutex::new(None),
+            // connexion_read_only: Mutex::new(None),
+            // connexion_sauvegarder_cle: Mutex::new(None),
         }
     }
 }
@@ -66,7 +63,7 @@ impl GestionnaireBusMillegrilles for MaitreDesClesSqliteManager {
 
 #[async_trait]
 impl ConsommateurMessagesBus for MaitreDesClesSqliteManager {
-    async fn consommer_requete<M>(&self, middleware: &M, message: MessageValide) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    async fn consommer_requete<M>(&self, _middleware: &M, _message: MessageValide) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where
         M: Middleware
     {
@@ -74,7 +71,7 @@ impl ConsommateurMessagesBus for MaitreDesClesSqliteManager {
         // consommer_requete(middleware, message, self).await
     }
 
-    async fn consommer_commande<M>(&self, middleware: &M, message: MessageValide) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    async fn consommer_commande<M>(&self, _middleware: &M, _message: MessageValide) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where
         M: Middleware
     {
@@ -82,7 +79,7 @@ impl ConsommateurMessagesBus for MaitreDesClesSqliteManager {
         // consommer_commande(middleware, message, self).await
     }
 
-    async fn consommer_evenement<M>(&self, middleware: &M, message: MessageValide) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    async fn consommer_evenement<M>(&self, _middleware: &M, _message: MessageValide) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where
         M: Middleware
     {
@@ -93,7 +90,7 @@ impl ConsommateurMessagesBus for MaitreDesClesSqliteManager {
 
 #[async_trait]
 impl AiguillageTransactions for MaitreDesClesSqliteManager {
-    async fn aiguillage_transaction<M>(&self, middleware: &M, transaction: TransactionValide, session: &mut ClientSession)
+    async fn aiguillage_transaction<M>(&self, _middleware: &M, _transaction: TransactionValide, _session: &mut ClientSession)
         -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where
         M: ValidateurX509 + GenerateurMessages + MongoDao
@@ -113,12 +110,7 @@ impl GestionnaireDomaineSimple for MaitreDesClesSqliteManager {
     }
 }
 
-fn preparer_queues(manager: &MaitreDesClesSqliteManager) -> Vec<QueueType> {
+fn preparer_queues(_manager: &MaitreDesClesSqliteManager) -> Vec<QueueType> {
     todo!()
 }
 
-pub async fn preparer_index_mongodb<M>(middleware: &M) -> Result<(), CommonError>
-where M: MongoDao + ConfigMessages
-{
-    todo!()
-}

@@ -1,10 +1,8 @@
-use crate::ca_manager::MaitreDesClesCaManager;
 use crate::constants::*;
-use crate::maitredescles_commun::{effectuer_requete_cles_manquantes, emettre_demande_cle_symmetrique, preparer_rechiffreur, verifier_permission_rechiffrage, CleSecreteRechiffrage, CleSynchronisation, CleTransfert, CleTransfertCa, CommandeCleSymmetrique, CommandeRechiffrerBatchChiffree, CommandeRechiffrerBatchDechiffree, CommandeRotationCertificat, CommandeTransfertClesCaV2, CommandeTransfertClesV2, DocumentCleRechiffrage, ErreurPermissionRechiffrage, EvenementClesRechiffrage, ReponseConfirmerClesSurCa, ReponseSynchroniserCles, RequeteSynchroniserCles, RequeteTransfert, RowCleCaRef, RowClePartition, RowClePartitionRef, TransactionCle, TransactionCleV2};
+use crate::maitredescles_commun::{effectuer_requete_cles_manquantes, emettre_demande_cle_symmetrique, preparer_rechiffreur, verifier_permission_rechiffrage, CleSecreteRechiffrage, CleSynchronisation, CleTransfert, CommandeCleSymmetrique, CommandeRechiffrerBatchChiffree, CommandeRechiffrerBatchDechiffree, CommandeRotationCertificat, CommandeTransfertClesCaV2, CommandeTransfertClesV2, DocumentCleRechiffrage, ErreurPermissionRechiffrage, EvenementClesRechiffrage, ReponseConfirmerClesSurCa, ReponseSynchroniserCles, RequeteSynchroniserCles, RequeteTransfert, RowCleCaRef, RowClePartition, TransactionCle, TransactionCleV2};
 use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
 use crate::messages::{RecupererCleCa, RequeteClesNonDechiffrable};
-use crate::mongodb_manager::MaitreDesClesMongoDbManager;
-use log::{debug, error, info, trace, warn};
+use log::{debug, error, info, warn};
 use millegrilles_common_rust::base64::{engine::general_purpose::STANDARD_NO_PAD as base64_nopad, Engine as _};
 use millegrilles_common_rust::bson::doc;
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
@@ -12,8 +10,9 @@ use millegrilles_common_rust::chiffrage_cle::CommandeAjouterCleDomaine;
 use millegrilles_common_rust::chrono::{DateTime, Duration, Utc};
 use millegrilles_common_rust::common_messages::{ReponseRequeteDechiffrageV2, RequeteDechiffrage, ResponseRequestDechiffrageV2Cle};
 use millegrilles_common_rust::configuration::ConfigMessages;
-use millegrilles_common_rust::constantes::{RolesCertificats, Securite, CHAMP_CREATION, CHAMP_MODIFICATION, COMMANDE_TRANSFERT_CLE, COMMANDE_TRANSFERT_CLE_CA};
+use millegrilles_common_rust::constantes::{RolesCertificats, Securite, CHAMP_CREATION, CHAMP_MODIFICATION, COMMANDE_TRANSFERT_CLE};
 use millegrilles_common_rust::db_structs::TransactionValide;
+use millegrilles_common_rust::dechiffrage::decrypt_document;
 use millegrilles_common_rust::domaines_traits::{AiguillageTransactions, GestionnaireDomaineV2};
 use millegrilles_common_rust::error::Error;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
@@ -24,20 +23,18 @@ use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::opti
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
 use millegrilles_common_rust::millegrilles_cryptographie::x25519::{dechiffrer_asymmetrique_ed25519, CleSecreteX25519};
 use millegrilles_common_rust::millegrilles_cryptographie::{deser_message_buffer, heapless};
-use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, start_transaction_regular, verifier_erreur_duplication_mongo, ChampIndex, IndexOptions, MongoDao};
+use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, start_transaction_regular, ChampIndex, IndexOptions, MongoDao};
 use millegrilles_common_rust::mongodb::options::{AggregateOptions, CountOptions, FindOneOptions, FindOptions, Hint, UpdateOptions};
+use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
 use millegrilles_common_rust::recepteur_messages::{MessageValide, TypeMessage};
+use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::json;
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::{millegrilles_cryptographie, multibase, serde_json};
 use std::collections::HashSet;
 use std::str::from_utf8;
-use millegrilles_common_rust::serde::{Deserialize, Serialize};
-use millegrilles_common_rust::dechiffrage::decrypt_document;
-use millegrilles_common_rust::mongodb::ClientSession;
 
-pub const NOM_COLLECTION_TRANSACTIONS: &str = DOMAINE_NOM;
 pub const NOM_COLLECTION_TRANSACTIONS_CA: &str = "MaitreDesCles/CA";
 pub const NOM_COLLECTION_CA_CLES: &str = "MaitreDesCles/CA/cles";
 pub const NOM_COLLECTION_CA_TEMP_KEYSYNC: &str = "MaitreDesCles/CA/temp_keysync";
@@ -46,7 +43,7 @@ pub const NOM_COLLECTION_CA_MISSING: &str = "MaitreDesCles/CA/keys_missing";
 pub const NOM_COLLECTION_SYMMETRIQUE_CLES: &str = "MaitreDesCles/cles";
 
 /// Creer index MongoDB
-pub async fn preparer_index_mongodb_custom<M>(middleware: &M, nom_collection_cles: &str, ca: bool) -> Result<(), Error>
+pub async fn preparer_index_mongodb_custom<M>(middleware: &M, nom_collection_cles: &str, _ca: bool) -> Result<(), Error>
 where M: MongoDao + ConfigMessages
 {
     // Index cle_id
@@ -204,135 +201,6 @@ async fn preparer_rechiffreur_mongo_session<M>(middleware: &M, handler_rechiffra
                 "cle": cle_secrete_chiffree_local,
             };
             collection.insert_one_with_session(cle_locale, None, session).await?;
-        }
-    }
-
-    Ok(())
-}
-
-pub async fn synchroniser_cles<M>(middleware: &M, handler_rechiffrage: &HandlerCleRechiffrage) -> Result<(), Error>
-where M: GenerateurMessages + MongoDao +  CleChiffrageHandler
-{
-    let mut session = middleware.get_session().await?;
-    start_transaction_regular(&mut session).await?;
-    let result = synchroniser_cles_session(middleware, handler_rechiffrage, &mut session).await;
-    match result {
-        Ok(()) => {
-            session.commit_transaction().await?;
-            Ok(())
-        }
-        Err(e) => {
-            session.abort_transaction().await?;
-            Err(e)
-        }
-    }
-}
-
-async fn synchroniser_cles_session<M>(middleware: &M, handler_rechiffrage: &HandlerCleRechiffrage, session: &mut ClientSession) -> Result<(), Error>
-where M: GenerateurMessages + MongoDao +  CleChiffrageHandler
-{
-    debug!("synchroniser_cles Debut");
-    if ! handler_rechiffrage.is_ready() {
-        Err(format!("maitredescles_partition.synchroniser_cles Rechiffreur n'est pas initialise"))?
-    }
-
-    // Requete vers CA pour obtenir la liste des cles connues
-    let mut requete_sync = RequeteSynchroniserCles {page: 0, limite: 1000};
-    let routage_sync = RoutageMessageAction::builder(DOMAINE_NOM, REQUETE_SYNCHRONISER_CLES, vec![Securite::L4Secure])
-        .build();
-
-    loop {
-        let reponse: ReponseSynchroniserCles = match middleware.transmettre_requete(routage_sync.clone(), &requete_sync).await? {
-            Some(inner) => match inner {
-                TypeMessage::Valide(reponse) => deser_message_buffer!(reponse.message),
-                _ => {
-                    warn!("synchroniser_cles Mauvais type de reponse recu, on abort");
-                    break
-                }
-            },
-            None => {
-                warn!("synchroniser_cles Aucune reponse recue, on abort");
-                break
-            }
-        };
-        requete_sync.page += 1;  // Incrementer page pour prochaine requete
-
-        if reponse.liste_cle_id.len() == 0 {
-            debug!("Traitement sync termine");
-            break
-        }
-
-        if let Err(e) = traiter_batch_synchroniser_cles(middleware, handler_rechiffrage, reponse, session).await {
-            error!("synchroniser_cles Erreur traitement batch cles : {:?}", e);
-        }
-    }
-
-    debug!("synchroniser_cles Fin");
-
-    Ok(())
-}
-
-async fn traiter_batch_synchroniser_cles<M>(middleware: &M, handler_rechiffrage: &HandlerCleRechiffrage, reponse: ReponseSynchroniserCles, session: &mut ClientSession)
-                                            -> Result<(), Error>
-where M: MongoDao + GenerateurMessages
-{
-    let liste_cles = reponse.liste_cle_id;
-
-    let mut cles_hashset = HashSet::new();
-    for item in &liste_cles {
-        cles_hashset.insert(item.as_str());
-    }
-
-    debug!("traiter_batch_synchroniser_cles Recu liste_hachage_bytes a verifier : {} cles", liste_cles.len());
-    let filtre_cles = doc! {"cle_id": { "$in": &liste_cles } };
-    let projection = doc! { CHAMP_CLE_ID: 1 };
-    let find_options = FindOptions::builder().projection(projection).build();
-
-    let nom_collection = NOM_COLLECTION_SYMMETRIQUE_CLES;
-
-    let collection = middleware.get_collection_typed::<CleSynchronisation>(nom_collection)?;
-    let mut cles = collection.find_with_session(filtre_cles, Some(find_options), session).await?;
-    while let Some(row) = cles.next(session).await {
-        match row {
-            Ok(inner) => {
-                cles_hashset.remove(inner.cle_id.as_str());
-            },
-            Err(e) => {
-                info!("traiter_batch_synchroniser_cles Erreur mapping cle : {:?}", e);
-                continue
-            }
-        }
-    }
-
-    if cles_hashset.len() > 0 {
-        debug!("traiter_batch_synchroniser_cles Cles absentes localement : {} cles", cles_hashset.len());
-
-        let enveloppe_signature = middleware.get_enveloppe_signature();
-        let fingerprint = enveloppe_signature.fingerprint()?;
-
-        // Emettre requete pour indiquer que ces cles sont manquantes dans la partition
-        let liste_cles: Vec<String> = cles_hashset.iter().map(|m| m.to_string()).collect();
-        let requete_transfert = RequeteTransfert {
-            fingerprint,
-            cle_ids: liste_cles,
-            toujours_repondre: Some(false),
-        };
-
-        let data_reponse = effectuer_requete_cles_manquantes(
-            middleware, &requete_transfert).await.unwrap_or_else(|e| {
-            error!("traiter_batch_synchroniser_cles Erreur requete cles manquantes : {:?}", e);
-            None
-        });
-
-        if let Some(data_reponse) = data_reponse {
-            debug!("traiter_batch_synchroniser_cles Recu {} cles suite a la requete de cles manquantes", data_reponse.cles.len());
-            for cle in data_reponse.cles {
-                sauvegarder_cle_transfert(middleware, handler_rechiffrage, &cle, session).await?;
-            }
-        }
-
-        if cles_hashset.len() > 0 {
-            info!("traiter_batch_synchroniser_cles Il reste {} cles non dechiffrables", cles_hashset.len());
         }
     }
 
@@ -535,76 +403,6 @@ where M: GenerateurMessages + MongoDao +  CleChiffrageHandler
     Ok(())
 }
 
-/// Marque les cles emises comme confirmees par le CA sauf si elles sont dans la liste de cles manquantes.
-async fn traiter_cles_manquantes_ca<M>(
-    middleware: &M,
-    cles_emises: &Vec<String>,
-    cles_manquantes: &Vec<String>
-)
-    -> Result<(), Error>
-where M: MongoDao + GenerateurMessages + CleChiffrageHandler
-{
-    let nom_collection = NOM_COLLECTION_SYMMETRIQUE_CLES;
-
-    // Marquer cles emises comme confirmees par CA si pas dans la liste de manquantes
-    {
-        let cles_confirmees: Vec<&String> = cles_emises.iter()
-            .filter(|c| !cles_manquantes.contains(c))
-            .collect();
-        debug!("traiter_cles_manquantes_ca Cles confirmees par le CA: {} cles", cles_confirmees.len());
-        if ! cles_confirmees.is_empty() {
-            // let filtre_confirmees = doc! {CHAMP_HACHAGE_BYTES: {"$in": cles_confirmees}};
-            // let filtre_confirmees = doc! { "$or": CleSynchronisation::get_bson_filter(&cles_confirmees)? };
-            let filtre_confirmees = doc! { "cle_id": { "$in": &cles_confirmees } };
-            let ops = doc! {
-                "$set": {CHAMP_CONFIRMATION_CA: true},
-                "$currentDate": {CHAMP_MODIFICATION: true}
-            };
-            let collection = middleware.get_collection(nom_collection)?;
-            let resultat_confirmees = collection.update_many(filtre_confirmees, ops, None).await?;
-            debug!("traiter_cles_manquantes_ca Resultat maj cles confirmees: {:?}", resultat_confirmees);
-        }
-    }
-
-    // Rechiffrer et emettre les cles manquantes.
-    if ! cles_manquantes.is_empty() {
-        let filtre_manquantes = doc! { "cle_id": { "$in": &cles_manquantes } };
-        let collection = middleware.get_collection_typed::<RowClePartition>(nom_collection)?;
-        let mut curseur = collection.find(filtre_manquantes, None).await?;
-        let mut cles = Vec::new();
-        while let Some(d) = curseur.next().await {
-            match d {
-                Ok(cle) => {
-                    let cle_transfert_ca = CleTransfertCa {
-                        signature: cle.signature,
-                        format: cle.format,
-                        nonce: cle.header,
-                        verification: cle.tag,
-                    };
-                    cles.push(cle_transfert_ca)
-                },
-                Err(e) => {
-                    warn!("traiter_cles_manquantes_ca Erreur conversion document en cle : {:?}", e);
-                    continue
-                }
-            };
-        }
-
-        let routage_commande = RoutageMessageAction::builder(
-            DOMAINE_NOM, COMMANDE_TRANSFERT_CLE_CA, vec![Securite::L3Protege]
-        )
-            .blocking(false)
-            .build();
-
-        let commande = CommandeTransfertClesCaV2 { cles };
-        debug!("traiter_cles_manquantes_ca Emettre {} cles rechiffrees pour CA", commande.cles.len());
-        middleware.transmettre_commande(routage_commande.clone(), &commande).await?;
-    }
-
-    Ok(())
-}
-
-
 pub async fn requete_compter_cles_non_dechiffrables_ca<M>(middleware: &M, m: MessageValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages + MongoDao
@@ -624,75 +422,6 @@ pub async fn requete_compter_cles_non_dechiffrables_ca<M>(middleware: &M, m: Mes
     let compte = collection.count_documents(filtre, opts).await?;
 
     let reponse = json!({ "compte": compte });
-    Ok(Some(middleware.build_reponse(&reponse)?.0))
-}
-
-pub async fn requete_cles_non_dechiffrables<M>(middleware: &M, m: MessageValide, session: &mut ClientSession)
-    -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
-    where M: GenerateurMessages + MongoDao
-{
-    debug!("requete_cles_non_dechiffrables Consommer commande : {:?}", m.type_message);
-    let requete: RequeteClesNonDechiffrable = deser_message_buffer!(m.message);
-    // debug!("requete_cles_non_dechiffrables cle parsed : {:?}", requete);
-
-    let mut curseur = {
-        let limite_docs = requete.limite.unwrap_or_else(|| 1000 as u64);
-
-        let (skip_docs, mut filtre) = match requete.skip {
-            Some(inner) => {
-                let filtre = doc! {};
-                (inner, filtre)
-            },
-            None => {
-                let filtre = doc! {CHAMP_NON_DECHIFFRABLE: true};
-                (0u64, filtre)
-            }
-        };
-
-        match requete.date_creation_min {
-            Some(d) => {
-                filtre.insert(CHAMP_CREATION, doc!{"$gte": d});
-            },
-            None => ()
-        }
-
-        match requete.exclude_hachage_bytes {
-            Some(e) => {
-                filtre.insert(CHAMP_HACHAGE_BYTES, doc!{"$nin": e});
-            },
-            None => ()
-        }
-
-        let hint = Hint::Name(INDEX_NON_DECHIFFRABLES.into());
-        // let sort_doc = doc! {
-        //     CHAMP_NON_DECHIFFRABLE: 1,
-        //     CHAMP_CREATION: 1,
-        // };
-        let opts = FindOptions::builder()
-            .hint(hint)
-            // .sort(sort_doc)
-            .skip(skip_docs)
-            .limit(Some(limite_docs as i64))
-            .build();
-        debug!("requete_cles_non_dechiffrables filtre cles a rechiffrer : filtre {:?} opts {:?}", filtre, opts);
-        let collection = middleware.get_collection_typed::<RowClePartitionRef>(NOM_COLLECTION_CA_CLES)?;
-        collection.find_with_session(filtre, opts, session).await?
-    };
-
-    let mut cles = Vec::new();
-    let mut date_creation = None;
-    while curseur.advance(session).await? {
-        let cle = curseur.deserialize_current()?;
-
-        // Conserver date de creation - On est juste interesse en la derniere date (plus recente).
-        date_creation = Some(cle.date_creation.clone());
-
-        let cle: RecupererCleCa = cle.try_into()?;  // Version owned
-        cles.push(cle);
-    }
-
-    let reponse = json!({ "cles": cles, "date_creation_max": date_creation.as_ref() });
-    debug!("requete_cles_non_dechiffrables Reponse {} cles rechiffrable", cles.len());
     Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
@@ -861,7 +590,7 @@ async fn save_new_ca_key<M,G>(middleware: &M, signature: SignatureDomaines, gest
 }
 
 /// Conserver la presence d'une cle dechiffrable par au moins une partition.
-pub async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValide, session: &mut ClientSession)
+pub async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValide, _session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: ConfigMessages + GenerateurMessages + MongoDao
 {
@@ -1115,7 +844,7 @@ where M: GenerateurMessages + MongoDao
 
     let hachage_bytes = transaction_cle.hachage_bytes.as_str();
 
-    let filtre = doc! {"cle_id": hachage_bytes};
+    let _filtre = doc! {"cle_id": hachage_bytes};
     let format: Option<&str> = match transaction_cle.format.clone() { Some(inner) => Some(inner.into()), None => None };
 
     let mut domaines = heapless::Vec::new();
@@ -1175,12 +904,12 @@ where M: GenerateurMessages + MongoDao
     if middleware.get_mode_regeneration() {
         // Ignore session - this allows handling key duplication errors (by cle_id)
         match collection.insert_one(set_on_insert, None).await {
-            Ok(r) => (),
+            Ok(_r) => (),
             Err(e) => Err(format!("maitredescles_ca.transaction_cle Erreur update_one sur transaction : {:?}", e))?
         }
     } else {
         match collection.insert_one_with_session(set_on_insert, None, session).await {
-            Ok(r) => (),
+            Ok(_r) => (),
             Err(e) => Err(format!("maitredescles_ca.transaction_cle Erreur update_one sur transaction : {:?}", e))?
         }
     }
@@ -1237,12 +966,12 @@ where M: GenerateurMessages + MongoDao
     if middleware.get_mode_regeneration() {
         // Ignore session - this allows handling key duplication errors (by cle_id)
         match collection.insert_one(set_on_insert, None).await {
-            Ok(r) => (),
+            Ok(_r) => (),
             Err(e) => Err(format!("maitredescles_ca.transaction_cle_v2 Erreur update_one sur transaction : {:?}", e))?
         }
     } else {
         match collection.insert_one_with_session(set_on_insert, None, session).await {
-            Ok(r) => (),
+            Ok(_r) => (),
             Err(e) => Err(format!("maitredescles_ca.transaction_cle_v2 Erreur update_one sur transaction : {:?}", e))?
         }
     }
@@ -1284,7 +1013,7 @@ pub async fn requete_dechiffrage_v2<M>(middleware: &M, m: MessageValide, handler
     };
 
     // Verifier que la requete est autorisee
-    let (certificat, requete_autorisee_globalement) = match verifier_permission_rechiffrage(middleware, &m, &requete).await {
+    let (certificat, _requete_autorisee_globalement) = match verifier_permission_rechiffrage(middleware, &m, &requete).await {
         Ok(inner) => inner,
         Err(ErreurPermissionRechiffrage::Refuse(e)) => {
             let refuse = json!({"ok": false, "err": e.err, "acces": "0.refuse", "code": e.code});
@@ -1403,7 +1132,7 @@ pub async fn requete_dechiffrage_v2<M>(middleware: &M, m: MessageValide, handler
 
         // Retourner cle inconnu a l'usager
         let inconnu = json!({"ok": false, "err": "Cles inconnues", "acces": CHAMP_ACCES_CLE_INCONNUE, "code": 4});
-        let reponse = ReponseRequeteDechiffrageV2 {
+        let _reponse = ReponseRequeteDechiffrageV2 {
             ok: false,
             code: 4,
             cles: None,
@@ -1568,7 +1297,7 @@ where M: GenerateurMessages + MongoDao + CleChiffrageHandler
 
 /// Commande recue d'un client (e.g. Coup D'Oeil) avec une batch de cles secretes dechiffrees.
 /// La commande est chiffree pour tous les MaitreDesComptes (kind:8)
-pub async fn commande_rechiffrer_batch<M>(middleware: &M, mut m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage, session: &mut ClientSession)
+pub async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages + MongoDao + CleChiffrageHandler
 {
@@ -1950,7 +1679,7 @@ pub async fn marquer_cles_ca_timeout<M>(middleware: &M) -> Result<(), Error>
     }
 }
 
-pub async fn query_repair_symmetric_key<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage, session: &mut ClientSession)
+pub async fn query_repair_symmetric_key<M>(middleware: &M, _m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage, session: &mut ClientSession)
                                            -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
 where M: GenerateurMessages + MongoDao + ValidateurX509 + CleChiffrageHandler
 {
@@ -1975,7 +1704,7 @@ where M: GenerateurMessages + MongoDao + ValidateurX509 + CleChiffrageHandler
     Ok(None)
 }
 
-pub async fn request_keys_for_ca<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage, session: &mut ClientSession)
+pub async fn request_keys_for_ca<M>(middleware: &M, m: MessageValide, _handler_rechiffrage: &HandlerCleRechiffrage, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages + MongoDao + ValidateurX509 + CleChiffrageHandler
 {
