@@ -1,4 +1,3 @@
-use std::sync::{Arc, Mutex};
 use log::{debug, error, info};
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::backup::BackupStarter;
@@ -14,7 +13,7 @@ use millegrilles_common_rust::futures_util::stream::FuturesUnordered;
 use millegrilles_common_rust::generateur_messages::GenerateurMessages;
 use millegrilles_common_rust::get_domaine_action;
 use millegrilles_common_rust::messages_generiques::MessageCedule;
-use millegrilles_common_rust::middleware::{Middleware, MiddlewareMessages, RabbitMqTrait};
+use millegrilles_common_rust::middleware::{Middleware, MiddlewareMessages};
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_cles::CleChiffrageHandler;
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
 use millegrilles_common_rust::mongo_dao::{start_transaction_regular, MongoDao};
@@ -24,24 +23,26 @@ use millegrilles_common_rust::recepteur_messages::{MessageValide, TypeMessage};
 use millegrilles_common_rust::tokio::spawn;
 use millegrilles_common_rust::tokio::sync::mpsc;
 use millegrilles_common_rust::tokio::time::{sleep, Duration as DurationTokio};
-use millegrilles_common_rust::tokio_stream::StreamExt;
 use crate::builder::MaitreDesClesSymmetricManagerTrait;
 use crate::commands::{commande_dechiffrer_cle, commande_verifier_cle_symmetrique};
 use crate::constants::*;
 use crate::maintenance::maintenance_mongodb;
-use crate::maitredescles_commun::{emettre_certificat_maitredescles, GestionnaireRessources};
-use crate::maitredescles_mongodb::{commande_ajouter_cle_domaines, commande_cle_symmetrique, commande_rechiffrer_batch, commande_rotation_certificat, commande_transfert_cle, confirmer_cles_ca, evenement_cle_manquante, evenement_cle_rechiffrage, preparer_index_mongodb_custom, preparer_index_mongodb_partition, preparer_rechiffreur_mongo, query_repair_symmetric_key, request_keys_for_ca, requete_dechiffrage_v2, requete_transfert_cles, synchroniser_cles, NOM_COLLECTION_SYMMETRIQUE_CLES};
+use crate::maitredescles_commun::emettre_certificat_maitredescles;
+use crate::maitredescles_mongodb::{commande_ajouter_cle_domaines, commande_cle_symmetrique, commande_rechiffrer_batch, commande_rotation_certificat, commande_transfert_cle, evenement_cle_manquante, evenement_cle_rechiffrage, preparer_index_mongodb_custom, preparer_index_mongodb_partition, preparer_rechiffreur_mongo, query_repair_symmetric_key, request_keys_for_ca, requete_dechiffrage_v2, requete_transfert_cles, NOM_COLLECTION_SYMMETRIQUE_CLES};
 use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
 use crate::requests::{requete_certificat_maitredescles, requete_dechiffrage_message};
 
 pub struct MaitreDesClesMongoDbManager {
     pub handler_rechiffrage: HandlerCleRechiffrage,
-    pub ressources: Mutex<Option<GestionnaireRessources>>,
+    // pub ressources: Mutex<Option<GestionnaireRessources>>,
 }
 
 impl MaitreDesClesMongoDbManager {
     pub fn new(handler_rechiffrage: HandlerCleRechiffrage) -> MaitreDesClesMongoDbManager {
-        MaitreDesClesMongoDbManager { handler_rechiffrage, ressources: Mutex::new(None) }
+        MaitreDesClesMongoDbManager {
+            handler_rechiffrage,
+            // ressources: Mutex::new(None)
+        }
     }
 
     /// Preparer les Qs une fois le certificat pret
@@ -141,7 +142,7 @@ impl ConsommateurMessagesBus for MaitreDesClesMongoDbManager {
 
 #[async_trait]
 impl AiguillageTransactions for MaitreDesClesMongoDbManager {
-    async fn aiguillage_transaction<M>(&self, _middleware: &M, transaction: TransactionValide, session: &mut ClientSession) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    async fn aiguillage_transaction<M>(&self, _middleware: &M, transaction: TransactionValide, _session: &mut ClientSession) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where
         M: ValidateurX509 + GenerateurMessages + MongoDao
     {
@@ -165,7 +166,7 @@ fn preparer_queues_rechiffrage(manager: &MaitreDesClesMongoDbManager) -> Result<
     let mut rk_commande_cle = Vec::new();
     let mut rk_volatils = Vec::new();
 
-    let dechiffrer = if let Ok(v) = std::env::var("DESACTIVER_DECHIFFRAGE") {
+    let dechiffrer = if let Ok(_v) = std::env::var("DESACTIVER_DECHIFFRAGE") {
         info!("Desactiver rechiffrage public/prive/protege");
         false
     } else {
@@ -340,7 +341,7 @@ pub async fn thread_configuration_rechiffrage<M>(manager: &'static MaitreDesCles
 
                     // Creer thread de traitement
                     let (tx, rx) = mpsc::channel::<TypeMessage>(1);
-                    let mut futures_consumer = FuturesUnordered::new();
+                    let futures_consumer = FuturesUnordered::new();
                     futures_consumer.push(spawn(manager.consommer_messages(middleware, rx)));
 
                     // Ajouter nouvelle queue

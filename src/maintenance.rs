@@ -1,18 +1,17 @@
+use crate::builder::{MaitreDesClesManager, MaitreDesClesSymmetricManager};
+use crate::maitredescles_commun::{emettre_certificat_maitredescles, emettre_cles_symmetriques};
+use crate::maitredescles_mongodb::{confirmer_cles_ca, marquer_cles_ca_timeout, process_ca_key_sync};
+use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
 use log::{debug, error, info, warn};
 use millegrilles_common_rust::certificats::ValidateurX509;
 use millegrilles_common_rust::chrono;
 use millegrilles_common_rust::chrono::Timelike;
 use millegrilles_common_rust::domaines_traits::{AiguillageTransactions, GestionnaireDomaineV2};
-use millegrilles_common_rust::middleware::{Middleware, MiddlewareMessages};
-use millegrilles_common_rust::tokio::time::{sleep, Duration as DurationTokio};
-use crate::builder::{MaitreDesClesManager, MaitreDesClesSymmetricManager};
 use millegrilles_common_rust::error::Error;
 use millegrilles_common_rust::messages_generiques::MessageCedule;
+use millegrilles_common_rust::middleware::{Middleware, MiddlewareMessages};
 use millegrilles_common_rust::mongo_dao::MongoDao;
-use millegrilles_common_rust::mongodb::ClientSession;
-use crate::maitredescles_commun::{emettre_certificat_maitredescles, emettre_cles_symmetriques};
-use crate::maitredescles_mongodb::{confirmer_cles_ca, marquer_cles_ca_timeout, process_ca_key_sync, synchroniser_cles};
-use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
+use millegrilles_common_rust::tokio::time::{sleep, Duration as DurationTokio};
 
 const DUREE_ATTENTE: u64 = 20000;
 
@@ -35,10 +34,6 @@ impl IntervalTrigger {
         } else {
             false
         }
-    }
-
-    fn set_next_trigger(&mut self, interval: chrono::Duration) {
-        self.next_trigger = chrono::Utc::now() + interval;
     }
 }
 
@@ -88,8 +83,6 @@ where M: Middleware
 
         sleep(duration).await;
     }
-
-    info!("thread_entretien : Fin thread");
 }
 
 pub async fn maintenance_ca<M,G>(middleware: &M, gestionnaire: &G, trigger: &MessageCedule) -> Result<(), Error>
@@ -124,7 +117,6 @@ where
 {
 
     let minute = trigger.get_date().minute();
-    let hour = trigger.get_date().hour();
 
     if handler_rechiffrage.is_ready() {
         if minute == 42
