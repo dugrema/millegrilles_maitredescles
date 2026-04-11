@@ -16,7 +16,6 @@ use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::rabbitmq_dao::QueueType;
 use millegrilles_common_rust::recepteur_messages::MessageValide;
 use sqlite::Connection;
-use crate::builder::MaitreDesClesSymmetricManagerTrait;
 use crate::constants::*;
 use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
 
@@ -36,7 +35,6 @@ impl MaitreDesClesSqliteManager {
     }
 }
 
-impl MaitreDesClesSymmetricManagerTrait for MaitreDesClesSqliteManager {}
 
 impl GestionnaireDomaineV2 for MaitreDesClesSqliteManager {
     fn get_collection_transactions(&self) -> Option<String> {

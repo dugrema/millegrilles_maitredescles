@@ -1,35 +1,22 @@
-use std::sync::Arc;
-use log::{debug, error, info, warn};
-use millegrilles_common_rust::{chrono, tokio};
+use log::{debug, info, warn};
 use millegrilles_common_rust::certificats::{calculer_fingerprint, ValidateurX509, VerificateurPermissions};
-use millegrilles_common_rust::chrono::Utc;
 use millegrilles_common_rust::configuration::{charger_configuration, ConfigMessages, IsConfigNoeud};
 use millegrilles_common_rust::constantes::RolesCertificats;
 use millegrilles_common_rust::domaines_v2::GestionnaireDomaineSimple;
-use millegrilles_common_rust::futures::stream::FuturesUnordered;
-use millegrilles_common_rust::middleware_db_v2::preparer as preparer_middleware;
-use millegrilles_common_rust::mongo_dao::{ChampIndex, IndexOptions, MongoDao};
-use millegrilles_common_rust::static_cell::StaticCell;
-use millegrilles_common_rust::tokio::task::JoinHandle;
-use millegrilles_common_rust::tokio::spawn;
-use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::error::{Error as CommonError, Error};
-use millegrilles_common_rust::middleware::{charger_certificats_chiffrage, Middleware};
-use millegrilles_common_rust::transactions::resoumettre_transactions;
-use millegrilles_common_rust::tokio::time::{sleep, Duration as DurationTokio};
+use millegrilles_common_rust::futures::stream::FuturesUnordered;
+use millegrilles_common_rust::middleware::Middleware;
+use millegrilles_common_rust::middleware_db_v2::preparer as preparer_middleware;
+use millegrilles_common_rust::static_cell::StaticCell;
+use millegrilles_common_rust::tokio::spawn;
+use millegrilles_common_rust::tokio::task::JoinHandle;
+use millegrilles_common_rust::tokio_stream::StreamExt;
 
 use crate::ca_manager::{preparer_index_mongodb_ca, MaitreDesClesCaManager};
 use crate::maintenance::thread_entretien;
-// use crate::domaines_maitredescles::TypeGestionnaire;
-// use crate::maitredescles_ca::GestionnaireMaitreDesClesCa;
-use crate::maitredescles_commun::emettre_cles_symmetriques;
-// use crate::maitredescles_partition::GestionnaireMaitreDesClesPartition;
 use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
-// use crate::maitredescles_sqlite::GestionnaireMaitreDesClesSQLite;
 use crate::mongodb_manager::{preparer_index_mongodb, thread_entretien_manager_mongodb, MaitreDesClesMongoDbManager};
 use crate::sqlite_manager::MaitreDesClesSqliteManager;
-
-pub trait MaitreDesClesSymmetricManagerTrait {}
 
 /// Enum pour distinguer les types de gestionnaires.
 pub enum MaitreDesClesSymmetricManager {

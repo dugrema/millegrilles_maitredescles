@@ -23,7 +23,6 @@ use millegrilles_common_rust::recepteur_messages::{MessageValide, TypeMessage};
 use millegrilles_common_rust::tokio::spawn;
 use millegrilles_common_rust::tokio::sync::mpsc;
 use millegrilles_common_rust::tokio::time::{sleep, Duration as DurationTokio};
-use crate::builder::MaitreDesClesSymmetricManagerTrait;
 use crate::commands::{commande_dechiffrer_cle, commande_verifier_cle_symmetrique};
 use crate::constants::*;
 use crate::maintenance::maintenance_mongodb;
@@ -60,8 +59,6 @@ impl MaitreDesClesMongoDbManager {
         Ok(Some(format!("MaitreDesCles/{}/volatils", fingerprint)))
     }
 }
-
-impl MaitreDesClesSymmetricManagerTrait for MaitreDesClesMongoDbManager {}
 
 impl GestionnaireDomaineV2 for MaitreDesClesMongoDbManager {
     fn get_collection_transactions(&self) -> Option<String> {
