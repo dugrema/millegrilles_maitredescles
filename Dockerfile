@@ -21,7 +21,7 @@ RUN mkdir src && \
 
 # Copy source code and build the actual application
 COPY . .
-RUN cargo build --release
+RUN touch src/main.rs && cargo build --release
 
 # Runtime stage
 FROM debian:trixie-slim
