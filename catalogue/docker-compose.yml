@@ -20,8 +20,8 @@ services:
         - MaitreDesCles
       split: true
     environment:
-      - MG_MQ_HOST=${MQ_HOSTNAME}
-      - MG_MQ_PORT=${MQ_PORT}
+      - MG_MQ_HOST=${MQ_HOSTNAME:-mq}
+      - MG_MQ_PORT=${MQ_PORT:-5673}
       - MG_MIDCOMPTE_URL=https://midcompte:2444
       - MG_MONGO_HOST=mongo
       - MG_MQ_SSL=on
