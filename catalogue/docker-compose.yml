@@ -20,7 +20,7 @@ services:
         - MaitreDesCles
       split: true
     environment:
-      - MG_MQ_HOST=${MQ_HOST}
+      - MG_MQ_HOST=${MQ_HOSTNAME}
       - MG_MQ_PORT=${MQ_PORT}
       - MG_MIDCOMPTE_URL=https://midcompte:2444
       - MG_MONGO_HOST=mongo
