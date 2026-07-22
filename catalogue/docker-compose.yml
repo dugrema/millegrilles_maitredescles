@@ -42,9 +42,8 @@ services:
           cpus: '1.0'
           memory: 250M
       restart_policy:
-        condition: on-failure
+        condition: any
         delay: 30s
-        max_attempts: 1000
     configs:
       - source: maitredescles
         target: /run/secrets/cert.pem
