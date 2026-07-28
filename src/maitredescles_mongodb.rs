@@ -238,7 +238,7 @@ where M: MongoDao
                 header,
             };
 
-            if let Err(e) = sauvegarder_cle_rechiffrage(middleware, handler_rechiffrage, nom_collection_cles, cle_secrete_rechiffrage, session).await {
+            if let Err(e) = sauvegarder_cle_rechiffrage(middleware, handler_rechiffrage, nom_collection_cles, cle_secrete_rechiffrage, session, false).await {
                 error!("traiter_batch_synchroniser_cles Erreur sauvegarde cle {} : {:?}", cle_id, e);
             }
         }
@@ -258,7 +258,7 @@ where M: MongoDao
 pub async fn sauvegarder_cle_rechiffrage<M>(middleware: &M,
                                         handler_rechiffrage: &HandlerCleRechiffrage,
                                         nom_collection_cles: &str,
-                                        cle: CleSecreteRechiffrage, session: &mut ClientSession)
+                                        cle: CleSecreteRechiffrage, session: &mut ClientSession, insert_operation: bool)
                                         -> Result<String, Error>
 where M: MongoDao
 {
@@ -286,13 +286,17 @@ where M: MongoDao
         _ => ()
     }
 
-    let ops = doc! {
-        "$setOnInsert": set_on_insert,
-        "$currentDate": {CHAMP_MODIFICATION: true}
-    };
-
-    let opts = UpdateOptions::builder().upsert(true).build();
-    collection.update_one_with_session(filtre, ops, opts, session).await?;
+    if insert_operation {
+        set_on_insert.insert(CHAMP_MODIFICATION, Utc::now());
+        collection.insert_one(set_on_insert, None).await?;
+    } else {
+        let ops = doc! {
+            "$setOnInsert": set_on_insert,
+            "$currentDate": {CHAMP_MODIFICATION: true}
+        };
+        let opts = UpdateOptions::builder().upsert(true).build();
+        collection.update_one_with_session(filtre, ops, opts, session).await?;
+    }
 
     Ok(cle_id)
 }
@@ -1317,7 +1321,7 @@ pub async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValide, hand
     // Traiter chaque cle individuellement
     let mut liste_cle_id: Vec<String> = Vec::new();
     for (cle_id, cle) in cles_dechiffrees.cles {
-        sauvegarder_cle_rechiffrage(middleware, handler_rechiffrage, nom_collection_cles, cle, session).await?;
+        sauvegarder_cle_rechiffrage(middleware, handler_rechiffrage, nom_collection_cles, cle, session, true).await?;
         liste_cle_id.push(cle_id);
     }
 

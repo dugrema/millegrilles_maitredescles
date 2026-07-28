@@ -13,5 +13,5 @@ millegrilles_common_rust = { git = "https://github.com/dugrema/millegrilles_comm
 log = { version = "0.4.29", features = ["max_level_trace", "release_max_level_info"] }
 env_logger = "0.9.3"
 serde = { version = "1.0.228", features = ["derive"] }
-sqlite = { version = "0.37.0" }
+# sqlite = { version = "0.37.0" }
 zeroize = "1.8.2"
