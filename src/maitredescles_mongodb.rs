@@ -238,7 +238,7 @@ where M: MongoDao
                 header,
             };
 
-            if let Err(e) = sauvegarder_cle_rechiffrage(middleware, handler_rechiffrage, nom_collection_cles, cle_secrete_rechiffrage, session, false).await {
+            if let Err(e) = sauvegarder_cle_rechiffrage(middleware, handler_rechiffrage, nom_collection_cles, &cle_secrete_rechiffrage, session, false).await {
                 error!("traiter_batch_synchroniser_cles Erreur sauvegarde cle {} : {:?}", cle_id, e);
             }
         }
@@ -258,7 +258,7 @@ where M: MongoDao
 pub async fn sauvegarder_cle_rechiffrage<M>(middleware: &M,
                                         handler_rechiffrage: &HandlerCleRechiffrage,
                                         nom_collection_cles: &str,
-                                        cle: CleSecreteRechiffrage, session: &mut ClientSession, insert_operation: bool)
+                                        cle: &CleSecreteRechiffrage, session: &mut ClientSession, insert_operation: bool)
                                         -> Result<String, Error>
 where M: MongoDao
 {
@@ -1320,8 +1320,13 @@ pub async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValide, hand
     let nom_collection_cles = NOM_COLLECTION_SYMMETRIQUE_CLES;
     // Traiter chaque cle individuellement
     let mut liste_cle_id: Vec<String> = Vec::new();
+    let mut insert = true;
     for (cle_id, cle) in cles_dechiffrees.cles {
-        sauvegarder_cle_rechiffrage(middleware, handler_rechiffrage, nom_collection_cles, cle, session, true).await?;
+        if let Err(e) = sauvegarder_cle_rechiffrage(middleware, handler_rechiffrage, nom_collection_cles, &cle, session, insert).await {
+            warn!("commande_rechiffrer_batch Error saving key in insert mode, swtiching to upsert: {:?}", e);
+            insert = false;
+            sauvegarder_cle_rechiffrage(middleware, handler_rechiffrage, nom_collection_cles, &cle, session, insert).await?;
+        }
         liste_cle_id.push(cle_id);
     }
 
