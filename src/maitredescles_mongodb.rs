@@ -1281,7 +1281,13 @@ where M: GenerateurMessages + MongoDao + CleChiffrageHandler
     let enveloppe_signature = middleware.get_enveloppe_signature();
 
     // Dechiffrer la cle - confirme qu'elle est valide et qu'on peut y acceder.
-    let cle_secrete = commande.get_cle_secrete(enveloppe_signature.as_ref())?;
+    let cle_secrete = match commande.get_cle_secrete(enveloppe_signature.as_ref()) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("commande_ajouter_cle_domaines Cle non dechiffrable / absente : {:?}", e);
+            return Ok(Some(middleware.reponse_err(4, None, Some("Cle non dechiffrable / absente"))?))
+        }
+    };
 
     // Valider la signature des domaines.
     if let Err(e) = commande.verifier_signature(cle_secrete.0) {
