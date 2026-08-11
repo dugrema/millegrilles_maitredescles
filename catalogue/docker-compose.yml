@@ -19,7 +19,6 @@ services:
         - 1.public
       domaines:
         - MaitreDesCles
-      split: true
     environment:
       - MG_MQ_HOST=${MQ_HOSTNAME:-mq}
       - MG_MQ_PORT=${MQ_PORT:-5673}
@@ -27,8 +26,7 @@ services:
       - MG_MONGO_HOST=mongo
       - MG_MQ_SSL=on
       - MG_MQ_AUTH_CERT=on
-      - CERTFILE=/run/secrets/cert.pem
-      - KEYFILE=/run/secrets/key.pem
+      - KEYFILE=/run/secrets/key_cert.pem
       - CAFILE=/run/secrets/millegrille.pem
       - MG_REDIS_URL=rediss://client_rust@redis:6379#insecure
       - MG_REDIS_PASSWORD_FILE=/run/secrets/redis.txt
@@ -45,26 +43,22 @@ services:
         condition: any
         delay: 30s
     configs:
-      - source: maitredescles
-        target: /run/secrets/cert.pem
       - source: mgca
         target: /run/secrets/millegrille.pem
     secrets:
       - source: maitredescles
-        target: key.pem
+        target: key_cert.pem
       - source: passwd_redis
         target: redis.txt
     networks:
       - app_net
 
 configs:
-  maitredescles:
-    file: ${MILLEGRILLES_ROOT}/secrets/maitredescles.cert.pem
   mgca:
     file: ${MILLEGRILLES_ROOT}/etc/millegrille.pem
 
 secrets:
   maitredescles:
-    file: ${MILLEGRILLES_ROOT}/secrets/maitredescles.key.pem
+    file: ${MILLEGRILLES_ROOT}/secrets/maitredescles.pem
   passwd_redis:
     file: ${MILLEGRILLES_ROOT}/secrets/redis.txt
