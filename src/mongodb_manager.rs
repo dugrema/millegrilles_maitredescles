@@ -104,7 +104,7 @@ impl GestionnaireBusMillegrilles for MaitreDesClesMongoDbManager {
                 nom_queue: nom_queue_cle_config.into(),
                 routing_keys: rks,
                 ttl: DEFAULT_Q_TTL.into(),
-                durable: false,
+                durable: true,
                 autodelete: true,
             }
         ));
@@ -246,7 +246,7 @@ fn preparer_queues_rechiffrage(manager: &MaitreDesClesMongoDbManager) -> Result<
                 nom_queue: NOM_Q_DECHIFFRAGE.into(),
                 routing_keys: rk_dechiffrage,
                 ttl: DEFAULT_Q_TTL.into(),
-                durable: false,
+                durable: true,
                 autodelete: false,
             }
         ));
@@ -259,7 +259,7 @@ fn preparer_queues_rechiffrage(manager: &MaitreDesClesMongoDbManager) -> Result<
                 nom_queue,
                 routing_keys: rk_commande_cle,
                 ttl: None,
-                durable: false,
+                durable: true,
                 autodelete: true,
             }
         ));
@@ -272,7 +272,7 @@ fn preparer_queues_rechiffrage(manager: &MaitreDesClesMongoDbManager) -> Result<
                 nom_queue,
                 routing_keys: rk_volatils,
                 ttl: DEFAULT_Q_TTL.into(),
-                durable: false,
+                durable: true,
                 autodelete: true,
             }
         ));
