@@ -13,8 +13,8 @@ mod events;
 mod transactions;
 mod maintenance;
 
-use tracing::{info};
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use millegrilles_common_rust::tracing::{info};
+use millegrilles_common_rust::{tracing_subscriber, tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt}};
 use millegrilles_common_rust::tokio as tokio;
 // use crate::domaines_maitredescles::run;
 use crate::builder::run;
@@ -41,9 +41,8 @@ async fn executer() {
 
 #[cfg(test)]
 pub mod test_setup {
-    use tracing::{debug};
-    use tracing_subscriber::layer::SubscriberExt;
-    use tracing_subscriber::util::SubscriberInitExt;
+    use millegrilles_common_rust::tracing::{debug};
+    use millegrilles_common_rust::{tracing_subscriber, tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt}};
 
     pub fn setup(nom: &str) {
         tracing_subscriber::registry()
