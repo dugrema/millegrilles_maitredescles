@@ -20,7 +20,7 @@ use millegrilles_common_rust::tokio as tokio;
 use millegrilles_common_rust::tracing::{info, warn};
 use millegrilles_common_rust::{tracing_subscriber, tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt}};
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {
     init_logging();
     info!("Starting MaitreDesCles");

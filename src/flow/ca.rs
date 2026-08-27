@@ -64,10 +64,16 @@ impl MaitreDesClesCAServiceImpl {
         ).expect("Consumer streaming init failed");
         tokio::pin!(streamer);
         while let Some(result) = streamer.next().await {
-            let message: MessageValidated = result.expect("Message streaming failed");
-            let mongo = self.mongo.as_ref();
-            if let Err(e) = ticker_job_ca(mongo, message).await {
-                error!("Ticker job ca failed: {}", e);
+            match result {
+                Ok(message) => {
+                    let mongo = self.mongo.as_ref();
+                    if let Err(e) = ticker_job_ca(mongo, message).await {
+                        error!("Ticker job ca failed: {}", e);
+                    }
+                }
+                Err(e) => {
+                    error!("Error processing ticker message: {}", e);
+                }
             }
         }
         debug!("process_ticker_thread Closed");
@@ -79,8 +85,14 @@ impl MaitreDesClesCAServiceImpl {
         ).expect("Consumer streaming init failed");
         tokio::pin!(streamer);
         while let Some(result) = streamer.next().await {
-            let message: MessageValidated = result.expect("Message streaming failed");
-            todo!()
+            match result {
+                Ok(message) => {
+                    error!("TODO - process backup message");
+                }
+                Err(e) => {
+                    error!("Backup job ca message parsing failed: {}", e);
+                }
+            }
         }
         debug!("process_backup_thread Closed");
     }
@@ -89,13 +101,15 @@ impl MaitreDesClesCAServiceImpl {
 impl MaitreDesClesCAService for MaitreDesClesCAServiceImpl {
 }
 
-pub async fn ticker_job_ca<M>(mongo: &M, trigger: MessageValidated) -> Result<(), CommonError>
+async fn ticker_job_ca<M>(mongo: &M, trigger: MessageValidated) -> Result<(), CommonError>
     where M: MongoDaoTyped
 {
     let trigger_value: MessageCedule = trigger.message.deserialize()?;
 
     let hour = trigger_value.get_date().hour();
     let minute = trigger_value.get_date().minute();
+
+    debug!("ticker_job_ca for h:{} m:{}",hour,minute);
 
     // The sync content is produced every hour at minute 42.
     // Try to process twice per hour in case the first pass is missed

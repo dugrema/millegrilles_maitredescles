@@ -2,17 +2,20 @@ use crate::constants::*;
 use crate::external::mongo::{create_index_mongodb_custom, create_index_mongodb_partition};
 use crate::external::mq::init_symmetric_queues;
 use millegrilles_common_rust::async_trait::async_trait;
+use millegrilles_common_rust::chrono::Timelike;
 use millegrilles_common_rust::error::Error as CommonError;
 use millegrilles_common_rust::futures::StreamExt;
-use millegrilles_common_rust::mongo_dao::MongoDaoImpl;
+use millegrilles_common_rust::messages_generiques::MessageCedule;
+use millegrilles_common_rust::mongo_dao::{MongoDaoImpl, MongoDaoTyped};
 use millegrilles_common_rust::tokio;
+use millegrilles_common_rust::tokio::task::JoinSet;
+use millegrilles_common_rust::tracing::{debug, error, warn};
+use millegrilles_common_rust::v3::ConfigService;
 use millegrilles_common_rust::v3::facades::message_inbound::{MessageInboundValidator, MessageValidated};
 use millegrilles_common_rust::v3::facades::message_outbound::MessageOutboundFacade;
 use millegrilles_common_rust::v3::impls::config_service::ConfigServiceDbImpl;
 use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl;
-use millegrilles_common_rust::v3::ConfigService;
 use std::sync::Arc;
-use millegrilles_common_rust::tokio::task::JoinSet;
 
 #[async_trait]
 pub trait MaitreDesClesSymmetricService {}
@@ -37,8 +40,6 @@ impl MaitreDesClesSymmetricServiceImpl {
 
     pub fn start(self: Arc<Self>, join_set: &mut JoinSet<()>, incoming: Arc<MessageInboundValidator>) -> Result<(), CommonError> {
 
-        // Spawn queue consuming tasks
-
         // Ticker jobs
         let self_clone = self.clone();
         let incoming_clone = incoming.clone();
@@ -56,11 +57,33 @@ impl MaitreDesClesSymmetricServiceImpl {
         ).expect("Consumer streaming init failed");
         tokio::pin!(streamer);
         while let Some(result) = streamer.next().await {
-            let message: MessageValidated = result.expect("Message streaming failed");
-            todo!()
+            match result {
+                Ok(message) => {
+                    let mongo = self.mongo.as_ref();
+                    if let Err(e) = ticker_job_symmetric(mongo, message).await {
+                        error!("Ticker job ca failed: {}", e);
+                    }
+                }
+                Err(e) => {
+                    warn!("Error processing ticker message: {}", e);
+                }
+            }
         }
     }
 }
 
 impl MaitreDesClesSymmetricService for MaitreDesClesSymmetricServiceImpl {
+}
+
+async fn ticker_job_symmetric<M>(mongo: &M, trigger: MessageValidated) -> Result<(), CommonError>
+where M: MongoDaoTyped
+{
+    let trigger_value: MessageCedule = trigger.message.deserialize()?;
+
+    let hour = trigger_value.get_date().hour();
+    let minute = trigger_value.get_date().minute();
+
+    debug!("ticker_job_symmetric for h:{} m:{}",hour,minute);
+
+    Ok(())
 }
