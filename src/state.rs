@@ -6,6 +6,7 @@ use millegrilles_common_rust::configuration::{ConfigDb, ConfigMessages, charger_
 use millegrilles_common_rust::error::Error as CommonError;
 use millegrilles_common_rust::mongo_dao::{MongoDaoImpl, initialiser};
 use millegrilles_common_rust::tokio;
+use millegrilles_common_rust::tokio_util::sync::CancellationToken;
 use millegrilles_common_rust::tracing::{debug, info};
 use millegrilles_common_rust::v3::facades::message_inbound::MessageInboundValidator;
 use millegrilles_common_rust::v3::facades::message_outbound::MessageOutboundFacade;
@@ -29,6 +30,7 @@ pub struct AppContext {
     pub incoming: Arc<MessageInboundValidator>,
     pub ca_service: Arc<dyn MaitreDesClesCAService>,
     pub symmetric_service: Arc<dyn MaitreDesClesSymmetricService>,
+    pub shutdown_token: CancellationToken,
 }
 
 impl AppContext {
@@ -62,6 +64,8 @@ impl AppContext {
         ca_service.configure(messaging.as_ref(), config.as_ref()).await?;
         symmetric_service.configure(messaging.as_ref(), config.as_ref()).await?;
 
+        let shutdown_token = CancellationToken::new();
+        
         info!("Connect services, start maintenance threads");
         start_threads(
             security.clone(),
@@ -70,6 +74,7 @@ impl AppContext {
             incoming.clone(),
             ca_service.clone(),
             symmetric_service.clone(),
+            shutdown_token.clone(),
         ).await?;
 
         Ok(AppContext {
@@ -84,6 +89,7 @@ impl AppContext {
             incoming,
             ca_service,
             symmetric_service,
+            shutdown_token,
         })
     }
 }
@@ -122,15 +128,17 @@ async fn start_threads(
     incoming: Arc<MessageInboundValidator>,
     ca_service: Arc<MaitreDesClesCAServiceImpl>,
     symmetric_service: Arc<MaitreDesClesSymmetricServiceImpl>,
+    shutdown_token: CancellationToken,
 ) -> Result<(), CommonError> {
 
     // Connect to RabbitMQ (throws error on failure).
     // This also spawns all other required threads.
-    messaging.start().await?;
+    messaging.start(shutdown_token.clone()).await?;
     debug!("Started messaging service, connection OK");
 
     // Spawn other service maintenance threads
-    tokio::task::spawn(async move { security.run().await });
+    let shutdown_token_clone = shutdown_token.clone();
+    tokio::task::spawn(async move { security.run(shutdown_token_clone).await });
     // tokio::task::spawn(async move { redis.run().await });
 
     // Spawn consumer threads

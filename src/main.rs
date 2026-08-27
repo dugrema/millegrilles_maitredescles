@@ -28,8 +28,9 @@ async fn main() {
     // Start the application by creating the context. This starts all threads and connections.
     let context = AppContext::new().await.expect("AppContext::new");
 
+    let shutdown_token = context.shutdown_token.clone();
     // TODO - wait for signal to close
-    todo!()
+    
 }
 
 fn init_logging() {
