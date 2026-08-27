@@ -8,13 +8,14 @@ use millegrilles_common_rust::futures::StreamExt;
 use millegrilles_common_rust::messages_generiques::MessageCedule;
 use millegrilles_common_rust::mongo_dao::{MongoDaoImpl, MongoDaoTyped};
 use millegrilles_common_rust::tokio;
-use millegrilles_common_rust::tracing::{error, warn};
+use millegrilles_common_rust::tracing::{debug, error, warn};
 use millegrilles_common_rust::v3::facades::message_inbound::{MessageInboundValidator, MessageValidated};
 use millegrilles_common_rust::v3::facades::message_outbound::MessageOutboundFacade;
 use millegrilles_common_rust::v3::impls::config_service::ConfigServiceDbImpl;
 use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl;
 use millegrilles_common_rust::v3::ConfigService;
 use std::sync::Arc;
+use millegrilles_common_rust::tokio::task::JoinSet;
 
 #[async_trait]
 pub trait MaitreDesClesCAService {}
@@ -37,19 +38,19 @@ impl MaitreDesClesCAServiceImpl {
     }
 
     /// Call to spawn the consumer threads
-    pub fn start(self: Arc<Self>, incoming: Arc<MessageInboundValidator>) -> Result<(), CommonError> {
+    pub fn start(self: Arc<Self>, join_set: &mut JoinSet<()>, incoming: Arc<MessageInboundValidator>) -> Result<(), CommonError> {
 
         // Spawn queue consuming tasks
 
         // Ticker jobs
         let self_clone = self.clone();
         let incoming_clone = incoming.clone();
-        tokio::spawn(async move {self_clone.process_ticker_thread(incoming_clone).await});
+        join_set.spawn(async move {self_clone.process_ticker_thread(incoming_clone).await});
 
         // Backup queue
         let self_clone = self.clone();
         let incoming_clone = incoming.clone();
-        tokio::spawn(async move {self_clone.process_backup_thread(incoming_clone).await});
+        join_set.spawn(async move {self_clone.process_backup_thread(incoming_clone).await});
 
         // CA queue
 
@@ -69,6 +70,7 @@ impl MaitreDesClesCAServiceImpl {
                 error!("Ticker job ca failed: {}", e);
             }
         }
+        debug!("process_ticker_thread Closed");
     }
 
     async fn process_backup_thread(&self, incoming: Arc<MessageInboundValidator>) {
@@ -80,6 +82,7 @@ impl MaitreDesClesCAServiceImpl {
             let message: MessageValidated = result.expect("Message streaming failed");
             todo!()
         }
+        debug!("process_backup_thread Closed");
     }
 }
 

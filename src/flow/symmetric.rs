@@ -12,6 +12,7 @@ use millegrilles_common_rust::v3::impls::config_service::ConfigServiceDbImpl;
 use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl;
 use millegrilles_common_rust::v3::ConfigService;
 use std::sync::Arc;
+use millegrilles_common_rust::tokio::task::JoinSet;
 
 #[async_trait]
 pub trait MaitreDesClesSymmetricService {}
@@ -34,14 +35,14 @@ impl MaitreDesClesSymmetricServiceImpl {
         Ok(())
     }
 
-    pub fn start(self: Arc<Self>, incoming: Arc<MessageInboundValidator>) -> Result<(), CommonError> {
+    pub fn start(self: Arc<Self>, join_set: &mut JoinSet<()>, incoming: Arc<MessageInboundValidator>) -> Result<(), CommonError> {
 
         // Spawn queue consuming tasks
 
         // Ticker jobs
         let self_clone = self.clone();
         let incoming_clone = incoming.clone();
-        tokio::spawn(async move {self_clone.process_ticker_thread(incoming_clone).await});
+        join_set.spawn(async move {self_clone.process_ticker_thread(incoming_clone).await});
 
         // Symmetric queues
 

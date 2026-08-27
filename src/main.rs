@@ -17,7 +17,7 @@ pub mod flow;
 
 use crate::state::AppContext;
 use millegrilles_common_rust::tokio as tokio;
-use millegrilles_common_rust::tracing::info;
+use millegrilles_common_rust::tracing::{info, warn};
 use millegrilles_common_rust::{tracing_subscriber, tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt}};
 
 #[tokio::main(flavor = "current_thread")]
@@ -26,7 +26,7 @@ async fn main() {
     info!("Starting MaitreDesCles");
 
     // Start the application by creating the context. This starts all threads and connections.
-    let context = AppContext::new().await.expect("AppContext::new");
+    let mut context = AppContext::new().await.expect("AppContext::new");
     let shutdown_token = context.shutdown_token.clone();
 
     let shutdown_signal = async {
@@ -47,9 +47,13 @@ async fn main() {
         }
     }
 
-    info!("Waiting for background tasks to clean up...");
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-    info!("Shutdown complete.");
+    info!("Waiting for workers to finish (15s limit)...");
+    match tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        while context.join_set.join_next().await.is_some() {}
+    }).await {
+        Ok(_) => info!("Shutdown complete."),
+        Err(_) => warn!("Grace period expired! Forcing exit."),
+    }
 }
 
 

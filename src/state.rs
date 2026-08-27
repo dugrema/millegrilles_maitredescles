@@ -5,7 +5,7 @@ use millegrilles_common_rust::chiffrage_cle::CleChiffrageHandlerImpl;
 use millegrilles_common_rust::configuration::{ConfigDb, ConfigMessages, charger_configuration, charger_configuration_mongo};
 use millegrilles_common_rust::error::Error as CommonError;
 use millegrilles_common_rust::mongo_dao::{MongoDaoImpl, initialiser};
-use millegrilles_common_rust::tokio;
+use millegrilles_common_rust::tokio::task::JoinSet;
 use millegrilles_common_rust::tokio_util::sync::CancellationToken;
 use millegrilles_common_rust::tracing::{debug, info};
 use millegrilles_common_rust::v3::facades::message_inbound::MessageInboundValidator;
@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 /// Composition object with services from common library
 pub struct AppContext {
+    pub join_set: JoinSet<()>,
     pub config: Arc<dyn ConfigService>,
     pub config_db: Arc<dyn ConfigDb>,
     // pub redis: Arc<RedisService>,
@@ -35,6 +36,10 @@ pub struct AppContext {
 
 impl AppContext {
     pub async fn new() -> Result<Self, CommonError> {
+        // Shutdown/cancel semantics
+        let shutdown_token = CancellationToken::new();
+        let mut join_set = JoinSet::new();
+
         // Basic services
         let config = Arc::new(init_config().await?);
         // let redis = Arc::new(init_redis(config.as_ref()).await?);
@@ -50,7 +55,8 @@ impl AppContext {
         let outgoing = Arc::new(
             MessageOutboundFacade::new(messaging.clone(), format.clone()),);
         let incoming = Arc::new(
-            MessageInboundValidator::new(config.clone(), messaging.clone(), security.clone()));
+            MessageInboundValidator::new(config.clone(), messaging.clone(), security.clone(), shutdown_token.clone())
+        );
 
         // Flow services (business logic)
         let ca_service = Arc::new(
@@ -64,10 +70,9 @@ impl AppContext {
         ca_service.configure(messaging.as_ref(), config.as_ref()).await?;
         symmetric_service.configure(messaging.as_ref(), config.as_ref()).await?;
 
-        let shutdown_token = CancellationToken::new();
-        
         info!("Connect services, start maintenance threads");
         start_threads(
+            &mut join_set,
             security.clone(),
             messaging.as_ref(),
             // redis.clone(),
@@ -78,6 +83,7 @@ impl AppContext {
         ).await?;
 
         Ok(AppContext {
+            join_set,
             config: config.clone(),
             config_db: config,
             // redis,
@@ -122,6 +128,7 @@ async fn init_security(config: &dyn ConfigService) -> Result<SecurityServiceImpl
 }
 
 async fn start_threads(
+    join_set: &mut JoinSet<()>,
     security: Arc<SecurityServiceImpl>,
     messaging: &MessagingServiceImpl,
     // redis: Arc<RedisService>,
@@ -133,17 +140,17 @@ async fn start_threads(
 
     // Connect to RabbitMQ (throws error on failure).
     // This also spawns all other required threads.
-    messaging.start(shutdown_token.clone()).await?;
+    messaging.start(join_set, shutdown_token.clone()).await?;
     debug!("Started messaging service, connection OK");
 
     // Spawn other service maintenance threads
     let shutdown_token_clone = shutdown_token.clone();
-    tokio::task::spawn(async move { security.run(shutdown_token_clone).await });
+    join_set.spawn(async move { security.run(shutdown_token_clone).await });
     // tokio::task::spawn(async move { redis.run().await });
 
     // Spawn consumer threads
-    ca_service.start(incoming.clone())?;
-    symmetric_service.start(incoming.clone())?;
+    ca_service.start(join_set, incoming.clone())?;
+    symmetric_service.start(join_set, incoming.clone())?;
 
     Ok(())
 }
