@@ -1,6 +1,8 @@
 #![allow(unused)]
 use millegrilles_common_rust::constantes::COMMANDE_CERT_MAITREDESCLES;
 
+pub const QUEUE_TTL_DEFAULT: u32 = 300_000;
+
 pub const DOMAINE_NOM: &str = "MaitreDesCles";
 pub const NOM_COLLECTION_CONFIGURATION: &str = "MaitreDesCles/configuration";
 pub const INDEX_CLES_HACHAGE_BYTES: &str = "index_hachage_bytes";

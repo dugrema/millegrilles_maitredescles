@@ -1,3 +1,5 @@
+use crate::flow::ca::{MaitreDesClesCAService, MaitreDesClesCAServiceImpl};
+use crate::flow::symmetric::{MaitreDesClesSymmetricService, MaitreDesClesSymmetricServiceImpl};
 use millegrilles_common_rust::certificats::build_store_path_v2;
 use millegrilles_common_rust::chiffrage_cle::CleChiffrageHandlerImpl;
 use millegrilles_common_rust::configuration::{ConfigDb, ConfigMessages, charger_configuration, charger_configuration_mongo};
@@ -13,14 +15,6 @@ use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl
 use millegrilles_common_rust::v3::impls::security_service::SecurityServiceImpl;
 use millegrilles_common_rust::v3::{ConfigService, FormatService, MessagingService, PkiService};
 use std::sync::Arc;
-use millegrilles_common_rust::futures::stream::FuturesUnordered;
-use millegrilles_common_rust::rabbitmq_dao::ConfigQueue;
-use millegrilles_common_rust::tokio::spawn;
-use crate::builder::{MaitreDesClesManager, MaitreDesClesSymmetricManager};
-use crate::ca_manager::preparer_index_mongodb_ca;
-use crate::flow::ca::MaitreDesClesCAServiceImpl;
-use crate::flow::symmetric::MaitreDesClesSymmetricServiceImpl;
-use crate::mongodb_manager::{preparer_index_mongodb, thread_entretien_manager_mongodb};
 
 /// Composition object with services from common library
 pub struct AppContext {
@@ -33,6 +27,8 @@ pub struct AppContext {
     pub mongo: Arc<MongoDaoImpl>,
     pub outgoing: Arc<MessageOutboundFacade>,
     pub incoming: Arc<MessageInboundValidator>,
+    pub ca_service: Arc<dyn MaitreDesClesCAService>,
+    pub symmetric_service: Arc<dyn MaitreDesClesSymmetricService>,
 }
 
 impl AppContext {
@@ -56,16 +52,10 @@ impl AppContext {
 
         // Flow services (business logic)
         let ca_service = Arc::new(
-            MaitreDesClesCAServiceImpl::new(
-                messaging.as_ref(),
-                incoming.as_ref(),
-            )?
+            MaitreDesClesCAServiceImpl::new(messaging.as_ref())?
         );
         let symmetric_service = Arc::new(
-            MaitreDesClesSymmetricServiceImpl::new(
-                messaging.as_ref(),
-                incoming.as_ref(),
-            )?
+            MaitreDesClesSymmetricServiceImpl::new(messaging.as_ref())?
         );
 
         info!("Connect services, start maintenance threads");
@@ -73,6 +63,9 @@ impl AppContext {
             security.clone(),
             messaging.as_ref(),
             // redis.clone(),
+            incoming.clone(),
+            ca_service.clone(),
+            symmetric_service.clone(),
         ).await?;
 
         Ok(AppContext {
@@ -84,7 +77,9 @@ impl AppContext {
             format,
             mongo,
             outgoing,
-            incoming
+            incoming,
+            ca_service,
+            symmetric_service,
         })
     }
 }
@@ -120,16 +115,22 @@ async fn start_threads(
     security: Arc<SecurityServiceImpl>,
     messaging: &MessagingServiceImpl,
     // redis: Arc<RedisService>,
+    incoming: Arc<MessageInboundValidator>,
+    ca_service: Arc<MaitreDesClesCAServiceImpl>,
+    symmetric_service: Arc<MaitreDesClesSymmetricServiceImpl>,
 ) -> Result<(), CommonError> {
 
     // Connect to RabbitMQ (throws error on failure).
     // This also spawns all other required threads.
     messaging.start().await?;
-    debug!("Started messaging service");
+    debug!("Started messaging service, connection OK");
 
     // Spawn other service maintenance threads
     tokio::task::spawn(async move { security.run().await });
     // tokio::task::spawn(async move { redis.run().await });
+
+    ca_service.start(incoming.clone())?;
+    symmetric_service.start(incoming.clone())?;
 
     Ok(())
 }
