@@ -1,4 +1,4 @@
-use log::{debug, error, info, warn};
+use tracing::{debug, error, info, warn};
 use std::collections::HashMap;
 use std::str::from_utf8;
 use std::sync::Arc;

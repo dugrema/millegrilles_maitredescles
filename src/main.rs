@@ -13,18 +13,27 @@ mod events;
 mod transactions;
 mod maintenance;
 
-use log::{info};
+use tracing::{info};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use millegrilles_common_rust::tokio as tokio;
 // use crate::domaines_maitredescles::run;
 use crate::builder::run;
 
 fn main() {
-    env_logger::init();
-    info!("Demarrer le contexte");
+    init_logging();
+    info!("Starting MaitreDesCles");
     executer()
 }
 
-#[tokio::main(flavor = "current_thread")]
+fn init_logging() {
+    let rust_log_var = std::env::var("RUST_LOG").unwrap_or("error,millegrilles_maitredescles=warn,millegrilles_common_rust=warn".to_string());
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::EnvFilter::new(rust_log_var))
+        .with(tracing_subscriber::fmt::layer())
+        .init();
+}
+
+ #[tokio::main(flavor = "current_thread")]
 // #[tokio::main(flavor = "multi_thread", worker_threads = 5)]
 async fn executer() {
     run().await
@@ -32,10 +41,15 @@ async fn executer() {
 
 #[cfg(test)]
 pub mod test_setup {
-    use log::{debug};
+    use tracing::{debug};
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
 
     pub fn setup(nom: &str) {
-        let _ = env_logger::builder().is_test(true).try_init();
+        tracing_subscriber::registry()
+            .with(tracing_subscriber::EnvFilter::new("warn,millegrilles_maitredescles=debug"))
+            .with(tracing_subscriber::fmt::layer())
+            .init();
         debug!("Running {}", nom);
     }
 }
