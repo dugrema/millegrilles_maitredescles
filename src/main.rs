@@ -15,16 +15,21 @@ pub mod state;
 pub mod external;
 pub mod flow;
 
-use millegrilles_common_rust::tracing::{info};
-use millegrilles_common_rust::{tracing_subscriber, tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt}};
+use crate::state::AppContext;
 use millegrilles_common_rust::tokio as tokio;
-// use crate::domaines_maitredescles::run;
-use crate::builder::run;
+use millegrilles_common_rust::tracing::info;
+use millegrilles_common_rust::{tracing_subscriber, tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt}};
 
-fn main() {
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
     init_logging();
     info!("Starting MaitreDesCles");
-    executer()
+
+    // Start the application by creating the context. This starts all threads and connections.
+    let context = AppContext::new().await.expect("AppContext::new");
+
+    // TODO - wait for signal to close
+    todo!()
 }
 
 fn init_logging() {
@@ -35,15 +40,9 @@ fn init_logging() {
         .init();
 }
 
- #[tokio::main(flavor = "current_thread")]
-// #[tokio::main(flavor = "multi_thread", worker_threads = 5)]
-async fn executer() {
-    run().await
-}
-
 #[cfg(test)]
 pub mod test_setup {
-    use millegrilles_common_rust::tracing::{debug};
+    use millegrilles_common_rust::tracing::debug;
     use millegrilles_common_rust::{tracing_subscriber, tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt}};
 
     pub fn setup(nom: &str) {
