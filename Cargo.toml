@@ -8,8 +8,8 @@ edition = "2024"
 [dependencies]
 # millegrilles_common_rust = { git = "https://github.com/dugrema/millegrilles_common_rust.git", tag = "2026.3-release" }
 # smillegrilles_common_rust = { git = "https://github.com/dugrema/millegrilles_common_rust.git", branch = "master" }
-millegrilles_common_rust = { git = "https://github.com/dugrema/millegrilles_common_rust.git", branch = "tracing20260827" }
-# millegrilles_common_rust = { path = "/home/mathieu/RustroverProjects/millegrilles_common_rust" }
+# millegrilles_common_rust = { git = "https://github.com/dugrema/millegrilles_common_rust.git", branch = "tracing20260827" }
+millegrilles_common_rust = { path = "/home/mathieu/RustroverProjects/millegrilles_common_rust" }
 
 # tracing = "0.1.44"
 # tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }

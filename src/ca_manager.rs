@@ -13,7 +13,7 @@ use millegrilles_common_rust::get_domaine_action;
 use millegrilles_common_rust::messages_generiques::MessageCedule;
 use millegrilles_common_rust::middleware::{Middleware, MiddlewareMessages};
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
-use millegrilles_common_rust::mongo_dao::{start_transaction_regular, MongoDao};
+use millegrilles_common_rust::mongo_dao::{start_transaction_regular, MongoDao, MongoDaoTyped};
 use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange, QueueType, TypeMessageOut};
 use millegrilles_common_rust::recepteur_messages::MessageValide;
@@ -106,7 +106,7 @@ impl GestionnaireDomaineSimple for MaitreDesClesCaManager {
 
     async fn traiter_cedule<M>(&self, middleware: &M, trigger: &MessageCedule) -> Result<(), CommonError>
     where
-        M: MiddlewareMessages + BackupStarter + MongoDao
+        M: MiddlewareMessages + BackupStarter + MongoDaoTyped
     {
         maintenance_ca(middleware, self, trigger).await
     }
@@ -202,7 +202,7 @@ where M: MongoDao + ConfigMessages
 
 async fn consommer_requete<M>(middleware: &M, message: MessageValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
-    where M: ValidateurX509 + GenerateurMessages + MongoDao
+    where M: ValidateurX509 + GenerateurMessages + MongoDaoTyped
 {
     debug!("Consommer requete {:?}", message.type_message);
 

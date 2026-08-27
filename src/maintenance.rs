@@ -10,7 +10,7 @@ use millegrilles_common_rust::domaines_traits::{AiguillageTransactions, Gestionn
 use millegrilles_common_rust::error::Error;
 use millegrilles_common_rust::messages_generiques::MessageCedule;
 use millegrilles_common_rust::middleware::{Middleware, MiddlewareMessages};
-use millegrilles_common_rust::mongo_dao::MongoDao;
+use millegrilles_common_rust::mongo_dao::{MongoDao, MongoDaoTyped};
 use millegrilles_common_rust::tokio::time::{sleep, Duration as DurationTokio};
 
 const DUREE_ATTENTE: u64 = 20000;
@@ -87,7 +87,7 @@ where M: Middleware
 
 pub async fn maintenance_ca<M,G>(middleware: &M, gestionnaire: &G, trigger: &MessageCedule) -> Result<(), Error>
 where
-    M: MiddlewareMessages + MongoDao + ValidateurX509,
+    M: MiddlewareMessages + MongoDaoTyped + ValidateurX509,
     G: GestionnaireDomaineV2 + AiguillageTransactions
 {
     let hour = trigger.get_date().hour();

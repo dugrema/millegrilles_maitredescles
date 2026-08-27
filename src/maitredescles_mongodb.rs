@@ -23,7 +23,7 @@ use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::opti
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
 use millegrilles_common_rust::millegrilles_cryptographie::x25519::{dechiffrer_asymmetrique_ed25519, CleSecreteX25519};
 use millegrilles_common_rust::millegrilles_cryptographie::{deser_message_buffer, heapless};
-use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, start_transaction_regular, ChampIndex, IndexOptions, MongoDao};
+use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, start_transaction_regular, ChampIndex, IndexOptions, MongoDao, MongoDaoTyped};
 use millegrilles_common_rust::mongodb::options::{AggregateOptions, CountOptions, FindOneOptions, FindOptions, Hint, UpdateOptions};
 use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
@@ -439,7 +439,7 @@ struct ReponseClesNonDechiffrables {
 
 pub async fn requete_cles_non_dechiffrables_v2<M>(middleware: &M, m: MessageValide, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
-    where M: GenerateurMessages + MongoDao
+    where M: GenerateurMessages + MongoDaoTyped
 {
     debug!("requete_rechiffrer_cles Consommer requete : {:?}", m.type_message);
     let requete: RequeteClesNonDechiffrable = deser_message_buffer!(m.message);
@@ -992,7 +992,7 @@ where M: GenerateurMessages + MongoDao
 
 pub async fn requete_dechiffrage_v2<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
-    where M: GenerateurMessages + MongoDao + ValidateurX509 + CleChiffrageHandler
+    where M: GenerateurMessages + MongoDaoTyped + ValidateurX509 + CleChiffrageHandler
 {
     debug!("requete_dechiffrage_v2 Consommer requete : {:?}", & m.type_message);
     let message_ref = m.message.parse()?;
@@ -1153,7 +1153,7 @@ pub async fn requete_dechiffrage_v2<M>(middleware: &M, m: MessageValide, handler
 /// pour tous les maitre des cles.
 pub async fn requete_transfert_cles<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
-    where M: GenerateurMessages + MongoDao + ValidateurX509 + CleChiffrageHandler
+    where M: GenerateurMessages + MongoDaoTyped + ValidateurX509 + CleChiffrageHandler
 {
     debug!("requete_transfert_cles Consommer requete : {:?}", & m.type_message);
 
@@ -1555,7 +1555,7 @@ struct MissingKeyRow {
 
 /// Processes the temp_keysync_done table filled by the active keymasters.
 pub async fn process_ca_key_sync<M,G>(middleware: &M, gestionnaire: &G) -> Result<(), Error>
-where M: GenerateurMessages + MongoDao + ValidateurX509,
+where M: GenerateurMessages + MongoDaoTyped + ValidateurX509,
       G: GestionnaireDomaineV2 + AiguillageTransactions
 {
     info!("process_ca_key_sync Starting");
@@ -1696,7 +1696,7 @@ pub async fn marquer_cles_ca_timeout<M>(middleware: &M) -> Result<(), Error>
 
 pub async fn query_repair_symmetric_key<M>(middleware: &M, _m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage, session: &mut ClientSession)
                                            -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
-where M: GenerateurMessages + MongoDao + ValidateurX509 + CleChiffrageHandler
+where M: GenerateurMessages + MongoDaoTyped + ValidateurX509 + CleChiffrageHandler
 {
     if handler_rechiffrage.is_ready() {
         // Nothing to do, symmetric key already loaded
@@ -1721,7 +1721,7 @@ where M: GenerateurMessages + MongoDao + ValidateurX509 + CleChiffrageHandler
 
 pub async fn request_keys_for_ca<M>(middleware: &M, m: MessageValide, _handler_rechiffrage: &HandlerCleRechiffrage, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
-    where M: GenerateurMessages + MongoDao + ValidateurX509 + CleChiffrageHandler
+    where M: GenerateurMessages + MongoDaoTyped + ValidateurX509 + CleChiffrageHandler
 {
     let request: RequestMissingCaKeys = deser_message_buffer!(m.message);
 

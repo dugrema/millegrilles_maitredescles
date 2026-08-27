@@ -16,7 +16,7 @@ use millegrilles_common_rust::messages_generiques::MessageCedule;
 use millegrilles_common_rust::middleware::{Middleware, MiddlewareMessages};
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_cles::CleChiffrageHandler;
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
-use millegrilles_common_rust::mongo_dao::{start_transaction_regular, MongoDao};
+use millegrilles_common_rust::mongo_dao::{start_transaction_regular, MongoDao, MongoDaoTyped};
 use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange, NamedQueue, QueueType, TypeMessageOut};
 use millegrilles_common_rust::recepteur_messages::{MessageValide, TypeMessage};
@@ -359,7 +359,7 @@ pub async fn thread_configuration_rechiffrage<M>(manager: &'static MaitreDesCles
 }
 
 async fn consommer_requete<M>(middleware: &M, message: MessageValide, gestionnaire: &MaitreDesClesMongoDbManager) -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
-where M: ValidateurX509 + GenerateurMessages + MongoDao + CleChiffrageHandler + CleChiffrageCache + ConfigMessages
+where M: ValidateurX509 + GenerateurMessages + MongoDaoTyped + CleChiffrageHandler + CleChiffrageCache + ConfigMessages
 {
     debug!("Consommer requete {:?}", message.type_message);
 
@@ -416,7 +416,7 @@ where M: ValidateurX509 + GenerateurMessages + MongoDao + CleChiffrageHandler + 
 
 async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnaire: &MaitreDesClesMongoDbManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
-    where M: GenerateurMessages + MongoDao + CleChiffrageHandler + ValidateurX509
+    where M: GenerateurMessages + MongoDaoTyped + CleChiffrageHandler + ValidateurX509
 {
     debug!("consommer_commande {:?}", m.type_message);
 

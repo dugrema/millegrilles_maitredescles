@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use millegrilles_common_rust::tracing::{debug, info, warn};
 use millegrilles_common_rust::certificats::{calculer_fingerprint, ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::configuration::{charger_configuration, ConfigMessages, IsConfigNoeud};
@@ -17,6 +18,7 @@ use crate::maintenance::thread_entretien;
 use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
 use crate::mongodb_manager::{preparer_index_mongodb, thread_entretien_manager_mongodb, MaitreDesClesMongoDbManager};
 use crate::sqlite_manager::MaitreDesClesSqliteManager;
+use crate::state::AppContext;
 
 /// Enum pour distinguer les types de gestionnaires.
 pub enum MaitreDesClesSymmetricManager {
@@ -33,6 +35,12 @@ pub struct MaitreDesClesManager {
 static DOMAIN_MANAGER: StaticCell<MaitreDesClesManager> = StaticCell::new();
 
 pub async fn run() {
+    let context = Arc::new(AppContext::new().await.expect("Error getting AppContext"));
+
+
+}
+
+pub async fn old_run() {
 
     let (middleware, futures_middleware) = preparer_middleware()
         .expect("preparer middleware");
