@@ -43,14 +43,15 @@ impl MaitreDesClesSymmetricServiceImpl {
         let incoming_clone = incoming.clone();
         tokio::spawn(async move {self_clone.process_ticker_thread(incoming_clone).await});
 
-        // CA queue
+        // Symmetric queues
 
-        todo!()
+        // todo!()
+        Ok(())
     }
 
     async fn process_ticker_thread(&self, incoming: Arc<MessageInboundValidator>) {
         let streamer = incoming.consume_named_queue(
-            format!("{}/ca_job_ticker", DOMAINE_NOM).as_str()
+            format!("{}/symmetric_job_ticker", DOMAINE_NOM).as_str()
         ).expect("Consumer streaming init failed");
         tokio::pin!(streamer);
         while let Some(result) = streamer.next().await {

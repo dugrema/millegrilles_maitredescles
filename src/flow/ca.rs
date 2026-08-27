@@ -53,7 +53,8 @@ impl MaitreDesClesCAServiceImpl {
 
         // CA queue
 
-        todo!()
+        //todo!()
+        Ok(())
     }
 
     async fn process_ticker_thread(&self, incoming: Arc<MessageInboundValidator>) {
