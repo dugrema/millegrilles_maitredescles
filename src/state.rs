@@ -52,11 +52,15 @@ impl AppContext {
 
         // Flow services (business logic)
         let ca_service = Arc::new(
-            MaitreDesClesCAServiceImpl::new(messaging.as_ref())?
+            MaitreDesClesCAServiceImpl::new(config.clone(), outgoing.clone(), mongo.clone())
         );
         let symmetric_service = Arc::new(
-            MaitreDesClesSymmetricServiceImpl::new(messaging.as_ref())?
+            MaitreDesClesSymmetricServiceImpl::new(config.clone(), outgoing.clone(), mongo.clone())
         );
+
+        info!("Configure middleware resources : queues, index, tables, ...");
+        ca_service.configure(messaging.as_ref(), config.as_ref()).await?;
+        symmetric_service.configure(messaging.as_ref(), config.as_ref()).await?;
 
         info!("Connect services, start maintenance threads");
         start_threads(
@@ -129,6 +133,7 @@ async fn start_threads(
     tokio::task::spawn(async move { security.run().await });
     // tokio::task::spawn(async move { redis.run().await });
 
+    // Spawn consumer threads
     ca_service.start(incoming.clone())?;
     symmetric_service.start(incoming.clone())?;
 

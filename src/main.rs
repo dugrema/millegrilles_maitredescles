@@ -1,6 +1,6 @@
 mod maitredescles_commun;
 mod maitredescles_rechiffrage;
-mod messages;
+mod models;
 mod constants;
 mod maitredescles_mongodb;
 mod builder;
@@ -9,13 +9,11 @@ mod mongodb_manager;
 mod sqlite_manager;
 mod requests;
 mod commands;
-mod events;
 mod transactions;
 mod maintenance;
 pub mod state;
 pub mod external;
 pub mod flow;
-pub mod models;
 
 use millegrilles_common_rust::tracing::{info};
 use millegrilles_common_rust::{tracing_subscriber, tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt}};

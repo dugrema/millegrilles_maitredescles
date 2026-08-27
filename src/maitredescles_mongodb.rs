@@ -1,7 +1,7 @@
 use crate::constants::*;
 use crate::maitredescles_commun::{effectuer_requete_cles_manquantes, emettre_demande_cle_symmetrique, preparer_rechiffreur, verifier_permission_rechiffrage, CleSecreteRechiffrage, CleSynchronisation, CleTransfert, CommandeCleSymmetrique, CommandeRechiffrerBatchChiffree, CommandeRechiffrerBatchDechiffree, CommandeRotationCertificat, CommandeTransfertClesCaV2, CommandeTransfertClesV2, DocumentCleRechiffrage, ErreurPermissionRechiffrage, EvenementClesRechiffrage, ReponseConfirmerClesSurCa, ReponseSynchroniserCles, RequeteSynchroniserCles, RequeteTransfert, RowCleCaRef, RowClePartition, TransactionCle, TransactionCleV2};
 use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
-use crate::messages::{RecupererCleCa, RequeteClesNonDechiffrable};
+use crate::models::{RecupererCleCa, RequeteClesNonDechiffrable};
 use millegrilles_common_rust::tracing::{debug, error, info, warn};
 use millegrilles_common_rust::base64::{engine::general_purpose::STANDARD_NO_PAD as base64_nopad, Engine as _};
 use millegrilles_common_rust::bson::doc;
@@ -34,13 +34,6 @@ use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::{millegrilles_cryptographie, multibase, serde_json};
 use std::collections::HashSet;
 use std::str::from_utf8;
-
-pub const NOM_COLLECTION_TRANSACTIONS_CA: &str = "MaitreDesCles/CA";
-pub const NOM_COLLECTION_CA_CLES: &str = "MaitreDesCles/CA/cles";
-pub const NOM_COLLECTION_CA_TEMP_KEYSYNC: &str = "MaitreDesCles/CA/temp_keysync";
-pub const NOM_COLLECTION_CA_TEMP_KEYSYNC_DONE: &str = "MaitreDesCles/CA/temp_keysync_done";
-pub const NOM_COLLECTION_CA_MISSING: &str = "MaitreDesCles/CA/keys_missing";
-pub const NOM_COLLECTION_SYMMETRIQUE_CLES: &str = "MaitreDesCles/cles";
 
 /// Creer index MongoDB
 pub async fn preparer_index_mongodb_custom<M>(middleware: &M, nom_collection_cles: &str, _ca: bool) -> Result<(), Error>
