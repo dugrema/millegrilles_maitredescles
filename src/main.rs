@@ -27,11 +27,31 @@ async fn main() {
 
     // Start the application by creating the context. This starts all threads and connections.
     let context = AppContext::new().await.expect("AppContext::new");
-
     let shutdown_token = context.shutdown_token.clone();
-    // TODO - wait for signal to close
-    
+
+    let shutdown_signal = async {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigint = signal(SignalKind::interrupt()).expect("failed to install sigint handler");
+        let mut sigterm = signal(SignalKind::terminate()).expect("failed to install sigterm handler");
+
+        tokio::select! {
+            _ = sigint.recv() => info!("Received SIGINT (Ctrl+C)"),
+            _ = sigterm.recv() => info!("Received SIGTERM (Docker/K8s)"),
+        }
+    };
+
+    tokio::select! {
+        _ = shutdown_signal => {
+            info!("Shutdown signal received. Triggering cancellation...");
+            shutdown_token.cancel();
+        }
+    }
+
+    info!("Waiting for background tasks to clean up...");
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    info!("Shutdown complete.");
 }
+
 
 fn init_logging() {
     let rust_log_var = std::env::var("RUST_LOG").unwrap_or("error,millegrilles_maitredescles=warn,millegrilles_common_rust=warn".to_string());
