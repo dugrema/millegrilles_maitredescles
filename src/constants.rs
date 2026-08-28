@@ -81,3 +81,4 @@ pub const NOM_COLLECTION_CA_TEMP_KEYSYNC_DONE: &str = "MaitreDesCles/CA/temp_key
 pub const NOM_COLLECTION_CA_MISSING: &str = "MaitreDesCles/CA/keys_missing";
 pub const NOM_COLLECTION_SYMMETRIQUE_CLES: &str = "MaitreDesCles/cles";
 
+pub const ROLE_TICKER: &str = "ceduleur";
