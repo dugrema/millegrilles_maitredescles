@@ -4,6 +4,8 @@ use millegrilles_common_rust::error::Error as CommonError;
 use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange};
 use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl;
 
+pub const QUEUE_SYMMETRIC_GETKEYS: &str = "symmetric/get_keys";
+
 pub fn init_ca_queues(mq: &MessagingServiceImpl) -> Result<(), CommonError> {
 
     // Configure the queues and add to messaging service (will spawn consumer threads)
@@ -169,7 +171,7 @@ pub fn init_symmetric_queues(mq: &MessagingServiceImpl) -> Result<(), CommonErro
     })?;
 
     mq.add_named_queue(ConfigQueue {
-        nom_queue: format!("{}/symmetric/get_keys", DOMAINE_NOM),
+        nom_queue: format!("{}/{}", DOMAINE_NOM, QUEUE_SYMMETRIC_GETKEYS),
         routing_keys: vec![
             ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, MAITREDESCLES_REQUETE_DECHIFFRAGE_V2), exchange: Securite::L3Protege },
         ],

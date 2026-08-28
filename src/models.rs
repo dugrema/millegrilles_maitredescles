@@ -60,3 +60,18 @@ impl<'a> TryFrom<RowCleCaRef<'a>> for RecupererCleCa {
         })
     }
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ErrorMessage {
+    pub ok: bool,
+    pub code: Option<u16>,
+    pub err: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct KeyDecryptionRefused {
+    pub ok: bool,
+    pub code: Option<usize>,
+    pub err: Option<String>,
+    pub acces: Option<String>,
+}

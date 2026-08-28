@@ -16,6 +16,7 @@ use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl
 use millegrilles_common_rust::v3::impls::security_service::SecurityServiceImpl;
 use millegrilles_common_rust::v3::{ConfigService, FormatService, MessagingService, PkiService};
 use std::sync::Arc;
+use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
 
 /// Composition object with services from common library
 pub struct AppContext {
@@ -46,6 +47,9 @@ impl AppContext {
         let security = Arc::new(init_security(config.as_ref()).await?);
         let messaging = Arc::new(MessagingServiceImpl::new(config.clone()));
         let format = Arc::new(FormatServiceImpl::new(config.clone()));
+        let decryption = Arc::new(HandlerCleRechiffrage::with_certificat(
+            config.get_configuration_pki().get_enveloppe_privee()
+        ));
 
         let mongo = Arc::new(
             initialiser(config.get_configuration_pki(), config.get_configuraiton_mongo())?
@@ -63,7 +67,7 @@ impl AppContext {
             MaitreDesClesCAServiceImpl::new(config.clone(), outgoing.clone(), mongo.clone())
         );
         let symmetric_service = Arc::new(
-            MaitreDesClesSymmetricServiceImpl::new(config.clone(), outgoing.clone(), mongo.clone())
+            MaitreDesClesSymmetricServiceImpl::new(config.clone(), outgoing.clone(), mongo.clone(), decryption)
         );
 
         info!("Configure middleware resources : queues, index, tables, ...");

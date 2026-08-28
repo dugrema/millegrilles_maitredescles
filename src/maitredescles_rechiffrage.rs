@@ -102,7 +102,7 @@ impl HandlerCleRechiffrage {
     //         cle_symmetrique: Mutex::new(None),
     //     })
     // }
-
+    
     pub fn with_certificat(enveloppe_privee: Arc<EnveloppePrivee>) -> Self {
         // let cle_privee = enveloppe_privee.cle_privee.to_owned();
         Self {

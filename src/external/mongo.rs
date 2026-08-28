@@ -1,15 +1,20 @@
 use crate::constants::*;
 use millegrilles_common_rust::bson::doc;
 use millegrilles_common_rust::chrono::{Duration, Utc};
+use millegrilles_common_rust::common_messages::ResponseRequestDechiffrageV2Cle;
 use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::constantes::{CHAMP_CREATION, CHAMP_MODIFICATION};
-use millegrilles_common_rust::error::{Error as CommonError, Error};
+use millegrilles_common_rust::error::Error as CommonError;
 use millegrilles_common_rust::jwt_simple::prelude::Deserialize;
+use millegrilles_common_rust::millegrilles_cryptographie::heapless;
 use millegrilles_common_rust::mongo_dao::{ChampIndex, IndexOptions, MongoDao, MongoDaoTyped, start_transaction_regular};
 use millegrilles_common_rust::mongodb::options::{AggregateOptions, Hint};
-use millegrilles_common_rust::tracing::{debug, info};
+use millegrilles_common_rust::tokio_stream::StreamExt;
+use millegrilles_common_rust::tracing::{debug, info, warn};
+use crate::maitredescles_commun::RowClePartition;
+use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
 
-pub async fn create_index_mongodb_custom(db: &dyn MongoDao, config: &dyn ConfigMessages, key_collection_name: &str) -> Result<(), Error> {
+pub async fn create_index_mongodb_custom(db: &dyn MongoDao, config: &dyn ConfigMessages, key_collection_name: &str) -> Result<(), CommonError> {
     // Index cle_id
     let options_cle_id = IndexOptions {
         nom_index: Some(String::from(INDEX_CLE_ID)),
@@ -88,7 +93,7 @@ struct MissingKeyRow {
 }
 
 /// Processes the temp_keysync_done table filled by the active keymasters.
-pub async fn process_ca_key_sync<M>(mongo: &M) -> Result<(), Error>
+pub async fn process_ca_key_sync<M>(mongo: &M) -> Result<(), CommonError>
     where M: MongoDaoTyped
 {
     info!("process_ca_key_sync Starting");
@@ -158,7 +163,7 @@ pub async fn process_ca_key_sync<M>(mongo: &M) -> Result<(), Error>
     Ok(())
 }
 
-pub async fn marquer_cles_ca_timeout(mongo: &dyn MongoDao) -> Result<(), Error> {
+pub async fn marquer_cles_ca_timeout(mongo: &dyn MongoDao) -> Result<(), CommonError> {
     let expired = Utc::now() - Duration::hours(12);
     let filtre = doc!{CHAMP_DERNIERE_PRESENCE: {"$lte": expired}};
     let ops = doc!{
@@ -178,4 +183,56 @@ pub async fn marquer_cles_ca_timeout(mongo: &dyn MongoDao) -> Result<(), Error> 
             Err(e)?
         }
     }
+}
+
+pub async fn get_symmetric_keys<M>(
+    mongo: &M,
+    decryption: &HandlerCleRechiffrage,
+    cle_ids: &Vec<String>,
+    domain: &str,
+    include_signature: bool,
+) -> Result<Vec<ResponseRequestDechiffrageV2Cle>, CommonError> where M: MongoDaoTyped {
+    let mut cles: Vec<ResponseRequestDechiffrageV2Cle> = Vec::new();
+
+    let nom_collection = NOM_COLLECTION_SYMMETRIQUE_CLES;
+
+    let filtre = doc! {CHAMP_CLE_ID: {"$in": cle_ids}};
+    let collection = mongo.get_collection_typed::<RowClePartition>(nom_collection)?;
+    let mut curseur = collection.find(filtre, None).await?;
+    let domain: heapless::String<40> = domain.try_into()
+        .map_err(|_| CommonError::Str("Erreur map domain dans heapless::String<40>"))?;
+
+    // Compter les cles trouvees separement de la liste. On rejete des cles qui ont un mismatch de domaine
+    // mais elles comptent sur le total trouve.
+    //let mut cles_trouvees = 0;
+
+    while let Some(row) = curseur.next().await {
+        match row {
+            Ok(inner) => {
+                //cles_trouvees += 1;
+                if inner.signature.domaines.contains(&domain) {
+                    let signature = inner.signature.clone();
+                    match inner.to_cle_secrete_serialisee(decryption) {
+                        Ok(inner) => {
+                            let mut cle: ResponseRequestDechiffrageV2Cle = inner.into();
+                            if include_signature { cle.signature = Some(signature); }
+                            cles.push(cle);
+                        },
+                        Err(e) => {
+                            warn!("Erreur mapping / dechiffrage cle - SKIP : {:?}", e);
+                            continue
+                        }
+                    }
+                } else {
+                    warn!("requete_dechiffrage_v2 Requete de cle rejetee, domaines {:?} ne match pas la cle {}", inner.signature.domaines, inner.cle_id);
+                }
+            },
+            Err(e) => {
+                warn!("requete_dechiffrage_v2 Erreur mapping cle, SKIP : {:?}", e);
+                continue
+            }
+        }
+    }
+
+    Ok(cles)
 }
