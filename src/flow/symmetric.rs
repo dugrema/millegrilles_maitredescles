@@ -17,6 +17,7 @@ use millegrilles_common_rust::v3::impls::config_service::ConfigServiceDbImpl;
 use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl;
 use std::sync::Arc;
 use millegrilles_common_rust::certificats::VerificateurPermissions;
+use crate::flow::maintenance::validate_ticker;
 
 #[async_trait]
 pub trait MaitreDesClesSymmetricService {}
@@ -80,10 +81,8 @@ async fn ticker_job_symmetric<M>(mongo: &M, trigger: MessageValidated) -> Result
 where M: MongoDaoTyped
 {
     // Ensure this is an authorized module
-    if let Ok(true) = trigger.certificate.verifier_roles_string(vec![ROLE_TICKER.to_string()]) {
-        // Ok
-    } else {
-        debug!("Ticker message without ticker (ceduleur) role, ignoring");
+    if let Err(e) = validate_ticker(&trigger).await {
+        error!("Invalid ticker message, rejecting: {}", e);
         return Ok(());
     }
 

@@ -18,6 +18,7 @@ use std::sync::Arc;
 use millegrilles_common_rust::certificats::VerificateurPermissions;
 use millegrilles_common_rust::millegrilles_cryptographie::ed25519_dalek::ed25519::signature::digest::Mac;
 use millegrilles_common_rust::tokio::task::JoinSet;
+use crate::flow::maintenance::validate_ticker;
 
 #[async_trait]
 pub trait MaitreDesClesCAService {}
@@ -107,7 +108,10 @@ async fn ticker_job_ca<M>(mongo: &M, trigger: MessageValidated) -> Result<(), Co
     where M: MongoDaoTyped
 {
     // Ensure this is an authorized module
-    
+    if let Err(e) = validate_ticker(&trigger).await {
+        error!("Invalid ticker message, rejecting: {}", e);
+        return Ok(());
+    }
 
     let trigger_value: MessageCedule = trigger.message.deserialize()?;
 
