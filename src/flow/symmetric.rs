@@ -6,19 +6,15 @@ use crate::maitredescles_commun::{ErreurPermissionRechiffrage, ErrorPermissionRe
 use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
 use crate::models::{ErrorMessage, KeyDecryptionRefused};
 use millegrilles_common_rust::async_trait::async_trait;
-use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
+use millegrilles_common_rust::certificats::VerificateurPermissions;
 use millegrilles_common_rust::chrono::Timelike;
 use millegrilles_common_rust::common_messages::{ReponseRequeteDechiffrageV2, RequeteDechiffrage, ResponseRequestDechiffrageV2Cle};
 use millegrilles_common_rust::constantes::DELEGATION_GLOBALE_PROPRIETAIRE;
 use millegrilles_common_rust::error::Error as CommonError;
-use millegrilles_common_rust::error::Error::ErrorResponse;
 use millegrilles_common_rust::futures::StreamExt;
-use millegrilles_common_rust::generateur_messages::GenerateurMessages;
 use millegrilles_common_rust::messages_generiques::MessageCedule;
 use millegrilles_common_rust::millegrilles_cryptographie::x509::EnveloppeCertificat;
-use millegrilles_common_rust::mongo_dao::{MongoDao, MongoDaoImpl, MongoDaoTyped};
-use millegrilles_common_rust::recepteur_messages::MessageValide;
-use millegrilles_common_rust::serde_json::json;
+use millegrilles_common_rust::mongo_dao::{MongoDaoImpl, MongoDaoTyped};
 use millegrilles_common_rust::tokio;
 use millegrilles_common_rust::tokio::task::JoinSet;
 use millegrilles_common_rust::tracing::{debug, error, info, warn};
@@ -27,7 +23,6 @@ use millegrilles_common_rust::v3::facades::message_outbound::MessageOutboundFaca
 use millegrilles_common_rust::v3::impls::config_service::ConfigServiceDbImpl;
 use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl;
 use millegrilles_common_rust::v3::impls::rabbitmq_consumer::DeliveryInfo;
-use millegrilles_common_rust::v3::impls::security_service::SecurityServiceImpl;
 use millegrilles_common_rust::v3::{ConfigService, PkiService};
 use std::sync::Arc;
 
@@ -205,17 +200,6 @@ pub async fn decrypt_keys_v2<M>(
     delivery_info: DeliveryInfo,
     certificate: Arc<EnveloppeCertificat>
 ) -> Result<(Option<Vec<ResponseRequestDechiffrageV2Cle>>, Arc<EnveloppeCertificat>), CommonError> where M: MongoDaoTyped {
-    let inclure_signature = Some(true) == requete.inclure_signature;
-
-    // Supporter l'ancien format de requete (liste_hachage_bytes) avec le nouveau (cle_ids)
-    let cle_ids = match requete.cle_ids.as_ref() {
-        Some(inner) => inner,
-        None => match requete.liste_hachage_bytes.as_ref() {
-            Some(inner) => inner,
-            None => Err(CommonError::Str("Aucunes cles demandees pour le rechiffrage"))?
-        }
-    };
-
     // Verifier que la requete est autorisee
     let certificat = match check_key_decryption_request(pki, &requete, certificate.clone()).await {
         Ok((certificate, _)) => certificate,
@@ -228,8 +212,8 @@ pub async fn decrypt_keys_v2<M>(
         Err(ErreurPermissionRechiffrage::Error(e)) => return Err(e)
     };
 
-    // Recuperer les cles et dechiffrer
-    let requete_cle_ids = match requete.cle_ids {
+    // Support old key request format to recover key_ids
+    let requested_key_ids = match requete.cle_ids {
         Some(inner) => inner,
         None => match requete.liste_hachage_bytes {
             Some(inner) => inner,
@@ -242,7 +226,7 @@ pub async fn decrypt_keys_v2<M>(
     let keys = get_symmetric_keys(
         mongo,
         decryption,
-        &requete_cle_ids,
+        &requested_key_ids,
         requete.domaine.as_str(),
         Some(true) == requete.inclure_signature,
     ).await?;
@@ -252,120 +236,6 @@ pub async fn decrypt_keys_v2<M>(
     } else {
         Ok((Some(keys), certificat))
     }
-
-    // let mut cles: Vec<ResponseRequestDechiffrageV2Cle> = Vec::new();
-    //
-    // let nom_collection = NOM_COLLECTION_SYMMETRIQUE_CLES;
-    //
-    // let requete_cle_ids = match requete.cle_ids.as_ref() {
-    //     Some(inner) => inner,
-    //     None => match requete.liste_hachage_bytes.as_ref() {
-    //         Some(inner) => inner,
-    //         None => {
-    //             info!("requete_dechiffrage_v2 requete sans cle_ids ni liste_hachage_bytes");
-    //             return Ok(Some(middleware.reponse_err(1, None, Some("Requete sans cle_ids ni liste_hachage_bytes"))?))
-    //         }
-    //     }
-    // };
-    //
-    // let filtre = doc! {
-    //     CHAMP_CLE_ID: {"$in": requete_cle_ids},
-    //     // "signature.domaines": {"$in": vec![&requete.domaine]}
-    // };
-    // // filtre.insert("signature.domaines", doc!{"$in": vec![&requete.domaine]});
-    // let collection = middleware.get_collection_typed::<RowClePartition>(nom_collection)?;
-    // let mut curseur = collection.find_with_session(filtre, None, session).await?;
-    // let domaine: heapless::String<40> = requete.domaine.as_str().try_into()
-    //     .map_err(|_| Error::Str("Erreur map domain dans heapless::String<40>"))?;
-    //
-    // // Compter les cles trouvees separement de la liste. On rejete des cles qui ont un mismatch de domaine
-    // // mais elles comptent sur le total trouve.
-    // let mut cles_trouvees = 0;
-    //
-    // while let Some(row) = curseur.next(session).await {
-    //     match row {
-    //         Ok(inner) => {
-    //             cles_trouvees += 1;
-    //             if inner.signature.domaines.contains(&domaine) {
-    //                 let signature = inner.signature.clone();
-    //                 match inner.to_cle_secrete_serialisee(handler_rechiffrage) {
-    //                     Ok(inner) => {
-    //                         let mut cle: ResponseRequestDechiffrageV2Cle = inner.into();
-    //                         if inclure_signature { cle.signature = Some(signature); }
-    //                         cles.push(cle);
-    //                     },
-    //                     Err(e) => {
-    //                         warn!("Erreur mapping / dechiffrage cle - SKIP : {:?}", e);
-    //                         continue
-    //                     }
-    //                 }
-    //             } else {
-    //                 warn!("requete_dechiffrage_v2 Requete de cle rejetee, domaines {:?} ne match pas la cle {}", inner.signature.domaines, inner.cle_id);
-    //             }
-    //         },
-    //         Err(e) => {
-    //             warn!("requete_dechiffrage_v2 Erreur mapping cle, SKIP : {:?}", e);
-    //             continue
-    //         }
-    //     }
-    // }
-
-    // // Verifier si on a des cles inconnues
-    // // En cas de cles inconnues, et si on a plusieurs maitre des cles, faire une requete
-    // let nombre_maitre_des_cles = middleware.get_publickeys_chiffrage().len();
-    // if cles_trouvees < cle_ids.len() && nombre_maitre_des_cles > 1 {
-    //     debug!("requete_dechiffrage_v2 Cles manquantes, on a {} trouvees sur {} demandees", cles.len(), cle_ids.len());
-    //
-    //     // Identifier les cles manquantes
-    //     let mut cles_hashset = HashSet::new();
-    //     for item in cle_ids {
-    //         cles_hashset.insert(item.as_str());
-    //     }
-    //     for item in &cles {
-    //         if let Some(cle_id) = &item.cle_id {
-    //             cles_hashset.remove(cle_id.as_str());
-    //         }
-    //     }
-    //
-    //     // Effectuer une requete pour verifier si les cles sont connues d'un autre maitre des cles
-    //     let liste_cles: Vec<String> = cles_hashset.iter().map(|m| m.to_string()).collect();
-    //     let requete_transfert = RequeteTransfert {
-    //         fingerprint,
-    //         cle_ids: liste_cles,
-    //         toujours_repondre: Some(true),
-    //     };
-    //     let data_reponse = effectuer_requete_cles_manquantes(
-    //         middleware, &requete_transfert).await.unwrap_or_else(|e| {
-    //         error!("traiter_batch_synchroniser_cles Erreur requete cles manquantes : {:?}", e);
-    //         None
-    //     });
-    //     if let Some(data_reponse) = data_reponse {
-    //         debug!("traiter_batch_synchroniser_cles Recu {}/{} cles suite a requete de cles manquantes",
-    //             data_reponse.cles.len(), cles_hashset.len());
-    //         for cle in data_reponse.cles {
-    //             sauvegarder_cle_transfert(middleware, handler_rechiffrage, &cle, session).await?;
-    //         }
-    //     }
-    // }
-    //
-    // let reponse = if cles.len() > 0 {
-    //     let reponse = ReponseRequeteDechiffrageV2 { ok: true, code: 1, cles: Some(cles), err: None };
-    //     middleware.build_reponse_chiffree(reponse, certificat.as_ref())?.0
-    // } else {
-    //     // On n'a pas trouve de cles
-    //     debug!("requete_dechiffrage_v2 Requete {:?} de dechiffrage {:?}, cles inconnues", m.type_message, &cle_ids);
-    //
-    //     // Retourner cle inconnu a l'usager
-    //     let inconnu = json!({"ok": false, "err": "Cles inconnues", "acces": CHAMP_ACCES_CLE_INCONNUE, "code": 4});
-    //     let _reponse = ReponseRequeteDechiffrageV2 {
-    //         ok: false,
-    //         code: 4,
-    //         cles: None,
-    //         err: Some("Cles inconnues".to_string())
-    //     };
-    //     middleware.build_reponse(&inconnu)?.0
-    // };
-
 }
 
 /// Checks all rules to ensure the key decryption certificate is appropriate
