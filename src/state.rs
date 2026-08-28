@@ -7,7 +7,7 @@ use millegrilles_common_rust::error::Error as CommonError;
 use millegrilles_common_rust::mongo_dao::{MongoDaoImpl, initialiser};
 use millegrilles_common_rust::tokio::task::JoinSet;
 use millegrilles_common_rust::tokio_util::sync::CancellationToken;
-use millegrilles_common_rust::tracing::{debug, info};
+use millegrilles_common_rust::tracing::{debug, error, info, warn};
 use millegrilles_common_rust::v3::facades::message_inbound::MessageInboundValidator;
 use millegrilles_common_rust::v3::facades::message_outbound::MessageOutboundFacade;
 use millegrilles_common_rust::v3::impls::config_service::ConfigServiceDbImpl;
@@ -16,6 +16,7 @@ use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl
 use millegrilles_common_rust::v3::impls::security_service::SecurityServiceImpl;
 use millegrilles_common_rust::v3::{ConfigService, FormatService, MessagingService, PkiService};
 use std::sync::Arc;
+use crate::external::mongo::load_symmetric_key;
 use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
 
 /// Composition object with services from common library
@@ -56,18 +57,18 @@ impl AppContext {
         );
 
         // Facades
-        let outgoing = Arc::new(
+        let outbound = Arc::new(
             MessageOutboundFacade::new(messaging.clone(), format.clone()),);
-        let incoming = Arc::new(
+        let inbound = Arc::new(
             MessageInboundValidator::new(config.clone(), messaging.clone(), security.clone(), shutdown_token.clone())
         );
 
         // Flow services (business logic)
         let ca_service = Arc::new(
-            MaitreDesClesCAServiceImpl::new(config.clone(), outgoing.clone(), mongo.clone())
+            MaitreDesClesCAServiceImpl::new(config.clone(), outbound.clone(), mongo.clone())
         );
         let symmetric_service = Arc::new(
-            MaitreDesClesSymmetricServiceImpl::new(config.clone(), outgoing.clone(), mongo.clone(), decryption)
+            MaitreDesClesSymmetricServiceImpl::new(config.clone(), outbound.clone(), security.clone(), mongo.clone(), decryption.clone())
         );
 
         info!("Configure middleware resources : queues, index, tables, ...");
@@ -80,11 +81,20 @@ impl AppContext {
             security.clone(),
             messaging.as_ref(),
             // redis.clone(),
-            incoming.clone(),
+            inbound.clone(),
             ca_service.clone(),
             symmetric_service.clone(),
             shutdown_token.clone(),
         ).await?;
+
+        // Try to load decryption key from mongo
+        if let Err(e) = load_symmetric_key(
+            mongo.as_ref(),
+            config.get_configuration_pki().get_enveloppe_privee().as_ref(),
+            decryption.as_ref()
+        ).await {
+            warn!("Error loading symmetric key : {}", e);
+        }
 
         Ok(AppContext {
             join_set,
@@ -95,8 +105,8 @@ impl AppContext {
             messaging,
             format,
             mongo,
-            outgoing,
-            incoming,
+            outgoing: outbound,
+            incoming: inbound,
             ca_service,
             symmetric_service,
             shutdown_token,
@@ -120,7 +130,6 @@ async fn init_config() -> Result<ConfigServiceDbImpl, CommonError> {
 //
 //     Ok(redis_service)
 // }
-
 
 async fn init_security(config: &dyn ConfigService) -> Result<SecurityServiceImpl, CommonError> {
     let validator = build_store_path_v2(&config.get_configuration_pki().ca_certfile).map_err(|e| e.to_string())?;

@@ -7,11 +7,12 @@ use millegrilles_common_rust::constantes::{CHAMP_CREATION, CHAMP_MODIFICATION};
 use millegrilles_common_rust::error::Error as CommonError;
 use millegrilles_common_rust::jwt_simple::prelude::Deserialize;
 use millegrilles_common_rust::millegrilles_cryptographie::heapless;
-use millegrilles_common_rust::mongo_dao::{ChampIndex, IndexOptions, MongoDao, MongoDaoTyped, start_transaction_regular};
+use millegrilles_common_rust::millegrilles_cryptographie::x509::EnveloppePrivee;
+use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, start_transaction_regular, ChampIndex, IndexOptions, MongoDao, MongoDaoTyped};
 use millegrilles_common_rust::mongodb::options::{AggregateOptions, Hint};
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::tracing::{debug, info, warn};
-use crate::maitredescles_commun::RowClePartition;
+use crate::maitredescles_commun::{emettre_demande_cle_symmetrique, DocumentCleRechiffrage, RowClePartition};
 use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
 
 pub async fn create_index_mongodb_custom(db: &dyn MongoDao, config: &dyn ConfigMessages, key_collection_name: &str) -> Result<(), CommonError> {
@@ -235,4 +236,36 @@ pub async fn get_symmetric_keys<M>(
     }
 
     Ok(cles)
+}
+
+pub async fn load_symmetric_key<M>(
+    mongo: &M,
+    private_key: &EnveloppePrivee,
+    decryption: &HandlerCleRechiffrage
+) -> Result<(), CommonError> where M: MongoDaoTyped {
+    let instance_id = private_key.enveloppe_pub.get_common_name()?;
+
+    let collection =
+        mongo.get_collection_typed::<DocumentCleRechiffrage>(NOM_COLLECTION_CONFIGURATION)?;
+
+    let filtre = doc!{
+        "type": "local",
+        "instance_id": instance_id.as_str(),
+        "fingerprint": private_key.fingerprint()?,
+    };
+
+    match collection.find_one(filtre, None).await? {
+        Some(cle_locale) => {
+            decryption.set_cle_symmetrique(cle_locale.cle)?;
+            info!("load_symmetric_key Local symmetric key is loaded ");
+        },
+        None => {
+            // let cle_ca: DocumentCleRechiffrage = convertir_bson_deserializable(doc_cle_ca)?;
+            // info!("preparer_rechiffreur_mongo Demander la cle de rechiffrage");
+            // emettre_demande_cle_symmetrique(middleware, cle_ca.cle).await?;
+            return Err(CommonError::Str("load_symmetric_key Waiting for symmetric key"));
+        }
+    }
+
+    Ok(())
 }

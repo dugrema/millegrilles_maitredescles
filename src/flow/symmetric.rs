@@ -36,7 +36,8 @@ pub trait MaitreDesClesSymmetricService {}
 
 pub struct MaitreDesClesSymmetricServiceImpl {
     _config: Arc<dyn ConfigService>,
-    _outgoing: Arc<MessageOutboundFacade>,
+    outbound: Arc<MessageOutboundFacade>,
+    pki: Arc<dyn PkiService>,
     mongo: Arc<MongoDaoImpl>,
     decryption: Arc<HandlerCleRechiffrage>,
 }
@@ -44,11 +45,12 @@ pub struct MaitreDesClesSymmetricServiceImpl {
 impl MaitreDesClesSymmetricServiceImpl {
     pub fn new(
         config: Arc<dyn ConfigService>,
-        outgoing: Arc<MessageOutboundFacade>,
+        outbound: Arc<MessageOutboundFacade>,
+        pki: Arc<dyn PkiService>,
         mongo: Arc<MongoDaoImpl>,
         decryption: Arc<HandlerCleRechiffrage>,
     ) -> Self {
-        Self { _config: config, _outgoing: outgoing, mongo, decryption }
+        Self { _config: config, outbound, pki, mongo, decryption }
     }
 
     pub async fn configure(&self, mq: &MessagingServiceImpl, config: &ConfigServiceDbImpl) -> Result<(), CommonError> {
@@ -102,8 +104,13 @@ impl MaitreDesClesSymmetricServiceImpl {
         while let Some(result) = streamer.next().await {
             match result {
                 Ok(message) => {
-                    let mongo = self.mongo.as_ref();
-                    if let Err(e) = ticker_job_symmetric(mongo, message).await {
+                    if let Err(e) = get_keys(
+                        self.pki.as_ref(),
+                        self.outbound.as_ref(),
+                        self.decryption.as_ref(),
+                        self.mongo.as_ref(),
+                        message
+                    ).await {
                         error!("process_getkeys_thread failed: {}", e);
                     }
                 }
