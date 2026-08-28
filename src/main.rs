@@ -19,6 +19,9 @@ use crate::state::AppContext;
 use millegrilles_common_rust::tokio as tokio;
 use millegrilles_common_rust::tracing::{info, warn};
 use millegrilles_common_rust::{tracing_subscriber, tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt}};
+use millegrilles_common_rust::v3::facades::message_outbound::MessageOutboundFacade;
+use crate::flow::symmetric::symmetric_init_tasks;
+use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {
@@ -39,6 +42,8 @@ async fn main() {
             _ = sigterm.recv() => info!("Received SIGTERM (Docker/K8s)"),
         }
     };
+
+    init_tasks(context.outbound.as_ref(), context.decryption.as_ref()).await;
 
     tokio::select! {
         _ = shutdown_signal => {
@@ -63,6 +68,12 @@ fn init_logging() {
         .with(tracing_subscriber::EnvFilter::new(rust_log_var))
         .with(tracing_subscriber::fmt::layer())
         .init();
+}
+
+/// This runs once on startup after all the wiring is done and threads are started
+async fn init_tasks(outbound: &MessageOutboundFacade, decryption: &HandlerCleRechiffrage) {
+    // Initial tasks to run once for the symmetric keymaster
+    symmetric_init_tasks(outbound, decryption).await;
 }
 
 #[cfg(test)]

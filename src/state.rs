@@ -29,10 +29,11 @@ pub struct AppContext {
     pub messaging: Arc<dyn MessagingService>,
     pub format: Arc<dyn FormatService>,
     pub mongo: Arc<MongoDaoImpl>,
-    pub outgoing: Arc<MessageOutboundFacade>,
-    pub incoming: Arc<MessageInboundValidator>,
+    pub outbound: Arc<MessageOutboundFacade>,
+    pub inbound: Arc<MessageInboundValidator>,
     pub ca_service: Arc<dyn MaitreDesClesCAService>,
     pub symmetric_service: Arc<dyn MaitreDesClesSymmetricService>,
+    pub decryption: Arc<HandlerCleRechiffrage>,
     pub shutdown_token: CancellationToken,
 }
 
@@ -105,10 +106,11 @@ impl AppContext {
             messaging,
             format,
             mongo,
-            outgoing: outbound,
-            incoming: inbound,
+            outbound,
+            inbound,
             ca_service,
             symmetric_service,
+            decryption,
             shutdown_token,
         })
     }

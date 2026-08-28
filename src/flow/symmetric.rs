@@ -9,7 +9,7 @@ use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::certificats::VerificateurPermissions;
 use millegrilles_common_rust::chrono::Timelike;
 use millegrilles_common_rust::common_messages::{ReponseRequeteDechiffrageV2, RequeteDechiffrage, ResponseRequestDechiffrageV2Cle};
-use millegrilles_common_rust::constantes::DELEGATION_GLOBALE_PROPRIETAIRE;
+use millegrilles_common_rust::constantes::{Securite, COMMANDE_CERT_MAITREDESCLES, DELEGATION_GLOBALE_PROPRIETAIRE};
 use millegrilles_common_rust::error::Error as CommonError;
 use millegrilles_common_rust::futures::StreamExt;
 use millegrilles_common_rust::messages_generiques::MessageCedule;
@@ -25,12 +25,13 @@ use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl
 use millegrilles_common_rust::v3::impls::rabbitmq_consumer::DeliveryInfo;
 use millegrilles_common_rust::v3::{ConfigService, PkiService};
 use std::sync::Arc;
+use millegrilles_common_rust::generateur_messages::RoutageMessageAction;
 
 #[async_trait]
 pub trait MaitreDesClesSymmetricService {}
 
 pub struct MaitreDesClesSymmetricServiceImpl {
-    _config: Arc<dyn ConfigService>,
+    config: Arc<dyn ConfigService>,
     outbound: Arc<MessageOutboundFacade>,
     pki: Arc<dyn PkiService>,
     mongo: Arc<MongoDaoImpl>,
@@ -45,7 +46,7 @@ impl MaitreDesClesSymmetricServiceImpl {
         mongo: Arc<MongoDaoImpl>,
         decryption: Arc<HandlerCleRechiffrage>,
     ) -> Self {
-        Self { _config: config, outbound, pki, mongo, decryption }
+        Self { config: config, outbound, pki, mongo, decryption }
     }
 
     pub async fn configure(&self, mq: &MessagingServiceImpl, config: &ConfigServiceDbImpl) -> Result<(), CommonError> {
@@ -79,8 +80,13 @@ impl MaitreDesClesSymmetricServiceImpl {
         while let Some(result) = streamer.next().await {
             match result {
                 Ok(message) => {
-                    let mongo = self.mongo.as_ref();
-                    if let Err(e) = ticker_job_symmetric(mongo, message).await {
+                    if let Err(e) = ticker_job_symmetric(
+                        self.outbound.as_ref(),
+                        self.config.as_ref(),
+                        self.mongo.as_ref(),
+                        self.decryption.as_ref(),
+                        message
+                    ).await {
                         error!("Ticker job symmetric failed: {}", e);
                     }
                 }
@@ -121,7 +127,13 @@ impl MaitreDesClesSymmetricServiceImpl {
 impl MaitreDesClesSymmetricService for MaitreDesClesSymmetricServiceImpl {
 }
 
-async fn ticker_job_symmetric<M>(mongo: &M, trigger: MessageValidated) -> Result<(), CommonError>
+async fn ticker_job_symmetric<M>(
+    outbound: &MessageOutboundFacade,
+    config: &dyn ConfigService,
+    mongo: &M,
+    decryption: &HandlerCleRechiffrage,
+    trigger: MessageValidated,
+) -> Result<(), CommonError>
 where M: MongoDaoTyped
 {
     // Ensure this is an authorized module
@@ -136,6 +148,12 @@ where M: MongoDaoTyped
     let minute = trigger_value.get_date().minute();
 
     debug!("ticker_job_symmetric for h:{} m:{}",hour,minute);
+
+    if minute % 2 == 0 {
+        if let Err(e) = emit_certificate(outbound, decryption).await {
+            error!("Failed to emit certificate: {}", e);
+        }
+    }
 
     Ok(())
 }
@@ -191,7 +209,7 @@ async fn get_keys<M>(
     outbound.respond_encrypted(message.delivery_info, response, certificate.as_ref()).await
 }
 
-pub async fn decrypt_keys_v2<M>(
+async fn decrypt_keys_v2<M>(
     pki: &dyn PkiService,
     outbound: &MessageOutboundFacade,
     mongo: &M,
@@ -289,4 +307,25 @@ async fn check_key_decryption_request(
     }
 
     Ok((certificate, is_admin))
+}
+
+async fn emit_certificate(outbound: &MessageOutboundFacade, decryption: &HandlerCleRechiffrage) -> Result<(), CommonError> {
+    if ! decryption.is_ready() {
+        debug!("Not emitting certificate - not ready to encrypt/decrypt");
+        return Ok(())
+    }
+
+    let routing = RoutageMessageAction::builder(
+        DOMAINE_NOM, COMMANDE_CERT_MAITREDESCLES, vec![Securite::L1Public]
+    )
+        // .correlation_id(COMMANDE_CERT_MAITREDESCLES)
+        .build();
+    outbound.emit_event(routing, ErrorMessage { ok: true, code: None, err: None}).await
+}
+
+/// Tasks to run once on initialisation
+pub async fn symmetric_init_tasks(outbound: &MessageOutboundFacade, decryption: &HandlerCleRechiffrage) {
+    if let Err(e) = emit_certificate(&outbound, &decryption).await {
+        error!("Error on initial emission of certificate : {:?}", e);
+    }
 }
