@@ -15,7 +15,7 @@ pub fn init_ca_queues(mq: &MessagingServiceImpl) -> Result<(), CommonError> {
             ],
             ttl: Some(QUEUE_TTL_DEFAULT),
             durable: true,
-            autodelete: false,
+            autodelete: true,
         })?;
 
     mq.add_named_queue(ConfigQueue {
@@ -27,7 +27,7 @@ pub fn init_ca_queues(mq: &MessagingServiceImpl) -> Result<(), CommonError> {
         ],
         ttl: Some(QUEUE_TTL_DEFAULT),
         durable: true,
-        autodelete: false,
+        autodelete: true,
     })?;
 
 
@@ -51,7 +51,7 @@ pub fn init_ca_queues(mq: &MessagingServiceImpl) -> Result<(), CommonError> {
         ],
         ttl: Some(QUEUE_TTL_DEFAULT),
         durable: true,
-        autodelete: false,
+        autodelete: true,
     })?;
 
     mq.add_named_queue(ConfigQueue {
@@ -72,7 +72,7 @@ pub fn init_ca_queues(mq: &MessagingServiceImpl) -> Result<(), CommonError> {
         routing_keys: vec![
             ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_AJOUTER_CLE_DOMAINES), exchange: Securite::L1Public },
         ],
-        ttl: Some(QUEUE_TTL_DEFAULT),
+        ttl: Some(900_000), // These are keys to save - give 15 minutes to come back and save
         durable: true,
         autodelete: false,
     })?;
@@ -126,7 +126,7 @@ pub fn init_symmetric_queues(mq: &MessagingServiceImpl) -> Result<(), CommonErro
             ],
             ttl: Some(QUEUE_TTL_DEFAULT),
             durable: true,
-            autodelete: false,
+            autodelete: true,
         })?;
 
     mq.add_named_queue(ConfigQueue {
@@ -137,7 +137,7 @@ pub fn init_symmetric_queues(mq: &MessagingServiceImpl) -> Result<(), CommonErro
         ],
         ttl: Some(QUEUE_TTL_DEFAULT),
         durable: true,
-        autodelete: false,
+        autodelete: true,
     })?;
 
     mq.add_named_queue(ConfigQueue {
@@ -145,7 +145,7 @@ pub fn init_symmetric_queues(mq: &MessagingServiceImpl) -> Result<(), CommonErro
         routing_keys: vec![
         ],
         ttl: Some(QUEUE_TTL_DEFAULT),
-        durable: false,
+        durable: true,
         autodelete: false,
     })?;
 
@@ -154,7 +154,7 @@ pub fn init_symmetric_queues(mq: &MessagingServiceImpl) -> Result<(), CommonErro
         routing_keys: vec![
         ],
         ttl: Some(QUEUE_TTL_DEFAULT),
-        durable: false,
+        durable: true,
         autodelete: false,
     })?;
 
@@ -163,8 +163,8 @@ pub fn init_symmetric_queues(mq: &MessagingServiceImpl) -> Result<(), CommonErro
         routing_keys: vec![
             ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_AJOUTER_CLE_DOMAINES), exchange: Securite::L1Public },
         ],
-        ttl: Some(QUEUE_TTL_DEFAULT),
-        durable: false,
+        ttl: Some(900_000),
+        durable: true,
         autodelete: false,
     })?;
 
@@ -174,7 +174,7 @@ pub fn init_symmetric_queues(mq: &MessagingServiceImpl) -> Result<(), CommonErro
             ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, MAITREDESCLES_REQUETE_DECHIFFRAGE_V2), exchange: Securite::L3Protege },
         ],
         ttl: Some(QUEUE_TTL_DEFAULT),
-        durable: false,
+        durable: true,
         autodelete: false,
     })?;
 
@@ -184,7 +184,7 @@ pub fn init_symmetric_queues(mq: &MessagingServiceImpl) -> Result<(), CommonErro
             ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, MAITREDESCLES_REQUETE_DECHIFFRAGE_MESSAGE), exchange: Securite::L3Protege },
         ],
         ttl: Some(QUEUE_TTL_DEFAULT),
-        durable: false,
+        durable: true,
         autodelete: false,
     })?;
 

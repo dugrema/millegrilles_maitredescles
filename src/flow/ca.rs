@@ -60,7 +60,7 @@ impl MaitreDesClesCAServiceImpl {
 
     async fn process_ticker_thread(&self, incoming: Arc<MessageInboundValidator>) {
         let streamer = incoming.consume_named_queue(
-            format!("{}/ca_job_ticker", DOMAINE_NOM).as_str()
+            format!("{}/ca/job_ticker", DOMAINE_NOM).as_str()
         ).expect("Consumer streaming init failed");
         tokio::pin!(streamer);
         while let Some(result) = streamer.next().await {
@@ -81,7 +81,7 @@ impl MaitreDesClesCAServiceImpl {
 
     async fn process_backup_thread(&self, incoming: Arc<MessageInboundValidator>) {
         let streamer = incoming.consume_named_queue(
-            format!("{}/backup", DOMAINE_NOM).as_str()
+            format!("{}/ca/backup", DOMAINE_NOM).as_str()
         ).expect("Consumer streaming init failed");
         tokio::pin!(streamer);
         while let Some(result) = streamer.next().await {

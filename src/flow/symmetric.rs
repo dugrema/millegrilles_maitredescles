@@ -53,7 +53,7 @@ impl MaitreDesClesSymmetricServiceImpl {
 
     async fn process_ticker_thread(&self, incoming: Arc<MessageInboundValidator>) {
         let streamer = incoming.consume_named_queue(
-            format!("{}/symmetric_job_ticker", DOMAINE_NOM).as_str()
+            format!("{}/symmetric/job_ticker", DOMAINE_NOM).as_str()
         ).expect("Consumer streaming init failed");
         tokio::pin!(streamer);
         while let Some(result) = streamer.next().await {
