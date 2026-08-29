@@ -1,6 +1,6 @@
 use crate::constants::*;
 use crate::external::mongo::{create_index_mongodb_custom, create_index_mongodb_partition, get_symmetric_keys};
-use crate::external::mq::{emit_certificate, init_symmetric_queues, QUEUE_SYMMETRIC_GETKEYS};
+use crate::external::mq::{emit_certificate, init_symmetric_queues, QUEUE_SYMMETRIC_GETKEYS, QUEUE_SYMMETRIC_CERTIFICATES};
 use crate::flow::maintenance::validate_ticker;
 use crate::maitredescles_commun::{ErreurPermissionRechiffrage, ErrorPermissionRefusee};
 use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
@@ -9,7 +9,7 @@ use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::certificats::VerificateurPermissions;
 use millegrilles_common_rust::chrono::Timelike;
 use millegrilles_common_rust::common_messages::{ReponseRequeteDechiffrageV2, RequeteDechiffrage, ResponseRequestDechiffrageV2Cle};
-use millegrilles_common_rust::constantes::{Securite, COMMANDE_CERT_MAITREDESCLES, DELEGATION_GLOBALE_PROPRIETAIRE};
+use millegrilles_common_rust::constantes::{Securite, COMMANDE_CERT_MAITREDESCLES, DELEGATION_GLOBALE_PROPRIETAIRE, REQUETE_CERT_MAITREDESCLES};
 use millegrilles_common_rust::error::Error as CommonError;
 use millegrilles_common_rust::futures::StreamExt;
 use millegrilles_common_rust::messages_generiques::MessageCedule;
@@ -26,6 +26,7 @@ use millegrilles_common_rust::v3::impls::rabbitmq_consumer::DeliveryInfo;
 use millegrilles_common_rust::v3::{ConfigService, PkiService};
 use std::sync::Arc;
 use millegrilles_common_rust::generateur_messages::RoutageMessageAction;
+use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageKind;
 
 #[async_trait]
 pub trait MaitreDesClesSymmetricService {}
@@ -127,19 +128,15 @@ impl MaitreDesClesSymmetricServiceImpl {
 
     async fn process_certificate_thread(&self, incoming: Arc<MessageInboundValidator>) {
         let streamer = incoming.consume_named_queue(
-            format!("{}/{}", DOMAINE_NOM, QUEUE_SYMMETRIC_GETKEYS).as_str()
+            format!("{}/{}", DOMAINE_NOM, QUEUE_SYMMETRIC_CERTIFICATES).as_str()
         ).expect("Consumer streaming init failed");
         tokio::pin!(streamer);
         while let Some(result) = streamer.next().await {
             match result {
                 Ok(message) => {
-                    // This is about getting a KeyMaster certificate (any will do).
-                    // We can just reply. The current certificate will be attached, it fits the job.
-                    if let Err(e) = self.outbound.respond(
-                        message.delivery_info,
-                        ErrorMessage { ok: true, code: None, err: None }).await
+                    if let Err(e) = process_certificate_message(self.outbound.as_ref(), message).await
                     {
-                        error!("Error processing certificate response: {}", e);
+                        error!("Error processing certificate message: {}", e);
                     }
                 }
                 Err(e) => {
@@ -339,5 +336,51 @@ async fn check_key_decryption_request(
 pub async fn symmetric_init_tasks(outbound: &MessageOutboundFacade, decryption: &HandlerCleRechiffrage) {
     if let Err(e) = emit_certificate(&outbound, &decryption).await {
         error!("Error on initial emission of certificate : {:?}", e);
+    }
+}
+async fn process_certificate_message(outbound: &MessageOutboundFacade, message: MessageValidated) -> Result<(), CommonError> {
+    let routage = match message.message.routage {
+        Some(routage) => routage,
+        None => return Err(CommonError::Str("Routing information absent from message"))
+    };
+    let action = match routage.action.as_ref() {
+        Some(action) => action.as_str(),
+        None => return Err(CommonError::Str("Routing action absent from message"))
+    };
+
+    match message.message.kind {
+        MessageKind::Evenement => {
+            match action {
+                REQUETE_CERT_MAITREDESCLES => {
+                    let certificate = message.certificate;
+                    if certificate.verifier_exchanges(
+                        vec![Securite::L4Secure])? &&
+                        certificate.verifier_domaines(vec![DOMAINE_NOM.to_string()])?
+                    {
+                        // A valide KeyMaster certificate that is published. Ignore it for now.
+                        debug!("Reception of KeyMaster certificate");
+                    } else {
+                        debug!("Reception of invalid KeyMaster certificate (bad role or security)");
+                    }
+                    Ok(())
+                },
+                _ => Err(CommonError::String(format!("Unsupported event action: {}", action)))
+            }
+        },
+        MessageKind::Requete => {
+            match action {
+                REQUETE_CERT_MAITREDESCLES => {
+                    // This is about getting a KeyMaster certificate (any will do).
+                    // We can just reply. The current certificate will be attached, it fits the job.
+                    debug!("Replying with KeyMaster certificate");
+                    outbound.respond(
+                        message.delivery_info,
+                        ErrorMessage { ok: true, code: None, err: None }
+                    ).await
+                },
+                _ => Err(CommonError::String(format!("Unsupported request action: {}", action)))
+            }
+        },
+        _ => Err(CommonError::Str("Unsupported message type"))
     }
 }

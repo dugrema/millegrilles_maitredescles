@@ -47,7 +47,7 @@ impl AppContext {
         let config = Arc::new(init_config().await?);
         // let redis = Arc::new(init_redis(config.as_ref()).await?);
         let security = Arc::new(init_security(config.as_ref()).await?);
-        let messaging = Arc::new(MessagingServiceImpl::new(config.clone()));
+        let messaging = Arc::new(MessagingServiceImpl::new(config.clone(), security.clone()));
         let format = Arc::new(FormatServiceImpl::new(config.clone()));
         let decryption = Arc::new(HandlerCleRechiffrage::with_certificat(
             config.get_configuration_pki().get_enveloppe_privee()

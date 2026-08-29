@@ -10,6 +10,7 @@ use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
 use crate::models::ErrorMessage;
 
 pub const QUEUE_SYMMETRIC_GETKEYS: &str = "symmetric/get_keys";
+pub const QUEUE_SYMMETRIC_CERTIFICATES: &str = "symmetric/certificates";
 
 pub fn init_ca_queues(mq: &MessagingServiceImpl) -> Result<(), CommonError> {
 
@@ -137,7 +138,7 @@ pub fn init_symmetric_queues(mq: &MessagingServiceImpl) -> Result<(), CommonErro
         })?;
 
     mq.add_named_queue(ConfigQueue {
-        nom_queue: format!("{}/symmetric/certificates", DOMAINE_NOM),
+        nom_queue: format!("{}/{}", DOMAINE_NOM, QUEUE_SYMMETRIC_CERTIFICATES),
         routing_keys: vec![
             ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_CERT_MAITREDESCLES), exchange: Securite::L1Public },
             ConfigRoutingExchange { routing_key: format!("evenement.{}.{}", DOMAINE_NOM, REQUETE_CERT_MAITREDESCLES), exchange: Securite::L1Public },
