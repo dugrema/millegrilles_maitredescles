@@ -19,9 +19,9 @@ RUN mkdir src && \
     cargo build --release && \
     rm -rf src
 
-# Copy source code and build the actual application
+# Copy source code and build the actual application. Cargo tree lists dependency versions.
 COPY . .
-RUN touch src/main.rs && cargo build --release
+RUN touch src/main.rs && cargo tree && cargo build --release
 
 # Runtime stage
 FROM debian:trixie-slim
