@@ -1,8 +1,13 @@
 use crate::constants::*;
-use millegrilles_common_rust::constantes::{Securite, COMMANDE_TRANSFERT_CLE_CA, COMMANDE_TRANSFERT_CLE, COMMANDE_AJOUTER_CLE_DOMAINES, MAITREDESCLES_REQUETE_DECHIFFRAGE_V2, MAITREDESCLES_REQUETE_DECHIFFRAGE_MESSAGE};
+use millegrilles_common_rust::constantes::{Securite, COMMANDE_TRANSFERT_CLE_CA, COMMANDE_TRANSFERT_CLE, COMMANDE_AJOUTER_CLE_DOMAINES, MAITREDESCLES_REQUETE_DECHIFFRAGE_V2, MAITREDESCLES_REQUETE_DECHIFFRAGE_MESSAGE, REQUETE_CERT_MAITREDESCLES, COMMANDE_CERT_MAITREDESCLES};
 use millegrilles_common_rust::error::Error as CommonError;
+use millegrilles_common_rust::generateur_messages::RoutageMessageAction;
 use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange};
+use millegrilles_common_rust::tracing::debug;
+use millegrilles_common_rust::v3::facades::message_outbound::MessageOutboundFacade;
 use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl;
+use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
+use crate::models::ErrorMessage;
 
 pub const QUEUE_SYMMETRIC_GETKEYS: &str = "symmetric/get_keys";
 
@@ -134,8 +139,8 @@ pub fn init_symmetric_queues(mq: &MessagingServiceImpl) -> Result<(), CommonErro
     mq.add_named_queue(ConfigQueue {
         nom_queue: format!("{}/symmetric/certificates", DOMAINE_NOM),
         routing_keys: vec![
-            ConfigRoutingExchange { routing_key: format!("requete.{}.certMaitreDesCles", DOMAINE_NOM), exchange: Securite::L3Protege },
-            ConfigRoutingExchange { routing_key: format!("evenement.{}.certMaitreDesCles", DOMAINE_NOM), exchange: Securite::L3Protege },
+            ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_CERT_MAITREDESCLES), exchange: Securite::L1Public },
+            ConfigRoutingExchange { routing_key: format!("evenement.{}.{}", DOMAINE_NOM, REQUETE_CERT_MAITREDESCLES), exchange: Securite::L1Public },
         ],
         ttl: Some(QUEUE_TTL_DEFAULT),
         durable: true,
@@ -315,4 +320,18 @@ pub fn init_symmetric_queues(mq: &MessagingServiceImpl) -> Result<(), CommonErro
     //     Ok(queues)
 
     Ok(())
+}
+
+pub async fn emit_certificate(outbound: &MessageOutboundFacade, decryption: &HandlerCleRechiffrage) -> Result<(), CommonError> {
+    if ! decryption.is_ready() {
+        debug!("Not emitting certificate - not ready to encrypt/decrypt");
+        return Ok(())
+    }
+
+    let routing = RoutageMessageAction::builder(
+        DOMAINE_NOM, REQUETE_CERT_MAITREDESCLES, vec![Securite::L1Public]
+    )
+        // .correlation_id(COMMANDE_CERT_MAITREDESCLES)
+        .build();
+    outbound.emit_event(routing, ErrorMessage { ok: true, code: None, err: None}).await
 }

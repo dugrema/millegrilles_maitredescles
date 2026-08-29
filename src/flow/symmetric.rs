@@ -1,6 +1,6 @@
 use crate::constants::*;
 use crate::external::mongo::{create_index_mongodb_custom, create_index_mongodb_partition, get_symmetric_keys};
-use crate::external::mq::{QUEUE_SYMMETRIC_GETKEYS, init_symmetric_queues};
+use crate::external::mq::{emit_certificate, init_symmetric_queues, QUEUE_SYMMETRIC_GETKEYS};
 use crate::flow::maintenance::validate_ticker;
 use crate::maitredescles_commun::{ErreurPermissionRechiffrage, ErrorPermissionRefusee};
 use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
@@ -67,6 +67,9 @@ impl MaitreDesClesSymmetricServiceImpl {
         let self_clone = self.clone();
         let incoming_clone = incoming.clone();
         join_set.spawn(async move {self_clone.process_getkeys_thread(incoming_clone).await});
+        let self_clone = self.clone();
+        let incoming_clone = incoming.clone();
+        join_set.spawn(async move {self_clone.process_certificate_thread(incoming_clone).await});
 
         // todo!()
         Ok(())
@@ -122,10 +125,33 @@ impl MaitreDesClesSymmetricServiceImpl {
         }
     }
 
+    async fn process_certificate_thread(&self, incoming: Arc<MessageInboundValidator>) {
+        let streamer = incoming.consume_named_queue(
+            format!("{}/{}", DOMAINE_NOM, QUEUE_SYMMETRIC_GETKEYS).as_str()
+        ).expect("Consumer streaming init failed");
+        tokio::pin!(streamer);
+        while let Some(result) = streamer.next().await {
+            match result {
+                Ok(message) => {
+                    // This is about getting a KeyMaster certificate (any will do).
+                    // We can just reply. The current certificate will be attached, it fits the job.
+                    if let Err(e) = self.outbound.respond(
+                        message.delivery_info,
+                        ErrorMessage { ok: true, code: None, err: None }).await
+                    {
+                        error!("Error processing certificate response: {}", e);
+                    }
+                }
+                Err(e) => {
+                    warn!("process_getkeys_thread Error processing  message: {}", e);
+                }
+            }
+        }
+    }
+
 }
 
-impl MaitreDesClesSymmetricService for MaitreDesClesSymmetricServiceImpl {
-}
+impl MaitreDesClesSymmetricService for MaitreDesClesSymmetricServiceImpl {}
 
 async fn ticker_job_symmetric<M>(
     outbound: &MessageOutboundFacade,
@@ -307,20 +333,6 @@ async fn check_key_decryption_request(
     }
 
     Ok((certificate, is_admin))
-}
-
-async fn emit_certificate(outbound: &MessageOutboundFacade, decryption: &HandlerCleRechiffrage) -> Result<(), CommonError> {
-    if ! decryption.is_ready() {
-        debug!("Not emitting certificate - not ready to encrypt/decrypt");
-        return Ok(())
-    }
-
-    let routing = RoutageMessageAction::builder(
-        DOMAINE_NOM, COMMANDE_CERT_MAITREDESCLES, vec![Securite::L1Public]
-    )
-        // .correlation_id(COMMANDE_CERT_MAITREDESCLES)
-        .build();
-    outbound.emit_event(routing, ErrorMessage { ok: true, code: None, err: None}).await
 }
 
 /// Tasks to run once on initialisation
