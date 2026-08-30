@@ -19,6 +19,7 @@ use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl
 use std::sync::Arc;
 use millegrilles_common_rust::chiffrage_cle::CommandeAjouterCleDomaine;
 use millegrilles_common_rust::millegrilles_cryptographie::deser_message_buffer;
+use crate::flow::transactions::KeyMasterTransactionService;
 use crate::models::ErrorMessage;
 
 #[async_trait]
@@ -27,13 +28,20 @@ pub trait MaitreDesClesCAService {}
 pub struct MaitreDesClesCAServiceImpl {
     config: Arc<dyn ConfigService>,
     outbound: Arc<MessageOutboundFacade>,
+    transaction: Arc<KeyMasterTransactionService>,
     mongo: Arc<MongoDaoImpl>,
     format: Arc<dyn FormatService>,
 }
 
 impl MaitreDesClesCAServiceImpl {
-    pub fn new(config: Arc<dyn ConfigService>, outgoing: Arc<MessageOutboundFacade>, mongo: Arc<MongoDaoImpl>, format: Arc<dyn FormatService>) -> Self {
-        Self { config: config, outbound: outgoing, mongo, format, }
+    pub fn new(
+        config: Arc<dyn ConfigService>,
+        outbound: Arc<MessageOutboundFacade>,
+        transaction: Arc<KeyMasterTransactionService>,
+        mongo: Arc<MongoDaoImpl>,
+        format: Arc<dyn FormatService>
+    ) -> Self {
+        Self { config, outbound, transaction, mongo, format, }
     }
 
     pub async fn configure(&self, mq: &MessagingServiceImpl, config: &ConfigServiceDbImpl) -> Result<(), CommonError> {
@@ -115,6 +123,7 @@ impl MaitreDesClesCAServiceImpl {
                     let delivery_info = message.delivery_info.clone();  // Clone for error response
                     if let Err(e) = process_newkeys(
                         self.outbound.as_ref(),
+                        self.transaction.as_ref(),
                         self.mongo.as_ref(),
                         self.format.as_ref(),
                         self.config.as_ref(),
@@ -180,12 +189,13 @@ async fn ticker_job_ca<M>(mongo: &M, trigger: MessageValidated) -> Result<(), Co
 
 async fn process_newkeys<M>(
     outbound: &MessageOutboundFacade,
+    transaction: &KeyMasterTransactionService,
     mongo: &M,
     formatter: &dyn FormatService,
     config: &dyn ConfigService,
     wrapper: MessageValidated
 ) -> Result<(), CommonError> where M: MongoDaoTyped {
     let delivery_info = wrapper.delivery_info.clone();
-    save_new_ca_key(mongo, formatter, config, wrapper).await?;
+    save_new_ca_key(transaction, mongo, formatter, config, wrapper).await?;
     outbound.respond(delivery_info, ErrorMessage::ok()).await
 }

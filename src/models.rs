@@ -83,21 +83,3 @@ pub struct KeyDecryptionRefused {
     pub err: Option<String>,
     pub acces: Option<String>,
 }
-
-#[derive(Clone)]
-pub struct TransactionWrapper {
-    pub message: MessageMilleGrillesOwned,
-    pub certificate: Arc<EnveloppeCertificat>,
-    /// Decrypted content when applicable
-    pub content: Option<Value>,
-}
-
-impl From<MessageValidated> for TransactionWrapper {
-    fn from(value: MessageValidated) -> Self {
-        Self {
-            message: value.message,
-            certificate: value.certificate,
-            content: value.content,
-        }
-    }
-}

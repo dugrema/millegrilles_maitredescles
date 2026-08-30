@@ -74,7 +74,8 @@ pub const REQUETE_CLES_NON_DECHIFFRABLES_V2: &str = "clesNonDechiffrablesV2";
 pub const REQUETE_COMPTER_CLES_NON_DECHIFFRABLES: &str = "compterClesNonDechiffrables";
 pub const COMMANDE_RESET_NON_DECHIFFRABLE: &str = "resetNonDechiffrable";
 
-pub const NOM_COLLECTION_TRANSACTIONS_CA: &str = "MaitreDesCles/CA";
+pub const NOM_COLLECTION_TRANSACTIONS_CA: &str = "MaitreDesCles/CA/redolog";
+pub const NOM_COLLECTION_TRACKING_CA: &str = "MaitreDesCles/CA/tracking";
 pub const NOM_COLLECTION_CA_CLES: &str = "MaitreDesCles/CA/cles";
 pub const NOM_COLLECTION_CA_TEMP_KEYSYNC: &str = "MaitreDesCles/CA/temp_keysync";
 pub const NOM_COLLECTION_CA_TEMP_KEYSYNC_DONE: &str = "MaitreDesCles/CA/temp_keysync_done";

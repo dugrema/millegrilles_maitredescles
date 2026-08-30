@@ -1,5 +1,8 @@
+use crate::external::mongo::load_symmetric_key;
 use crate::flow::ca::{MaitreDesClesCAService, MaitreDesClesCAServiceImpl};
 use crate::flow::symmetric::{MaitreDesClesSymmetricService, MaitreDesClesSymmetricServiceImpl};
+use crate::flow::transactions::KeyMasterTransactionService;
+use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
 use millegrilles_common_rust::certificats::build_store_path_v2;
 use millegrilles_common_rust::chiffrage_cle::CleChiffrageHandlerImpl;
 use millegrilles_common_rust::configuration::{ConfigDb, ConfigMessages, charger_configuration, charger_configuration_mongo};
@@ -7,7 +10,7 @@ use millegrilles_common_rust::error::Error as CommonError;
 use millegrilles_common_rust::mongo_dao::{MongoDaoImpl, initialiser};
 use millegrilles_common_rust::tokio::task::JoinSet;
 use millegrilles_common_rust::tokio_util::sync::CancellationToken;
-use millegrilles_common_rust::tracing::{debug, error, info, warn};
+use millegrilles_common_rust::tracing::{debug, info, warn};
 use millegrilles_common_rust::v3::facades::message_inbound::MessageInboundValidator;
 use millegrilles_common_rust::v3::facades::message_outbound::MessageOutboundFacade;
 use millegrilles_common_rust::v3::impls::config_service::ConfigServiceDbImpl;
@@ -16,8 +19,6 @@ use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl
 use millegrilles_common_rust::v3::impls::security_service::SecurityServiceImpl;
 use millegrilles_common_rust::v3::{ConfigService, FormatService, MessagingService, PkiService};
 use std::sync::Arc;
-use crate::external::mongo::load_symmetric_key;
-use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
 
 /// Composition object with services from common library
 pub struct AppContext {
@@ -34,6 +35,7 @@ pub struct AppContext {
     pub ca_service: Arc<dyn MaitreDesClesCAService>,
     pub symmetric_service: Arc<dyn MaitreDesClesSymmetricService>,
     pub decryption: Arc<HandlerCleRechiffrage>,
+    pub transaction: Arc<KeyMasterTransactionService>,
     pub shutdown_token: CancellationToken,
 }
 
@@ -64,9 +66,11 @@ impl AppContext {
             MessageInboundValidator::new(config.clone(), messaging.clone(), security.clone(), shutdown_token.clone())
         );
 
+        let transaction = Arc::new(KeyMasterTransactionService::new(mongo.clone()));
+
         // Flow services (business logic)
         let ca_service = Arc::new(
-            MaitreDesClesCAServiceImpl::new(config.clone(), outbound.clone(), mongo.clone(), format.clone())
+            MaitreDesClesCAServiceImpl::new(config.clone(), outbound.clone(), transaction.clone(), mongo.clone(), format.clone())
         );
         let symmetric_service = Arc::new(
             MaitreDesClesSymmetricServiceImpl::new(config.clone(), outbound.clone(), security.clone(), mongo.clone(), decryption.clone())
@@ -111,6 +115,7 @@ impl AppContext {
             ca_service,
             symmetric_service,
             decryption,
+            transaction,
             shutdown_token,
         })
     }
