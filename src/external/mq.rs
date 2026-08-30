@@ -9,6 +9,10 @@ use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl
 use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
 use crate::models::ErrorMessage;
 
+pub const QUEUE_CA_NEWKEYS: &str = "ca/newkeys";
+pub const QUEUE_CA_BACKUP: &str = "ca/backup";
+pub const QUEUE_CA_TICKER: &str = "ca/job_ticker";
+pub const QUEUE_SYMMETRIC_NEWKEYS: &str = "symmetric/newkeys";
 pub const QUEUE_SYMMETRIC_GETKEYS: &str = "symmetric/get_keys";
 pub const QUEUE_SYMMETRIC_CERTIFICATES: &str = "symmetric/certificates";
 
@@ -17,7 +21,7 @@ pub fn init_ca_queues(mq: &MessagingServiceImpl) -> Result<(), CommonError> {
     // Configure the queues and add to messaging service (will spawn consumer threads)
     mq.add_named_queue(
         ConfigQueue {
-            nom_queue: format!("{}/ca/job_ticker", DOMAINE_NOM),
+            nom_queue: format!("{}/{}", DOMAINE_NOM, QUEUE_CA_TICKER),
             routing_keys: vec![
                 ConfigRoutingExchange { routing_key: "evenement.ceduleur.ping".to_string(), exchange: Securite::L1Public }
             ],
@@ -27,7 +31,7 @@ pub fn init_ca_queues(mq: &MessagingServiceImpl) -> Result<(), CommonError> {
         })?;
 
     mq.add_named_queue(ConfigQueue {
-        nom_queue: format!("{}/ca/backup", DOMAINE_NOM),
+        nom_queue: format!("{}/{}", DOMAINE_NOM, QUEUE_CA_BACKUP),
         routing_keys: vec![
             ConfigRoutingExchange { routing_key: format!("requete.{}.getNombreTransactions", DOMAINE_NOM), exchange: Securite::L2Prive },
             ConfigRoutingExchange { routing_key: format!("commande.{}.declencherBackup", DOMAINE_NOM), exchange: Securite::L3Protege },
@@ -76,7 +80,7 @@ pub fn init_ca_queues(mq: &MessagingServiceImpl) -> Result<(), CommonError> {
     })?;
 
     mq.add_named_queue(ConfigQueue {
-        nom_queue: format!("{}/ca/new_keys", DOMAINE_NOM),
+        nom_queue: format!("{}/{}", DOMAINE_NOM, QUEUE_CA_NEWKEYS),
         routing_keys: vec![
             ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_AJOUTER_CLE_DOMAINES), exchange: Securite::L1Public },
         ],
@@ -167,7 +171,7 @@ pub fn init_symmetric_queues(mq: &MessagingServiceImpl) -> Result<(), CommonErro
     })?;
 
     mq.add_named_queue(ConfigQueue {
-        nom_queue: format!("{}/symmetric/new_keys", DOMAINE_NOM),
+        nom_queue: format!("{}/{}", DOMAINE_NOM, QUEUE_SYMMETRIC_NEWKEYS),
         routing_keys: vec![
             ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_AJOUTER_CLE_DOMAINES), exchange: Securite::L1Public },
         ],

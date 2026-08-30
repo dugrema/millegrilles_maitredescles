@@ -1,10 +1,14 @@
+use std::sync::Arc;
 use crate::maitredescles_commun::{RowCleCaRef, RowClePartitionRef};
 use millegrilles_common_rust::chrono::Utc;
 use millegrilles_common_rust::error::Error;
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::{optionformatchiffragestr, FormatChiffrage};
 use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::SignatureDomaines;
-use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::optionepochseconds;
+use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::{optionepochseconds, MessageMilleGrillesOwned};
 use millegrilles_common_rust::{chrono};
+use millegrilles_common_rust::millegrilles_cryptographie::x509::EnveloppeCertificat;
+use millegrilles_common_rust::serde_json::Value;
+use millegrilles_common_rust::v3::facades::message_inbound::MessageValidated;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -68,10 +72,32 @@ pub struct ErrorMessage {
     pub err: Option<String>,
 }
 
+impl ErrorMessage {
+    pub fn ok() -> Self { Self { ok: true, code: None, err: None } }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct KeyDecryptionRefused {
     pub ok: bool,
     pub code: Option<usize>,
     pub err: Option<String>,
     pub acces: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct TransactionWrapper {
+    pub message: MessageMilleGrillesOwned,
+    pub certificate: Arc<EnveloppeCertificat>,
+    /// Decrypted content when applicable
+    pub content: Option<Value>,
+}
+
+impl From<MessageValidated> for TransactionWrapper {
+    fn from(value: MessageValidated) -> Self {
+        Self {
+            message: value.message,
+            certificate: value.certificate,
+            content: value.content,
+        }
+    }
 }

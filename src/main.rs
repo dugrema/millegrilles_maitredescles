@@ -16,7 +16,7 @@ pub mod external;
 pub mod flow;
 
 use crate::state::AppContext;
-use millegrilles_common_rust::tokio as tokio;
+use millegrilles_common_rust::{rustls, tokio as tokio};
 use millegrilles_common_rust::tracing::{info, warn};
 use millegrilles_common_rust::{tracing_subscriber, tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt}};
 use millegrilles_common_rust::v3::facades::message_outbound::MessageOutboundFacade;
@@ -25,7 +25,7 @@ use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {
-    init_logging();
+    init_resources();
     info!("Starting MaitreDesCles");
 
     // Start the application by creating the context. This starts all threads and connections.
@@ -62,12 +62,15 @@ async fn main() {
 }
 
 
-fn init_logging() {
+fn init_resources() {
     let rust_log_var = std::env::var("RUST_LOG").unwrap_or("error,millegrilles_maitredescles=warn,millegrilles_common_rust=warn".to_string());
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new(rust_log_var))
         .with(tracing_subscriber::fmt::layer())
         .init();
+
+    rustls::crypto::ring::default_provider().install_default()
+        .expect("Failed to install rustls crypto provider");
 }
 
 /// This runs once on startup after all the wiring is done and threads are started

@@ -1,19 +1,31 @@
 use crate::constants::*;
 use millegrilles_common_rust::bson::doc;
+use millegrilles_common_rust::certificats::ValidateurX509;
+use millegrilles_common_rust::chiffrage_cle::CommandeAjouterCleDomaine;
 use millegrilles_common_rust::chrono::{Duration, Utc};
 use millegrilles_common_rust::common_messages::ResponseRequestDechiffrageV2Cle;
 use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::constantes::{CHAMP_CREATION, CHAMP_MODIFICATION};
-use millegrilles_common_rust::error::Error as CommonError;
+use millegrilles_common_rust::domaines_traits::{AiguillageTransactions, GestionnaireDomaineV2};
+use millegrilles_common_rust::error::{Error as CommonError, Error};
+use millegrilles_common_rust::generateur_messages::GenerateurMessages;
 use millegrilles_common_rust::jwt_simple::prelude::Deserialize;
+use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction_serializable_v2;
 use millegrilles_common_rust::millegrilles_cryptographie::heapless;
+use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::SignatureDomaines;
 use millegrilles_common_rust::millegrilles_cryptographie::x509::EnveloppePrivee;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, start_transaction_regular, ChampIndex, IndexOptions, MongoDao, MongoDaoTyped};
-use millegrilles_common_rust::mongodb::options::{AggregateOptions, Hint};
+use millegrilles_common_rust::mongodb;
+use millegrilles_common_rust::mongodb::ClientSession;
+use millegrilles_common_rust::mongodb::options::{AggregateOptions, FindOneOptions, Hint};
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::tracing::{debug, info, warn};
-use crate::maitredescles_commun::{emettre_demande_cle_symmetrique, DocumentCleRechiffrage, RowClePartition};
+use millegrilles_common_rust::v3::facades::message_inbound::MessageValidated;
+use crate::flow::transactions::process_ca_transaction;
+use crate::maitredescles_commun::{emettre_demande_cle_symmetrique, DocumentCleRechiffrage, RowClePartition, TransactionCleV2};
 use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
+
+// DB / Index creation
 
 pub async fn create_index_mongodb_custom(db: &dyn MongoDao, config: &dyn ConfigMessages, key_collection_name: &str) -> Result<(), CommonError> {
     // Index cle_id
@@ -93,6 +105,8 @@ struct MissingKeyRow {
     cle_id: String,
 }
 
+// CA key handling
+
 /// Processes the temp_keysync_done table filled by the active keymasters.
 pub async fn process_ca_key_sync<M>(mongo: &M) -> Result<(), CommonError>
     where M: MongoDaoTyped
@@ -116,14 +130,17 @@ pub async fn process_ca_key_sync<M>(mongo: &M) -> Result<(), CommonError>
         doc!{"$out": {"db": db_name, "coll": NOM_COLLECTION_CA_MISSING}},
     ];
     // Go through all keys using the index - makes the keys sorted for de-duplication
-    let options = AggregateOptions::builder().hint(Hint::Name(String::from(INDEX_CLE_ID))).build();
-    collection.aggregate(pipeline, options).await?;
+    // let options = AggregateOptions::builder().hint(Hint::Name(String::from(INDEX_CLE_ID))).build();
+    collection
+        .aggregate(pipeline)
+        .hint(Hint::Name(String::from(INDEX_CLE_ID)))
+        .await?;
     // Drop the sync collection - output saved in the CA MISSING table.
-    collection.drop(None).await?;
+    collection.drop().await?;
 
     // Request all missing keys
     let collection_ca_missing = mongo.get_collection_typed::<MissingKeyRow>(NOM_COLLECTION_CA_MISSING)?;
-    let mut cursor = collection_ca_missing.find(None, None).await?;
+    let mut cursor = collection_ca_missing.find(doc!{}).await?;
     const BATCH_SIZE: usize = 50;
     let mut batch = Vec::with_capacity(BATCH_SIZE);
     let mut total_keys_missing = 0;
@@ -157,7 +174,7 @@ pub async fn process_ca_key_sync<M>(mongo: &M) -> Result<(), CommonError>
 
     if total_keys_missing == keys_received {
         // All missing keys received, cleanup temp collection
-        collection_ca_missing.drop(None).await?;
+        collection_ca_missing.drop().await?;
     }
 
     info!("process_ca_key_sync Done, requested {} missing keys, received {} keys", total_keys_missing, keys_received);
@@ -174,7 +191,11 @@ pub async fn marquer_cles_ca_timeout(mongo: &dyn MongoDao) -> Result<(), CommonE
     let collection = mongo.get_collection(NOM_COLLECTION_CA_CLES)?;
     let mut session = mongo.get_session().await?;
     start_transaction_regular(&mut session).await?;
-    match collection.update_many_with_session(filtre, ops, None, &mut session).await {
+    match collection
+        .update_many(filtre, ops)
+        .session(&mut session)
+        .await
+    {
         Ok(_) => {
             session.commit_transaction().await?;
             Ok(())
@@ -185,6 +206,40 @@ pub async fn marquer_cles_ca_timeout(mongo: &dyn MongoDao) -> Result<(), CommonE
         }
     }
 }
+
+pub async fn save_new_ca_key(
+    mongo: &dyn MongoDao,
+    wrapper: MessageValidated,
+) ->Result<(), Error> {
+
+    // Parse to validate and check for duplicates
+    let command: CommandeAjouterCleDomaine = wrapper.message.deserialize()?;
+    let signature = command.signature;
+
+    // Check if the key already exists.
+    let key_id = signature.get_cle_ref()?.to_string();
+
+    let filtre = doc! { CHAMP_CLE_ID: &key_id };
+    // let options = FindOneOptions::builder()
+    //     .hint(Hint::Name("index_cle_id".to_string()))
+    //     .projection(doc!{CHAMP_CLE_ID: 1})
+    //     .build();
+    let collection = mongo.get_collection(NOM_COLLECTION_CA_CLES)?;
+    let resultat = collection
+        .find_one(filtre)
+        .hint(Hint::Name("index_cle_id".to_string()))
+        .projection(doc!{CHAMP_CLE_ID: 1})
+        .await?;
+
+    if resultat.is_none() {
+        debug!("save_new_ca_key Saving new key with id {}", key_id);
+        process_ca_transaction(mongo, wrapper.into()).await?;
+    }
+
+    Ok(())
+}
+
+// Symmetric key handling
 
 pub async fn get_symmetric_keys<M>(
     mongo: &M,
@@ -199,7 +254,7 @@ pub async fn get_symmetric_keys<M>(
 
     let filtre = doc! {CHAMP_CLE_ID: {"$in": cle_ids}};
     let collection = mongo.get_collection_typed::<RowClePartition>(nom_collection)?;
-    let mut curseur = collection.find(filtre, None).await?;
+    let mut curseur = collection.find(filtre).await?;
     let domain: heapless::String<40> = domain.try_into()
         .map_err(|_| CommonError::Str("Erreur map domain dans heapless::String<40>"))?;
 
@@ -254,7 +309,7 @@ pub async fn load_symmetric_key<M>(
         "fingerprint": private_key.fingerprint()?,
     };
 
-    match collection.find_one(filtre, None).await? {
+    match collection.find_one(filtre).await? {
         Some(cle_locale) => {
             decryption.set_cle_symmetrique(cle_locale.cle)?;
             info!("load_symmetric_key Local symmetric key is loaded ");
@@ -268,4 +323,10 @@ pub async fn load_symmetric_key<M>(
     }
 
     Ok(())
+}
+
+pub async fn process_bulk_transactions(mongo: &dyn MongoDao, session: &mut ClientSession) -> Result<(), CommonError> {
+    //let mut models = Vec::new();
+    //models.push(mongodb::bulk_write:: WriteModel)
+    todo!()
 }

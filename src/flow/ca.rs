@@ -1,6 +1,6 @@
 use crate::constants::*;
-use crate::external::mongo::{create_index_mongodb_custom, marquer_cles_ca_timeout, process_ca_key_sync};
-use crate::external::mq::init_ca_queues;
+use crate::external::mongo::{create_index_mongodb_custom, marquer_cles_ca_timeout, process_ca_key_sync, save_new_ca_key};
+use crate::external::mq::{init_ca_queues, QUEUE_CA_BACKUP, QUEUE_CA_NEWKEYS, QUEUE_CA_TICKER};
 use crate::flow::maintenance::validate_ticker;
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::chrono::Timelike;
@@ -17,19 +17,22 @@ use millegrilles_common_rust::v3::facades::message_outbound::MessageOutboundFaca
 use millegrilles_common_rust::v3::impls::config_service::ConfigServiceDbImpl;
 use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl;
 use std::sync::Arc;
+use millegrilles_common_rust::chiffrage_cle::CommandeAjouterCleDomaine;
+use millegrilles_common_rust::millegrilles_cryptographie::deser_message_buffer;
+use crate::models::ErrorMessage;
 
 #[async_trait]
 pub trait MaitreDesClesCAService {}
 
 pub struct MaitreDesClesCAServiceImpl {
     _config: Arc<dyn ConfigService>,
-    _outgoing: Arc<MessageOutboundFacade>,
+    outbound: Arc<MessageOutboundFacade>,
     mongo: Arc<MongoDaoImpl>,
 }
 
 impl MaitreDesClesCAServiceImpl {
     pub fn new(config: Arc<dyn ConfigService>, outgoing: Arc<MessageOutboundFacade>, mongo: Arc<MongoDaoImpl>) -> Self {
-        Self { _config: config, _outgoing: outgoing, mongo }
+        Self { _config: config, outbound: outgoing, mongo }
     }
 
     pub async fn configure(&self, mq: &MessagingServiceImpl, config: &ConfigServiceDbImpl) -> Result<(), CommonError> {
@@ -53,7 +56,10 @@ impl MaitreDesClesCAServiceImpl {
         let incoming_clone = incoming.clone();
         join_set.spawn(async move {self_clone.process_backup_thread(incoming_clone).await});
 
-        // CA queue
+        // Key processing for CA
+        let self_clone = self.clone();
+        let incoming_clone = incoming.clone();
+        join_set.spawn(async move {self_clone.process_newkeys_thread(incoming_clone).await});
 
         //todo!()
         Ok(())
@@ -61,14 +67,13 @@ impl MaitreDesClesCAServiceImpl {
 
     async fn process_ticker_thread(&self, incoming: Arc<MessageInboundValidator>) {
         let streamer = incoming.consume_named_queue(
-            format!("{}/ca/job_ticker", DOMAINE_NOM).as_str()
+            format!("{}/{}", DOMAINE_NOM, QUEUE_CA_TICKER).as_str(),
         ).expect("Consumer streaming init failed");
         tokio::pin!(streamer);
         while let Some(result) = streamer.next().await {
             match result {
                 Ok(message) => {
-                    let mongo = self.mongo.as_ref();
-                    if let Err(e) = ticker_job_ca(mongo, message).await {
+                    if let Err(e) = ticker_job_ca(self.mongo.as_ref(), message).await {
                         error!("Ticker job ca failed: {}", e);
                     }
                 }
@@ -82,13 +87,43 @@ impl MaitreDesClesCAServiceImpl {
 
     async fn process_backup_thread(&self, incoming: Arc<MessageInboundValidator>) {
         let streamer = incoming.consume_named_queue(
-            format!("{}/ca/backup", DOMAINE_NOM).as_str()
+            format!("{}/{}", DOMAINE_NOM, QUEUE_CA_BACKUP).as_str()
         ).expect("Consumer streaming init failed");
         tokio::pin!(streamer);
         while let Some(result) = streamer.next().await {
             match result {
                 Ok(message) => {
                     error!("TODO - process backup message");
+                }
+                Err(e) => {
+                    error!("Backup job ca message parsing failed: {}", e);
+                }
+            }
+        }
+        debug!("process_backup_thread Closed");
+    }
+
+    async fn process_newkeys_thread(&self, incoming: Arc<MessageInboundValidator>) {
+        let streamer = incoming.consume_named_queue(
+            format!("{}/{}", DOMAINE_NOM, QUEUE_CA_NEWKEYS).as_str()
+        ).expect("Consumer streaming init failed");
+        tokio::pin!(streamer);
+        while let Some(result) = streamer.next().await {
+            match result {
+                Ok(message) => {
+                    let delivery_info = message.delivery_info.clone();  // Clone for error response
+                    if let Err(e) = process_newkeys(self.outbound.as_ref(), self.mongo.as_ref(), message).await {
+                        error!("process_newkeys_thread Saving key failed: {}", e);
+                        // Attempt to reply with an error message
+                        self.outbound.respond(
+                            delivery_info,
+                            ErrorMessage {
+                                ok: false,
+                                code: Some(1),
+                                err: Some("Error saving key".to_string()),
+                            }
+                        ).await.ok();
+                    }
                 }
                 Err(e) => {
                     error!("Backup job ca message parsing failed: {}", e);
@@ -134,4 +169,12 @@ async fn ticker_job_ca<M>(mongo: &M, trigger: MessageValidated) -> Result<(), Co
     }
 
     Ok(())
+}
+
+async fn process_newkeys<M>(outbound: &MessageOutboundFacade, mongo: &M, wrapper: MessageValidated) -> Result<(), CommonError>
+where M: MongoDaoTyped
+{
+    let delivery_info = wrapper.delivery_info.clone();
+    save_new_ca_key(mongo, wrapper).await?;
+    outbound.respond(delivery_info, ErrorMessage::ok()).await
 }

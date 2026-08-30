@@ -316,8 +316,8 @@ pub struct RowCleCaRef<'a> {
     pub signature: SignatureDomainesRef<'a>,
     //pub dirty: Option<bool>,
     pub non_dechiffrable: Option<bool>,
-    #[serde(rename(deserialize="_mg-creation"),
-        deserialize_with="bson::serde_helpers::chrono_datetime_as_bson_datetime::deserialize")]
+    #[serde(rename(deserialize="_mg-creation"))]
+        // deserialize_with="bson::serde_helpers::chrono_datetime_as_bson_datetime::deserialize")]
     pub date_creation: DateTime<Utc>,
 
     // Information de dechiffrage contenu (utilise avec signature version 0)
@@ -353,8 +353,8 @@ pub struct RowClePartitionRef<'a> {
     pub header: Option<&'a str>,
 
     #[serde(rename(deserialize="_mg-creation"),
-    serialize_with="epochseconds::serialize",
-    deserialize_with="bson::serde_helpers::chrono_datetime_as_bson_datetime::deserialize")]
+    serialize_with="epochseconds::serialize")] //,
+    // deserialize_with="bson::serde_helpers::chrono_datetime_as_bson_datetime::deserialize")]
     #[allow(unused)]
     pub date_creation: DateTime<Utc>,
 }

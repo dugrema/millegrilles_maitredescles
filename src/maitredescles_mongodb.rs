@@ -143,7 +143,7 @@ async fn preparer_rechiffreur_mongo_session<M>(middleware: &M, handler_rechiffra
     // Verifier si les cles de dechiffrage existent deja.
     let collection = middleware.get_collection(NOM_COLLECTION_CONFIGURATION)?;
     let filtre = doc!{"type": "CA", "instance_id": instance_id.as_str()};
-    match collection.find_one_with_session(filtre, None, session).await? {
+    match collection.find_one(filtre).session(&mut *session).await? {
         Some(doc_cle_ca) => {
             info!("preparer_rechiffreur_mongo Cle de rechiffrage CA est presente");
 
@@ -153,7 +153,7 @@ async fn preparer_rechiffreur_mongo_session<M>(middleware: &M, handler_rechiffra
                 "fingerprint": enveloppe_privee.fingerprint()?,
             };
 
-            match collection.find_one_with_session(filtre, None, session).await? {
+            match collection.find_one(filtre).session(&mut *session).await? {
                 Some(doc_cle_locale) => {
                     let cle_locale: DocumentCleRechiffrage = convertir_bson_deserializable(doc_cle_locale)?;
                     handler_rechiffrage.set_cle_symmetrique(cle_locale.cle)?;
@@ -185,7 +185,7 @@ async fn preparer_rechiffreur_mongo_session<M>(middleware: &M, handler_rechiffra
                 "instance_id": instance_id.as_str(),
                 "cle": cle_secrete_chiffree_ca,
             };
-            collection.insert_one_with_session(cle_ca, None, session).await?;
+            collection.insert_one(cle_ca).session(&mut *session).await?;
 
             let cle_locale = doc! {
                 "type": "local",
@@ -193,7 +193,7 @@ async fn preparer_rechiffreur_mongo_session<M>(middleware: &M, handler_rechiffra
                 "fingerprint": enveloppe_privee.fingerprint()?,
                 "cle": cle_secrete_chiffree_local,
             };
-            collection.insert_one_with_session(cle_locale, None, session).await?;
+            collection.insert_one(cle_locale).session(session).await?;
         }
     }
 
@@ -281,14 +281,18 @@ where M: MongoDao
 
     if insert_operation {
         set_on_insert.insert(CHAMP_MODIFICATION, Utc::now());
-        collection.insert_one(set_on_insert, None).await?;
+        collection.insert_one(set_on_insert).await?;
     } else {
         let ops = doc! {
             "$setOnInsert": set_on_insert,
             "$currentDate": {CHAMP_MODIFICATION: true}
         };
-        let opts = UpdateOptions::builder().upsert(true).build();
-        collection.update_one_with_session(filtre, ops, opts, session).await?;
+        // let opts = UpdateOptions::builder().upsert(true).build();
+        collection
+            .update_one(filtre, ops)
+            .upsert(true)
+            .session(session)
+            .await?;
     }
 
     Ok(cle_id)
@@ -323,8 +327,12 @@ where M: MongoDao
         "$setOnInsert": set_on_insert_ops,
         "$currentDate": {CHAMP_MODIFICATION: true}
     };
-    let options = UpdateOptions::builder().upsert(true).build();
-    collection.update_one_with_session(filtre, ops, options, session).await?;
+    // let options = UpdateOptions::builder().upsert(true).build();
+    collection
+        .update_one(filtre, ops)
+        .upsert(true)
+        .session(session)
+        .await?;
     Ok(())
 }
 
@@ -338,7 +346,7 @@ where M: GenerateurMessages + MongoDao +  CleChiffrageHandler
     let mut curseur = {
         let filtre = doc! {};
         let collection = middleware.get_collection(nom_collection)?;
-        let curseur = collection.find(filtre, None).await?;
+        let curseur = collection.find(filtre).await?;
         curseur
     };
 
@@ -414,9 +422,12 @@ pub async fn requete_compter_cles_non_dechiffrables_ca<M>(middleware: &M, m: Mes
     //     CHAMP_NON_DECHIFFRABLE: 1,
     //     CHAMP_CREATION: 1,
     // };
-    let opts = CountOptions::builder().hint(hint).build();
+    // let opts = CountOptions::builder().hint(hint).build();
     let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
-    let compte = collection.count_documents(filtre, opts).await?;
+    let compte = collection
+        .count_documents(filtre)
+        .hint(hint)
+        .await?;
 
     let reponse = json!({ "compte": compte });
     Ok(Some(middleware.build_reponse(&reponse)?.0))
@@ -442,20 +453,25 @@ pub async fn requete_cles_non_dechiffrables_v2<M>(middleware: &M, m: MessageVali
         let skip_docs_opts = requete.skip.unwrap_or_else(|| 0 as u64);
 
         let hint = Hint::Name("_id_".to_string());
-        let opts = FindOptions::builder()
+        // let opts = FindOptions::builder()
+        //     .hint(hint)
+        //     .skip(skip_docs_opts)
+        //     // .limit(Some(limite_docs as i64))
+        //     .build();
+        let collection = middleware.get_collection_typed::<RowCleCaRef>(NOM_COLLECTION_CA_CLES)?;
+        collection
+            .find(doc!{})
             .hint(hint)
             .skip(skip_docs_opts)
-            // .limit(Some(limite_docs as i64))
-            .build();
-        let collection = middleware.get_collection_typed::<RowCleCaRef>(NOM_COLLECTION_CA_CLES)?;
-        collection.find_with_session(None, opts, session).await?
+            .session(&mut *session)
+            .await?
     };
 
     let mut idx = requete.skip.unwrap_or_else(||0);
 
     let mut cles = Vec::new();
     let mut date_creation = None;
-    while curseur.advance(session).await? {
+    while curseur.advance(&mut *session).await? {
         idx += 1;  // Compter toutes les cles pour permettre d'aller chercher la suite dans la prochaine requete.
         let cle = curseur.deserialize_current()?;
         // Verifier si la cle est non dechiffrable, skip sinon.
@@ -496,20 +512,27 @@ pub async fn requete_synchronizer_cles<M>(middleware: &M, m: MessageValide, sess
         let hint = Hint::Keys(doc!{"_id": 1});  // Index _id
         //let sort_doc = doc! {"_id": 1};
         let projection = doc!{CHAMP_CLE_ID: 1};
-        let opts = FindOptions::builder()
-            .hint(hint)
-            //.sort(sort_doc)
-            .skip(Some(start_index as u64))
-            .limit(Some(limite_docs as i64))
-            .projection(Some(projection))
-            .build();
+        // let opts = FindOptions::builder()
+        //     .hint(hint)
+        //     //.sort(sort_doc)
+        //     .skip(Some(start_index as u64))
+        //     .limit(Some(limite_docs as i64))
+        //     .projection(Some(projection))
+        //     .build();
         let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
 
-        collection.find_with_session(filtre, opts, session).await?
+        collection
+            .find(filtre)
+            .hint(hint)
+            .skip(start_index as u64)
+            .limit(limite_docs as i64)
+            .projection(projection)
+            .session(&mut *session)
+            .await?
     };
 
     let mut cles = Vec::new();
-    while let Some(d) = curseur.next(session).await {
+    while let Some(d) = curseur.next(&mut *session).await {
         match d {
             Ok(doc_cle) => {
                 match convertir_bson_deserializable::<CleSynchronisation>(doc_cle) {
@@ -568,19 +591,24 @@ async fn save_new_ca_key<M,G>(middleware: &M, signature: SignatureDomaines, gest
     let cle_id = signature.get_cle_ref()?.to_string();
 
     let filtre = doc! { CHAMP_CLE_ID: &cle_id };
-    let options = FindOneOptions::builder()
+    // let options = FindOneOptions::builder()
+    //     .hint(Hint::Name("index_cle_id".to_string()))
+    //     .projection(doc!{CHAMP_CLE_ID: 1})
+    //     .build();
+    let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
+    let resultat = collection
+        .find_one(filtre)
         .hint(Hint::Name("index_cle_id".to_string()))
         .projection(doc!{CHAMP_CLE_ID: 1})
-        .build();
-    let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
-    let resultat = collection.find_one_with_session(filtre, options, session).await?;
+        .session(&mut *session)
+        .await?;
 
     if resultat.is_none() {
         // Key is new - save it as a transaction
         let transaction_cle = TransactionCleV2 { signature };
         debug!("commande_ajouter_cle_domaines Sauvegarder transaction nouvelle cle {}", cle_id);
         sauvegarder_traiter_transaction_serializable_v2(
-            middleware, &transaction_cle, gestionnaire, session, DOMAINE_NOM, TRANSACTION_CLE_V2).await?;
+            middleware, &transaction_cle, gestionnaire, &mut *session, DOMAINE_NOM, TRANSACTION_CLE_V2).await?;
     }
 
     Ok(())
@@ -603,21 +631,21 @@ pub async fn commande_confirmer_cles_sur_ca<M>(middleware: &M, m: MessageValide,
     for key in requete.liste_cle_id {
         batch_insert.push(doc!{CHAMP_CLE_ID: key});
         if batch_insert.len() >= BATCH_SIZE {
-            collection_temp_keysync.insert_many(&batch_insert, None).await?;
+            collection_temp_keysync.insert_many(&batch_insert).await?;
             batch_insert.clear();
         }
     }
 
     if batch_insert.len() > 0 {
         // Last batch
-        collection_temp_keysync.insert_many(&batch_insert, None).await?;
+        collection_temp_keysync.insert_many(&batch_insert).await?;
         batch_insert.clear();
     }
 
     if requete.done == Some(true) {
         // The key transfer is complete. Rename the table for internal sync.
         let collection_temp_keysync_done = middleware.get_collection(NOM_COLLECTION_CA_TEMP_KEYSYNC_DONE)?;
-        let current_count = collection_temp_keysync_done.count_documents(None, None).await?;
+        let current_count = collection_temp_keysync_done.count_documents(doc!{}).await?;
         if current_count > 0 {
             warn!("The keysync table has not been processed yet - wait for cleanup");
         } else {
@@ -710,12 +738,17 @@ pub async fn commande_transfert_cle_ca<M,G>(middleware: &M, m: MessageValide, ge
         let cle_id = cle.signature.get_cle_ref()?.to_string();
 
         let filtre = doc! { CHAMP_CLE_ID: &cle_id };
-        let options = FindOneOptions::builder()
+        // let options = FindOneOptions::builder()
+        //     .hint(Hint::Name("index_cle_id".to_string()))
+        //     .projection(doc! {CHAMP_CLE_ID: 1})
+        //     .build();
+        let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
+        let resultat = collection
+            .find_one(filtre.clone())
             .hint(Hint::Name("index_cle_id".to_string()))
             .projection(doc! {CHAMP_CLE_ID: 1})
-            .build();
-        let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
-        let resultat = collection.find_one_with_session(filtre.clone(), options, session).await?;
+            .session(&mut *session)
+            .await?;
 
         if resultat.is_none() {
             match cle.signature.version {
@@ -746,20 +779,23 @@ pub async fn commande_transfert_cle_ca<M,G>(middleware: &M, m: MessageValide, ge
                         partition: None,
                     };
                     sauvegarder_traiter_transaction_serializable_v2(
-                        middleware, &transaction_cle, gestionnaire, session, DOMAINE_NOM, TRANSACTION_CLE).await?;
+                        middleware, &transaction_cle, gestionnaire, &mut *session, DOMAINE_NOM, TRANSACTION_CLE).await?;
                 },
                 _ => {
                     // Version courante
                     let transaction_cle = TransactionCleV2 { signature: cle.signature.clone() };
                     debug!("commande_ajouter_cle_domaines Sauvegarder transaction nouvelle cle {}", cle_id);
                     sauvegarder_traiter_transaction_serializable_v2(
-                        middleware, &transaction_cle, gestionnaire, session, DOMAINE_NOM, TRANSACTION_CLE_V2).await?;
+                        middleware, &transaction_cle, gestionnaire, &mut *session, DOMAINE_NOM, TRANSACTION_CLE_V2).await?;
                 }
             }
 
             // Mettre la jour la derniere presence
             let ops = doc! {"$currentDate": {CHAMP_DERNIERE_PRESENCE: true}};
-            collection.update_one_with_session(filtre, ops, None, session).await?;
+            collection
+                .update_one(filtre, ops)
+                .session(&mut *session)
+                .await?;
         } else {
             // TODO - Voir comment gerer cette situation
             warn!("commande_transfert_cle Transfert de cle existante: {:?}, SKIPPED", cle_id);
@@ -784,7 +820,10 @@ where M: GenerateurMessages + MongoDao,
         "$currentDate": {CHAMP_MODIFICATION: true},
     };
     let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
-    collection.update_many_with_session(filtre, ops, None, session).await?;
+    collection
+        .update_many(filtre, ops)
+        .session(session)
+        .await?;
 
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
@@ -803,7 +842,10 @@ pub async fn evenement_cle_manquante<M>(middleware: &M, m: &MessageValide, sessi
         "$currentDate": { CHAMP_MODIFICATION: true },
     };
     let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
-    let resultat_update = collection.update_many_with_session(filtre, ops, None, session).await?;
+    let resultat_update = collection
+        .update_many(filtre, ops)
+        .session(session)
+        .await?;
     debug!("evenement_cle_manquante Resultat update : {:?}", resultat_update);
 
     Ok(None)
@@ -826,7 +868,10 @@ where M: ValidateurX509 + GenerateurMessages + MongoDao,
         "$currentDate": { CHAMP_MODIFICATION: true },
     };
     let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
-    let resultat_update = collection.update_many_with_session(filtre, ops, None, session).await?;
+    let resultat_update = collection
+        .update_many(filtre, ops)
+        .session(session)
+        .await?;
     debug!("evenement_cle_recue_partition Resultat update : {:?}", resultat_update);
 
     Ok(None)
@@ -900,12 +945,16 @@ where M: GenerateurMessages + MongoDao
     //     doc.insert(CHAMP_MODIFICATION, Utc::now());
     if middleware.get_mode_regeneration() {
         // Ignore session - this allows handling key duplication errors (by cle_id)
-        match collection.insert_one(set_on_insert, None).await {
+        match collection.insert_one(set_on_insert).await {
             Ok(_r) => (),
             Err(e) => Err(format!("maitredescles_ca.transaction_cle Erreur update_one sur transaction : {:?}", e))?
         }
     } else {
-        match collection.insert_one_with_session(set_on_insert, None, session).await {
+        match collection
+            .insert_one(set_on_insert)
+            .session(session)
+            .await
+        {
             Ok(_r) => (),
             Err(e) => Err(format!("maitredescles_ca.transaction_cle Erreur update_one sur transaction : {:?}", e))?
         }
@@ -962,12 +1011,16 @@ where M: GenerateurMessages + MongoDao
     //     doc.insert(CHAMP_MODIFICATION, Utc::now());
     if middleware.get_mode_regeneration() {
         // Ignore session - this allows handling key duplication errors (by cle_id)
-        match collection.insert_one(set_on_insert, None).await {
+        match collection.insert_one(set_on_insert).await {
             Ok(_r) => (),
             Err(e) => Err(format!("maitredescles_ca.transaction_cle_v2 Erreur update_one sur transaction : {:?}", e))?
         }
     } else {
-        match collection.insert_one_with_session(set_on_insert, None, session).await {
+        match collection
+            .insert_one(set_on_insert)
+            .session(session)
+            .await
+        {
             Ok(_r) => (),
             Err(e) => Err(format!("maitredescles_ca.transaction_cle_v2 Erreur update_one sur transaction : {:?}", e))?
         }
@@ -1044,7 +1097,10 @@ pub async fn requete_dechiffrage_v2<M>(middleware: &M, m: MessageValide, handler
     };
     // filtre.insert("signature.domaines", doc!{"$in": vec![&requete.domaine]});
     let collection = middleware.get_collection_typed::<RowClePartition>(nom_collection)?;
-    let mut curseur = collection.find_with_session(filtre, None, session).await?;
+    let mut curseur = collection
+        .find(filtre)
+        .session(&mut *session)
+        .await?;
     let domaine: heapless::String<40> = requete.domaine.as_str().try_into()
         .map_err(|_| Error::Str("Erreur map domain dans heapless::String<40>"))?;
 
@@ -1052,7 +1108,7 @@ pub async fn requete_dechiffrage_v2<M>(middleware: &M, m: MessageValide, handler
     // mais elles comptent sur le total trouve.
     let mut cles_trouvees = 0;
 
-    while let Some(row) = curseur.next(session).await {
+    while let Some(row) = curseur.next(&mut *session).await {
         match row {
             Ok(inner) => {
                 cles_trouvees += 1;
@@ -1185,9 +1241,9 @@ pub async fn requete_transfert_cles<M>(middleware: &M, m: MessageValide, handler
 
     let filtre = doc! { CHAMP_CLE_ID: {"$in": &requete.cle_ids} };
     let collection = middleware.get_collection_typed::<RowClePartition>(nom_collection)?;
-    let mut curseur = collection.find_with_session(filtre, None, session).await?;
+    let mut curseur = collection.find(filtre).session(&mut *session).await?;
 
-    while let Some(row) = curseur.next(session).await {
+    while let Some(row) = curseur.next(&mut *session).await {
         match row {
             Ok(row_cle) => {
                 let signature = row_cle.signature.clone();
@@ -1372,7 +1428,7 @@ pub async fn commande_cle_symmetrique<M>(middleware: &M, m: MessageValide, handl
     debug!("commande_cle_symmetrique Inserer cle configuration locale {:?}", commande.cle);
 
     let collection = middleware.get_collection(NOM_COLLECTION_CONFIGURATION)?;
-    collection.insert_one_with_session(cle_locale, None, session).await?;
+    collection.insert_one(cle_locale).session(session).await?;
 
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
@@ -1407,12 +1463,17 @@ pub async fn commande_transfert_cle<M>(middleware: &M, m: MessageValide, handler
 
         // Verifier si on a deja la cle - sinon, creer une nouvelle transaction
         let filtre = doc! { CHAMP_CLE_ID: &cle_id };
-        let options = FindOneOptions::builder()
+        // let options = FindOneOptions::builder()
+        //     .hint(Hint::Name("index_cle_id".to_string()))
+        //     .projection(doc!{CHAMP_CLE_ID: 1})
+        //     .build();
+        let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
+        let resultat = collection
+            .find_one(filtre)
             .hint(Hint::Name("index_cle_id".to_string()))
             .projection(doc!{CHAMP_CLE_ID: 1})
-            .build();
-        let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
-        let resultat = collection.find_one_with_session(filtre, options, session).await?;
+            .session(&mut *session)
+            .await?;
 
         if resultat.is_none() {
             let cle_secrete_vec = base64_nopad.decode(&cle.cle_secrete_base64)?;
@@ -1425,7 +1486,7 @@ pub async fn commande_transfert_cle<M>(middleware: &M, m: MessageValide, handler
 
             let mut cle_secrete = CleSecreteX25519 {0: [0u8;32]};
             cle_secrete.0.copy_from_slice(&cle_secrete_vec[0..32]);
-            sauvegarder_cle_secrete(middleware, &handler_rechiffrage, cle.signature.clone(), &cle_secrete, session).await?;
+            sauvegarder_cle_secrete(middleware, &handler_rechiffrage, cle.signature.clone(), &cle_secrete, &mut *session).await?;
         }
     }
 
@@ -1463,7 +1524,7 @@ pub async fn commande_rotation_certificat<M>(middleware: &M, m: MessageValide, h
         debug!("commande_rotation_certificat Inserer cle configuration locale {:?}", cle_locale);
 
         let collection = middleware.get_collection(NOM_COLLECTION_CONFIGURATION)?;
-        collection.insert_one_with_session(cle_locale, None, session).await?;
+        collection.insert_one(cle_locale).session(session).await?;
 
         Ok(Some(middleware.reponse_ok(None, None)?))
     } else {
@@ -1505,8 +1566,12 @@ pub async fn evenement_cle_rechiffrage<M>(middleware: &M, m: MessageValide, hand
         },
         "$currentDate": {CHAMP_MODIFICATION: true}
     };
-    let options_ca = UpdateOptions::builder().upsert(true).build();
-    collection.update_one_with_session(filtre_ca, ops_ca, Some(options_ca), session).await?;
+    // let options_ca = UpdateOptions::builder().upsert(true).build();
+    collection
+        .update_one(filtre_ca, ops_ca)
+        .upsert(true)
+        .session(&mut *session)
+        .await?;
 
     // Dechiffrer cle du tiers, rechiffrer en symmetrique local
     if let Some(cle_tierce) = evenement.cles_dechiffrage.get(fingerprint_local.as_str()) {
@@ -1534,8 +1599,12 @@ pub async fn evenement_cle_rechiffrage<M>(middleware: &M, m: MessageValide, hand
             },
             "$currentDate": {CHAMP_MODIFICATION: true}
         };
-        let options_cle = UpdateOptions::builder().upsert(true).build();
-        collection.update_one_with_session(filtre_cle, ops_cle, Some(options_cle), session).await?;
+        // let options_cle = UpdateOptions::builder().upsert(true).build();
+        collection
+            .update_one(filtre_cle, ops_cle)
+            .upsert(true)
+            .session(&mut *session)
+            .await?;
     }
 
     Ok(None)
@@ -1570,14 +1639,17 @@ where M: GenerateurMessages + MongoDaoTyped + ValidateurX509,
         doc!{"$out": {"db": db_name, "coll": NOM_COLLECTION_CA_MISSING}},
     ];
     // Go through all keys using the index - makes the keys sorted for de-duplication
-    let options = AggregateOptions::builder().hint(Hint::Name(String::from(INDEX_CLE_ID))).build();
-    collection.aggregate(pipeline, options).await?;
+    // let options = AggregateOptions::builder().hint(Hint::Name(String::from(INDEX_CLE_ID))).build();
+    collection
+        .aggregate(pipeline)
+        .hint(Hint::Name(String::from(INDEX_CLE_ID)))
+        .await?;
     // Drop the sync collection - output saved in the CA MISSING table.
-    collection.drop(None).await?;
+    collection.drop().await?;
 
     // Request all missing keys
     let collection_ca_missing = middleware.get_collection_typed::<MissingKeyRow>(NOM_COLLECTION_CA_MISSING)?;
-    let mut cursor = collection_ca_missing.find(None, None).await?;
+    let mut cursor = collection_ca_missing.find(doc!{}).await?;
     const BATCH_SIZE: usize = 50;
     let mut batch = Vec::with_capacity(BATCH_SIZE);
     let mut total_keys_missing = 0;
@@ -1609,7 +1681,7 @@ where M: GenerateurMessages + MongoDaoTyped + ValidateurX509,
 
     if total_keys_missing == keys_received {
         // All missing keys received, cleanup temp collection
-        collection_ca_missing.drop(None).await?;
+        collection_ca_missing.drop().await?;
     }
 
     info!("process_ca_key_sync Done, requested {} missing keys, received {} keys", total_keys_missing, keys_received);
@@ -1675,7 +1747,11 @@ pub async fn marquer_cles_ca_timeout<M>(middleware: &M) -> Result<(), Error>
     let collection = middleware.get_collection(NOM_COLLECTION_CA_CLES)?;
     let mut session = middleware.get_session().await?;
     start_transaction_regular(&mut session).await?;
-    match collection.update_many_with_session(filtre, ops, None, &mut session).await {
+    match collection
+        .update_many(filtre, ops)
+        .session(&mut session)
+        .await
+    {
         Ok(_) => {
             session.commit_transaction().await?;
             Ok(())
@@ -1702,7 +1778,11 @@ where M: GenerateurMessages + MongoDaoTyped + ValidateurX509 + CleChiffrageHandl
     // Load the CA key
     let collection = middleware.get_collection_typed::<DocumentCleRechiffrage>(NOM_COLLECTION_CONFIGURATION)?;
     let filtre = doc!{"type": "CA", "instance_id": instance_id.as_str()};
-    if let Some(cle_ca) = collection.find_one_with_session(filtre, None, session).await? {
+    if let Some(cle_ca) = collection
+        .find_one(filtre)
+        .session(session)
+        .await?
+    {
         info!("preparer_rechiffreur_mongo CA symmetric key is present");
         // Emit the symmetric key that was encrypted for the CA.
         emettre_demande_cle_symmetrique(middleware, cle_ca.cle).await?;
@@ -1721,8 +1801,8 @@ pub async fn request_keys_for_ca<M>(middleware: &M, m: MessageValide, _handler_r
     let mut response_keys = Vec::with_capacity(request.cle_ids.len());
     let filtre = doc!{CHAMP_CLE_ID: {"$in": request.cle_ids}};
     let collection = middleware.get_collection_typed::<RowClePartition>(NOM_COLLECTION_SYMMETRIQUE_CLES)?;
-    let mut cursor = collection.find_with_session(filtre, None, session).await?;
-    while cursor.advance(session).await? {
+    let mut cursor = collection.find(filtre).session(&mut *session).await?;
+    while cursor.advance(&mut *session).await? {
         let row = cursor.deserialize_current()?;
         response_keys.push(row.signature);
     }
