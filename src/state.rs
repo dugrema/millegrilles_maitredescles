@@ -66,7 +66,7 @@ impl AppContext {
 
         // Flow services (business logic)
         let ca_service = Arc::new(
-            MaitreDesClesCAServiceImpl::new(config.clone(), outbound.clone(), mongo.clone())
+            MaitreDesClesCAServiceImpl::new(config.clone(), outbound.clone(), mongo.clone(), format.clone())
         );
         let symmetric_service = Arc::new(
             MaitreDesClesSymmetricServiceImpl::new(config.clone(), outbound.clone(), security.clone(), mongo.clone(), decryption.clone())

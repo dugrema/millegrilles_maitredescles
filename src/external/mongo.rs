@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use crate::constants::*;
 use millegrilles_common_rust::bson::doc;
 use millegrilles_common_rust::certificats::ValidateurX509;
@@ -5,26 +6,30 @@ use millegrilles_common_rust::chiffrage_cle::CommandeAjouterCleDomaine;
 use millegrilles_common_rust::chrono::{Duration, Utc};
 use millegrilles_common_rust::common_messages::ResponseRequestDechiffrageV2Cle;
 use millegrilles_common_rust::configuration::ConfigMessages;
-use millegrilles_common_rust::constantes::{CHAMP_CREATION, CHAMP_MODIFICATION};
+use millegrilles_common_rust::constantes::{CHAMP_CREATION, CHAMP_MODIFICATION, Securite};
 use millegrilles_common_rust::domaines_traits::{AiguillageTransactions, GestionnaireDomaineV2};
 use millegrilles_common_rust::error::{Error as CommonError, Error};
-use millegrilles_common_rust::generateur_messages::GenerateurMessages;
+use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::jwt_simple::prelude::Deserialize;
 use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction_serializable_v2;
 use millegrilles_common_rust::millegrilles_cryptographie::heapless;
 use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::SignatureDomaines;
+use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageKind;
 use millegrilles_common_rust::millegrilles_cryptographie::x509::EnveloppePrivee;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, start_transaction_regular, ChampIndex, IndexOptions, MongoDao, MongoDaoTyped};
-use millegrilles_common_rust::mongodb;
+use millegrilles_common_rust::{mongodb, serde_json};
 use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::mongodb::options::{AggregateOptions, FindOneOptions, Hint};
+use millegrilles_common_rust::serde_json::Value;
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::tracing::{debug, info, warn};
 use millegrilles_common_rust::v3::facades::message_inbound::MessageValidated;
+use millegrilles_common_rust::v3::{ConfigService, FormatService};
+use millegrilles_common_rust::v3::impls::rabbitmq_consumer::DeliveryInfo;
 use crate::flow::transactions::process_ca_transaction;
 use crate::maitredescles_commun::{emettre_demande_cle_symmetrique, DocumentCleRechiffrage, RowClePartition, TransactionCleV2};
 use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
-
+use crate::models::TransactionWrapper;
 // DB / Index creation
 
 pub async fn create_index_mongodb_custom(db: &dyn MongoDao, config: &dyn ConfigMessages, key_collection_name: &str) -> Result<(), CommonError> {
@@ -209,6 +214,8 @@ pub async fn marquer_cles_ca_timeout(mongo: &dyn MongoDao) -> Result<(), CommonE
 
 pub async fn save_new_ca_key(
     mongo: &dyn MongoDao,
+    formatter: &dyn FormatService,
+    config: &dyn ConfigService,
     wrapper: MessageValidated,
 ) ->Result<(), Error> {
 
@@ -220,10 +227,6 @@ pub async fn save_new_ca_key(
     let key_id = signature.get_cle_ref()?.to_string();
 
     let filtre = doc! { CHAMP_CLE_ID: &key_id };
-    // let options = FindOneOptions::builder()
-    //     .hint(Hint::Name("index_cle_id".to_string()))
-    //     .projection(doc!{CHAMP_CLE_ID: 1})
-    //     .build();
     let collection = mongo.get_collection(NOM_COLLECTION_CA_CLES)?;
     let resultat = collection
         .find_one(filtre)
@@ -233,10 +236,35 @@ pub async fn save_new_ca_key(
 
     if resultat.is_none() {
         debug!("save_new_ca_key Saving new key with id {}", key_id);
-        process_ca_transaction(mongo, wrapper.into()).await?;
+
+        // Generate a new transaction document
+        let value = serde_json::to_value(TransactionCleV2 { signature })?;
+        let wrapper = build_transaction(config, formatter, DOMAINE_NOM, TRANSACTION_CLE_V2, value)?;
+        process_ca_transaction(mongo, wrapper).await?;
     }
 
     Ok(())
+}
+
+fn build_transaction(
+    config: &dyn ConfigService,
+    formatter: &dyn FormatService,
+    domain: &str,
+    action: &str,
+    value: Value
+) -> Result<TransactionWrapper, CommonError> {
+    let routing = RoutageMessageAction::builder(domain, action, vec![Securite::L3Protege]).build();
+    let (transaction, _id) = formatter.build_action_message(
+        MessageKind::Transaction,
+        &routing,
+        value,
+    )?;
+    let wrapper = TransactionWrapper {
+        message: transaction.parse_to_owned()?,
+        certificate: config.get_configuration_pki().get_enveloppe_privee().enveloppe_pub.clone(),
+        content: None,
+    };
+    Ok(wrapper)
 }
 
 // Symmetric key handling

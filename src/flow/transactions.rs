@@ -1,25 +1,20 @@
+use crate::constants::{NOM_COLLECTION_TRANSACTIONS_CA, TRANSACTION_CLE, TRANSACTION_CLE_V2};
+use crate::maitredescles_commun::{RowCleCaRef, TransactionCleV2};
 use crate::models::TransactionWrapper;
+use millegrilles_common_rust::bson;
 use millegrilles_common_rust::bson::Document;
-use millegrilles_common_rust::constantes::COMMANDE_AJOUTER_CLE_DOMAINES;
+use millegrilles_common_rust::chrono::Utc;
 use millegrilles_common_rust::error::Error as CommonError;
 use millegrilles_common_rust::mongo_dao::MongoDao;
 use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::mongodb::options::WriteModel;
 
-pub async fn process_ca_transaction(mongo: &dyn MongoDao, wrapper: TransactionWrapper) -> Result<(), CommonError>{
-
-    let action = match wrapper.message.routage.as_ref() {
-        Some(r) => match r.action.as_ref() {
-            Some(a) => a.to_string(),
-            None => return Err(CommonError::Str("Transaction with no routing action"))
-        },
-        None => return Err(CommonError::Str("Transaction with no routing information"))
-    };
+pub async fn process_ca_transaction(mongo: &dyn MongoDao, wrapper: TransactionWrapper) -> Result<(), CommonError> {
 
     // Start a session
     let mut session = mongo.get_session().await?;
 
-    match process_atomic_transaction(mongo, &mut session, action.as_str(), wrapper).await {
+    match process_atomic_transaction(mongo, &mut session, wrapper).await {
         Ok(()) => {
             session.commit_transaction().await?;
             Ok(())
@@ -34,13 +29,21 @@ pub async fn process_ca_transaction(mongo: &dyn MongoDao, wrapper: TransactionWr
 async fn process_atomic_transaction(
     mongo: &dyn MongoDao,
     session: &mut ClientSession,
-    action: &str,
     wrapper: TransactionWrapper
 ) -> Result<(), CommonError> {
-    // Save the transaction in the transaction table for the domain
+    let action = match wrapper.message.routage.as_ref() {
+        Some(r) => match r.action.as_ref() {
+            Some(a) => a.to_string(),
+            None => return Err(CommonError::Str("Transaction with no routing action"))
+        },
+        None => return Err(CommonError::Str("Transaction with no routing information"))
+    };
+
+    // Save the transaction detail in the redo log (transaction table) for the domain
     persist_transaction(&wrapper).await?;
 
-    let operations = ca_transaction_router(mongo, session, action, wrapper).await?;
+    // Run the domain router to generate MongoDB write operations
+    let operations = ca_transaction_router(action.as_str(), wrapper).await?;
 
     // Run the operations within a database session - will rollback everything on error
     run_transaction_aggregator(mongo, session, operations).await?;
@@ -51,6 +54,15 @@ async fn process_atomic_transaction(
 struct BatchInsertions {
     collection_name: String,
     insertions: Vec<Document>
+}
+
+impl BatchInsertions {
+    pub fn new(collection_name: &str, insertions: Vec<Document>) -> Self {
+        Self {
+            collection_name: collection_name.to_string(),
+            insertions,
+        }
+    }
 }
 
 /// Used to aggregate transaction operations.
@@ -99,27 +111,47 @@ impl TransactionOperationAggregator {
 }
 
 async fn ca_transaction_router(
-    mongo: &dyn MongoDao,
-    session: &mut ClientSession,
     action: &str,
     wrapper: TransactionWrapper
 ) -> Result<TransactionOperationAggregator, CommonError> {
     match action {
-        COMMANDE_AJOUTER_CLE_DOMAINES => save_new_key(mongo, session, wrapper).await,
+        TRANSACTION_CLE => todo!(),  // transaction_cle(middleware, transaction, session).await,
+        TRANSACTION_CLE_V2 => save_new_key(wrapper).await,
         _ => Err(CommonError::Str("Unknown transaction action"))
     }
 }
 
 async fn persist_transaction(wrapper: &TransactionWrapper) -> Result<(), CommonError> {
+    todo!();
     Ok(())
 }
 
 async fn save_new_key(
-    mongo: &dyn MongoDao,
-    session: &mut ClientSession,
     wrapper: TransactionWrapper
 ) -> Result<TransactionOperationAggregator, CommonError> {
     let mut aggregator = TransactionOperationAggregator::new();
+    let transaction: TransactionCleV2 = wrapper.message.deserialize()?;
+
+    let signature = transaction.signature;
+    let cle_id = signature.get_cle_ref()?.to_string();
+
+    let insert_doc = RowCleCaRef {
+        cle_id: cle_id.as_str(),
+        signature: (&signature).into(),
+        non_dechiffrable: Some(true),
+        date_creation: Utc::now(),
+        // Deprecated fields
+        format: None,
+        iv: None,
+        tag: None,
+        header: None,
+    };
+
+    let batch_insertions = BatchInsertions::new(
+        NOM_COLLECTION_TRANSACTIONS_CA,
+        vec![bson::serialize_to_document(&insert_doc)?],
+    );
+    aggregator.batch_insertion(batch_insertions)?;
 
     Ok(aggregator)
 }

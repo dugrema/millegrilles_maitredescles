@@ -310,7 +310,7 @@ impl RowClePartition {
 
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct RowCleCaRef<'a> {
     pub cle_id: &'a str,
     pub signature: SignatureDomainesRef<'a>,

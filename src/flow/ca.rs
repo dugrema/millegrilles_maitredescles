@@ -11,7 +11,7 @@ use millegrilles_common_rust::mongo_dao::{MongoDaoImpl, MongoDaoTyped};
 use millegrilles_common_rust::tokio;
 use millegrilles_common_rust::tokio::task::JoinSet;
 use millegrilles_common_rust::tracing::{debug, error, warn};
-use millegrilles_common_rust::v3::ConfigService;
+use millegrilles_common_rust::v3::{ConfigService, FormatService};
 use millegrilles_common_rust::v3::facades::message_inbound::{MessageInboundValidator, MessageValidated};
 use millegrilles_common_rust::v3::facades::message_outbound::MessageOutboundFacade;
 use millegrilles_common_rust::v3::impls::config_service::ConfigServiceDbImpl;
@@ -25,14 +25,15 @@ use crate::models::ErrorMessage;
 pub trait MaitreDesClesCAService {}
 
 pub struct MaitreDesClesCAServiceImpl {
-    _config: Arc<dyn ConfigService>,
+    config: Arc<dyn ConfigService>,
     outbound: Arc<MessageOutboundFacade>,
     mongo: Arc<MongoDaoImpl>,
+    format: Arc<dyn FormatService>,
 }
 
 impl MaitreDesClesCAServiceImpl {
-    pub fn new(config: Arc<dyn ConfigService>, outgoing: Arc<MessageOutboundFacade>, mongo: Arc<MongoDaoImpl>) -> Self {
-        Self { _config: config, outbound: outgoing, mongo }
+    pub fn new(config: Arc<dyn ConfigService>, outgoing: Arc<MessageOutboundFacade>, mongo: Arc<MongoDaoImpl>, format: Arc<dyn FormatService>) -> Self {
+        Self { config: config, outbound: outgoing, mongo, format, }
     }
 
     pub async fn configure(&self, mq: &MessagingServiceImpl, config: &ConfigServiceDbImpl) -> Result<(), CommonError> {
@@ -112,7 +113,13 @@ impl MaitreDesClesCAServiceImpl {
             match result {
                 Ok(message) => {
                     let delivery_info = message.delivery_info.clone();  // Clone for error response
-                    if let Err(e) = process_newkeys(self.outbound.as_ref(), self.mongo.as_ref(), message).await {
+                    if let Err(e) = process_newkeys(
+                        self.outbound.as_ref(),
+                        self.mongo.as_ref(),
+                        self.format.as_ref(),
+                        self.config.as_ref(),
+                        message
+                    ).await {
                         error!("process_newkeys_thread Saving key failed: {}", e);
                         // Attempt to reply with an error message
                         self.outbound.respond(
@@ -171,10 +178,14 @@ async fn ticker_job_ca<M>(mongo: &M, trigger: MessageValidated) -> Result<(), Co
     Ok(())
 }
 
-async fn process_newkeys<M>(outbound: &MessageOutboundFacade, mongo: &M, wrapper: MessageValidated) -> Result<(), CommonError>
-where M: MongoDaoTyped
-{
+async fn process_newkeys<M>(
+    outbound: &MessageOutboundFacade,
+    mongo: &M,
+    formatter: &dyn FormatService,
+    config: &dyn ConfigService,
+    wrapper: MessageValidated
+) -> Result<(), CommonError> where M: MongoDaoTyped {
     let delivery_info = wrapper.delivery_info.clone();
-    save_new_ca_key(mongo, wrapper).await?;
+    save_new_ca_key(mongo, formatter, config, wrapper).await?;
     outbound.respond(delivery_info, ErrorMessage::ok()).await
 }
