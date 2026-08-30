@@ -15,7 +15,7 @@ pub async fn process_ca_transaction<F, Fut>(
     wrapper: TransactionWrapper,
 ) -> Result<(), CommonError>
 where F: Fn(String, TransactionWrapper) -> Fut,
-      Fut: Future<Output = Result<TransactionOperationAggregator, CommonError>>
+      Fut: Future<Output = Result<TransactionOperationAggregator, CommonError>> + Send
 {
     // Start a session
     let mut session = mongo.get_session().await?;
@@ -39,7 +39,7 @@ async fn process_atomic_transaction<F, Fut>(
     wrapper: TransactionWrapper
 ) -> Result<(), CommonError>
 where F: Fn(String, TransactionWrapper) -> Fut,
-    Fut: Future<Output = Result<TransactionOperationAggregator, CommonError>>
+    Fut: Future<Output = Result<TransactionOperationAggregator, CommonError>> + Send
 {
     let action = match wrapper.message.routage.as_ref() {
         Some(r) => match r.action.as_ref() {
