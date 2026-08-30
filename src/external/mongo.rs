@@ -26,7 +26,7 @@ use millegrilles_common_rust::tracing::{debug, info, warn};
 use millegrilles_common_rust::v3::facades::message_inbound::MessageValidated;
 use millegrilles_common_rust::v3::{ConfigService, FormatService};
 use millegrilles_common_rust::v3::impls::rabbitmq_consumer::DeliveryInfo;
-use crate::flow::transactions::process_ca_transaction;
+use crate::flow::transactions::{ca_transaction_router, process_ca_transaction};
 use crate::maitredescles_commun::{emettre_demande_cle_symmetrique, DocumentCleRechiffrage, RowClePartition, TransactionCleV2};
 use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
 use crate::models::TransactionWrapper;
@@ -240,7 +240,7 @@ pub async fn save_new_ca_key(
         // Generate a new transaction document
         let value = serde_json::to_value(TransactionCleV2 { signature })?;
         let wrapper = build_transaction(config, formatter, DOMAINE_NOM, TRANSACTION_CLE_V2, value)?;
-        process_ca_transaction(mongo, wrapper).await?;
+        process_ca_transaction(mongo, ca_transaction_router, wrapper).await?;
     }
 
     Ok(())

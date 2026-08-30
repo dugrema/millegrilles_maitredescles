@@ -9,12 +9,18 @@ use millegrilles_common_rust::mongo_dao::MongoDao;
 use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::mongodb::options::WriteModel;
 
-pub async fn process_ca_transaction(mongo: &dyn MongoDao, wrapper: TransactionWrapper) -> Result<(), CommonError> {
-
+pub async fn process_ca_transaction<F, Fut>(
+    mongo: &dyn MongoDao,
+    router: F,
+    wrapper: TransactionWrapper,
+) -> Result<(), CommonError>
+where F: Fn(String, TransactionWrapper) -> Fut,
+      Fut: Future<Output = Result<TransactionOperationAggregator, CommonError>>
+{
     // Start a session
     let mut session = mongo.get_session().await?;
 
-    match process_atomic_transaction(mongo, &mut session, wrapper).await {
+    match process_atomic_transaction(mongo, &mut session, router, wrapper).await {
         Ok(()) => {
             session.commit_transaction().await?;
             Ok(())
@@ -26,11 +32,15 @@ pub async fn process_ca_transaction(mongo: &dyn MongoDao, wrapper: TransactionWr
     }
 }
 
-async fn process_atomic_transaction(
+async fn process_atomic_transaction<F, Fut>(
     mongo: &dyn MongoDao,
     session: &mut ClientSession,
+    router: F,
     wrapper: TransactionWrapper
-) -> Result<(), CommonError> {
+) -> Result<(), CommonError>
+where F: Fn(String, TransactionWrapper) -> Fut,
+    Fut: Future<Output = Result<TransactionOperationAggregator, CommonError>>
+{
     let action = match wrapper.message.routage.as_ref() {
         Some(r) => match r.action.as_ref() {
             Some(a) => a.to_string(),
@@ -43,7 +53,8 @@ async fn process_atomic_transaction(
     persist_transaction(&wrapper).await?;
 
     // Run the domain router to generate MongoDB write operations
-    let operations = ca_transaction_router(action.as_str(), wrapper).await?;
+    // let operations = ca_transaction_router(action.as_str(), wrapper).await?;
+    let operations = router(action, wrapper).await?;
 
     // Run the operations within a database session - will rollback everything on error
     run_transaction_aggregator(mongo, session, operations).await?;
@@ -51,7 +62,8 @@ async fn process_atomic_transaction(
     Ok(())
 }
 
-struct BatchInsertions {
+#[derive(Debug, Clone)]
+pub struct BatchInsertions {
     collection_name: String,
     insertions: Vec<Document>
 }
@@ -65,9 +77,10 @@ impl BatchInsertions {
     }
 }
 
+#[derive(Debug, Clone)]
 /// Used to aggregate transaction operations.
 /// Simplifies batching on rebuilds (redo).
-struct TransactionOperationAggregator {
+pub struct TransactionOperationAggregator {
     /// Insertions run first as a batch, they must not have any dependency (e.g. deletion to avoid duplicate)
     batch_insertions: Option<Vec<BatchInsertions>>,
     /// Operations that can run concurrently (e.g. updating/deleting entries from different collections)
@@ -110,11 +123,11 @@ impl TransactionOperationAggregator {
 
 }
 
-async fn ca_transaction_router(
-    action: &str,
+pub async fn ca_transaction_router(
+    action: String,
     wrapper: TransactionWrapper
 ) -> Result<TransactionOperationAggregator, CommonError> {
-    match action {
+    match action.as_str() {
         TRANSACTION_CLE => todo!(),  // transaction_cle(middleware, transaction, session).await,
         TRANSACTION_CLE_V2 => save_new_key(wrapper).await,
         _ => Err(CommonError::Str("Unknown transaction action"))
