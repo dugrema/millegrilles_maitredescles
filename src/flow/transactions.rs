@@ -1,4 +1,4 @@
-use crate::constants::{NOM_COLLECTION_TRACKING_CA, NOM_COLLECTION_TRANSACTIONS_CA, TRANSACTION_CLE, TRANSACTION_CLE_V2};
+use crate::constants::{NOM_COLLECTION_CA_CLES, NOM_COLLECTION_TRACKING_CA, NOM_COLLECTION_TRANSACTIONS_CA, TRANSACTION_CLE, TRANSACTION_CLE_V2};
 use crate::maitredescles_commun::{RowCleCaRef, TransactionCleV2};
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson;
@@ -84,7 +84,7 @@ async fn save_new_key(
     };
 
     let batch_insertions = BatchInsertions::new(
-        NOM_COLLECTION_TRANSACTIONS_CA,
+        NOM_COLLECTION_CA_CLES,
         vec![bson::serialize_to_document(&insert_doc)?],
     );
     aggregator.batch_insertion(batch_insertions)?;
