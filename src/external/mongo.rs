@@ -17,13 +17,13 @@ use millegrilles_common_rust::millegrilles_cryptographie::x509::EnveloppePrivee;
 use millegrilles_common_rust::mongo_dao::{ChampIndex, IndexOptions, MongoDao, MongoDaoTyped, start_transaction_regular};
 use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::mongodb::options::Hint;
+use millegrilles_common_rust::serde_json;
 use millegrilles_common_rust::serde_json::Value;
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::tracing::{debug, info, warn};
 use millegrilles_common_rust::v3::facades::message_inbound::MessageValidated;
-use millegrilles_common_rust::v3::{ConfigService, FormatService};
-use millegrilles_common_rust::serde_json;
 use millegrilles_common_rust::v3::models::TransactionWrapper;
+use millegrilles_common_rust::v3::{ConfigService, FormatService};
 // DB / Index creation
 
 pub async fn create_index_mongodb_custom(db: &dyn MongoDao, config: &dyn ConfigMessages, key_collection_name: &str) -> Result<(), CommonError> {
@@ -206,21 +206,8 @@ pub async fn marquer_cles_ca_timeout(mongo: &dyn MongoDao) -> Result<(), CommonE
     }
 }
 
-pub async fn save_new_ca_key(
-    transaction: &KeyMasterTransactionService,
-    mongo: &dyn MongoDao,
-    formatter: &dyn FormatService,
-    config: &dyn ConfigService,
-    wrapper: MessageValidated,
-) ->Result<(), Error> {
-
-    // Parse to validate and check for duplicates
-    let command: CommandeAjouterCleDomaine = wrapper.message.deserialize()?;
-    let signature = command.signature;
-
-    // Check if the key already exists.
-    let key_id = signature.get_cle_ref()?.to_string();
-
+/// Checks if a given key already exists
+pub async fn check_key_exists(mongo: &dyn MongoDao, key_id: &str) ->Result<bool, Error> {
     let filtre = doc! { CHAMP_CLE_ID: &key_id };
     let collection = mongo.get_collection(NOM_COLLECTION_CA_CLES)?;
     let resultat = collection
@@ -228,39 +215,7 @@ pub async fn save_new_ca_key(
         .hint(Hint::Name("index_cle_id".to_string()))
         .projection(doc!{CHAMP_CLE_ID: 1})
         .await?;
-
-    if resultat.is_none() {
-        debug!("save_new_ca_key Saving new key with id {}", key_id);
-
-        // Generate a new transaction document
-        let value = serde_json::to_value(TransactionCleV2 { signature })?;
-        let wrapper = build_transaction(config, formatter, DOMAINE_NOM, TRANSACTION_CLE_V2, value)?;
-        transaction.process_ca(wrapper).await?;
-        // process_transaction(mongo, ca_transaction_router, wrapper).await?;
-    }
-
-    Ok(())
-}
-
-fn build_transaction(
-    config: &dyn ConfigService,
-    formatter: &dyn FormatService,
-    domain: &str,
-    action: &str,
-    value: Value
-) -> Result<TransactionWrapper, CommonError> {
-    let routing = RoutageMessageAction::builder(domain, action, vec![Securite::L3Protege]).build();
-    let (transaction, _id) = formatter.build_action_message(
-        MessageKind::Transaction,
-        &routing,
-        value,
-    )?;
-    let wrapper = TransactionWrapper {
-        message: transaction.parse_to_owned()?,
-        certificate: config.get_configuration_pki().get_enveloppe_privee().enveloppe_pub.clone(),
-        content: None,
-    };
-    Ok(wrapper)
+    Ok(resultat.is_some())
 }
 
 // Symmetric key handling

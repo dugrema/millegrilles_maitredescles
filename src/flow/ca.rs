@@ -1,26 +1,26 @@
 use crate::constants::*;
-use crate::external::mongo::{create_index_mongodb_custom, marquer_cles_ca_timeout, process_ca_key_sync, save_new_ca_key};
-use crate::external::mq::{init_ca_queues, QUEUE_CA_BACKUP, QUEUE_CA_NEWKEYS, QUEUE_CA_TICKER};
+use crate::external::mongo::{check_key_exists, create_index_mongodb_custom, marquer_cles_ca_timeout, process_ca_key_sync};
+use crate::external::mq::{QUEUE_CA_BACKUP, QUEUE_CA_NEWKEYS, QUEUE_CA_TICKER, init_ca_queues};
 use crate::flow::maintenance::validate_ticker;
+use crate::flow::transactions::KeyMasterTransactionService;
+use crate::maitredescles_commun::TransactionCleV2;
+use crate::models::ErrorMessage;
 use millegrilles_common_rust::async_trait::async_trait;
+use millegrilles_common_rust::chiffrage_cle::CommandeAjouterCleDomaine;
 use millegrilles_common_rust::chrono::Timelike;
 use millegrilles_common_rust::error::Error as CommonError;
 use millegrilles_common_rust::futures::StreamExt;
 use millegrilles_common_rust::messages_generiques::MessageCedule;
 use millegrilles_common_rust::mongo_dao::{MongoDaoImpl, MongoDaoTyped};
-use millegrilles_common_rust::tokio;
 use millegrilles_common_rust::tokio::task::JoinSet;
 use millegrilles_common_rust::tracing::{debug, error, warn};
-use millegrilles_common_rust::v3::{ConfigService, FormatService};
 use millegrilles_common_rust::v3::facades::message_inbound::{MessageInboundValidator, MessageValidated};
 use millegrilles_common_rust::v3::facades::message_outbound::MessageOutboundFacade;
 use millegrilles_common_rust::v3::impls::config_service::ConfigServiceDbImpl;
 use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl;
+use millegrilles_common_rust::v3::{ConfigService, FormatService};
+use millegrilles_common_rust::{serde_json, tokio};
 use std::sync::Arc;
-use millegrilles_common_rust::chiffrage_cle::CommandeAjouterCleDomaine;
-use millegrilles_common_rust::millegrilles_cryptographie::deser_message_buffer;
-use crate::flow::transactions::KeyMasterTransactionService;
-use crate::models::ErrorMessage;
 
 #[async_trait]
 pub trait MaitreDesClesCAService {}
@@ -125,8 +125,6 @@ impl MaitreDesClesCAServiceImpl {
                         self.outbound.as_ref(),
                         self.transaction.as_ref(),
                         self.mongo.as_ref(),
-                        self.format.as_ref(),
-                        self.config.as_ref(),
                         message
                     ).await {
                         error!("process_newkeys_thread Saving key failed: {}", e);
@@ -191,11 +189,23 @@ async fn process_newkeys<M>(
     outbound: &MessageOutboundFacade,
     transaction: &KeyMasterTransactionService,
     mongo: &M,
-    formatter: &dyn FormatService,
-    config: &dyn ConfigService,
     wrapper: MessageValidated
 ) -> Result<(), CommonError> where M: MongoDaoTyped {
     let delivery_info = wrapper.delivery_info.clone();
-    save_new_ca_key(transaction, mongo, formatter, config, wrapper).await?;
+
+    // Parse to validate and check for duplicates
+    let command: CommandeAjouterCleDomaine = wrapper.message.deserialize()?;
+    let signature = command.signature;
+
+    // Check if the key already exists.
+    let key_id = signature.get_cle_ref()?.to_string();
+
+    if ! check_key_exists(mongo, key_id.as_str()).await? {
+        debug!("save_new_ca_key Saving new key with id {}", key_id);
+
+        // Generate a new transaction document
+        let value = serde_json::to_value(TransactionCleV2 { signature })?;
+        transaction.process_value(DOMAINE_NOM, TRANSACTION_CLE_V2, value).await?;
+    }
     outbound.respond(delivery_info, ErrorMessage::ok()).await
 }

@@ -66,7 +66,7 @@ impl AppContext {
             MessageInboundValidator::new(config.clone(), messaging.clone(), security.clone(), shutdown_token.clone())
         );
 
-        let transaction = Arc::new(KeyMasterTransactionService::new(mongo.clone()));
+        let transaction = Arc::new(KeyMasterTransactionService::new(config.clone(), format.clone(), mongo.clone()));
 
         // Flow services (business logic)
         let ca_service = Arc::new(
