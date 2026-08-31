@@ -9,6 +9,8 @@ use millegrilles_common_rust::multibase::Base;
 use millegrilles_common_rust::openssl::pkey::{PKey, Public};
 use std::fmt::{Debug, Formatter};
 use std::sync::{Arc, Mutex};
+use millegrilles_common_rust::certificats::VerificateurPermissions;
+use millegrilles_common_rust::constantes::RolesCertificats;
 use millegrilles_common_rust::multibase;
 
 pub struct SymmetricEncryptionHandler {
@@ -45,12 +47,16 @@ impl Debug for SymmetricEncryptionHandler {
 }
 
 impl SymmetricEncryptionHandler {
-    pub fn with_certificat(enveloppe_privee: Arc<EnveloppePrivee>) -> Self {
-        // let cle_privee = enveloppe_privee.cle_privee.to_owned();
+    pub fn with_certificate(enveloppe_privee: Arc<EnveloppePrivee>) -> Self {
+        // Ensure the certificate is for KeyMasters
+        let is_keymaster = enveloppe_privee.enveloppe_pub.verifier_roles(
+            vec![RolesCertificats::MaitreDesCles]).expect("Failure on verifier roles");
+        if ! is_keymaster {
+            panic!("The certificate is not for KeyMasters (must be RolesCertificats::MaitreDesCles)");
+        }
+
         Self {
-            // cle_rechiffrage: cle_privee,
-            // certificat_maitredescles: Mutex::new(Some(enveloppe)),
-            enveloppe_privee: enveloppe_privee,
+            enveloppe_privee,
             cle_symmetrique: Mutex::new(None),
         }
     }
@@ -80,7 +86,7 @@ impl SymmetricEncryptionHandler {
                     cle_symmetrique, cle_publique)?;
                 Ok(multibase::encode(Base::Base64, &cle_chiffree[..]))
             },
-            None => Err(format!("maitredescles_volatil.get_cle_symmetrique_chiffree Cle symmetrique non initialisee"))?
+            None => Err(format!("SymmetricEncryptionHandler.get_cle_symmetrique_chiffree Cle symmetrique non initialisee"))?
         }
     }
 

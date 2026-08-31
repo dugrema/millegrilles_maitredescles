@@ -155,7 +155,7 @@ fn preprarer_handler_rechiffrage() -> Result<SymmetricEncryptionHandler, Error> 
 
     if certificat.verifier_roles(vec![RolesCertificats::MaitreDesCles])? {
         // On a un certificat MaitreDesCles, utiliser directement
-        Ok(SymmetricEncryptionHandler::with_certificat(enveloppe_privee))
+        Ok(SymmetricEncryptionHandler::with_certificate(enveloppe_privee))
     } else if certificat.verifier_roles(vec![RolesCertificats::MaitreDesClesConnexion])? {
         // HandlerCleRechiffrage::new_volatil_memoire().expect("HandlerCleRechiffrageCle")
         panic!("Mode volatil obsolete");

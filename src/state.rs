@@ -51,7 +51,7 @@ impl AppContext {
         let security = Arc::new(init_security(config.as_ref()).await?);
         let messaging = Arc::new(MessagingServiceImpl::new(config.clone(), security.clone()));
         let format = Arc::new(FormatServiceImpl::new(config.clone()));
-        let decryption = Arc::new(SymmetricEncryptionHandler::with_certificat(
+        let decryption = Arc::new(SymmetricEncryptionHandler::with_certificate(
             config.get_configuration_pki().get_enveloppe_privee()
         ));
 
