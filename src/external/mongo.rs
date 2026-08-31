@@ -487,3 +487,79 @@ pub async fn save_symmetric_batch(mongo: &dyn MongoDao, keys: Vec<RowClePartitio
         }
     }
 }
+
+// Sample from collection: MaitreDesCles/CA/cles
+// {
+//     _id: ObjectId('6a95b504374480125b09196b'),
+//     cle_id: 'zCkb2AhftK6ywCpoBszQp8Hb3Za6Pg7DBP5fmzuHhR2PW',
+//     signature: {
+//         domaines: [
+//             'GrosFichiers'
+//         ],
+//         version: 1,
+//         ca: 'TSAVnynEb4nQz5Va/ZdlgJbAQz1x+NDd6BVeHdojAj0',
+//         signature: 'pryt5xjbi+qRl2bWlIittUqZTxTJjjo5so4j9/YGuU8YINqR1nyiSSzx5SUNOt1kp0sReM2eXLNajR1enQBTDA'
+//     },
+//     non_dechiffrable: true,
+//     date_creation: ISODate('2026-08-31T17:08:20.751Z')
+// }
+
+// Matching sample from collection: MaitreDesCles/cles
+// {
+//     _id: ObjectId('6a95c9d8ff2af87849bc6864'),
+//     cle_id: 'zCkb2AhftK6ywCpoBszQp8Hb3Za6Pg7DBP5fmzuHhR2PW',
+//     signature: {
+//         ca: 'TSAVnynEb4nQz5Va/ZdlgJbAQz1x+NDd6BVeHdojAj0',
+//         domaines: [
+//             'GrosFichiers'
+//         ],
+//         signature: 'pryt5xjbi+qRl2bWlIittUqZTxTJjjo5so4j9/YGuU8YINqR1nyiSSzx5SUNOt1kp0sReM2eXLNajR1enQBTDA',
+//         version: 1
+//     },
+//     cle_symmetrique: 'm/El5qmxCObpOrWlMYW3y2rzPuWX7RU4Pbco8qpgPl2EK6IezPx3w22nzuSAQvpat',
+//     nonce_symmetrique: 'mwOlCoOD1RYoahlgncUgh5UheGobIlbpr',
+//     confirmation_ca: true
+// }
+
+/// Checks the symmetric table to set the "non_dechiffrable" flag to true when applicable.
+pub async fn check_ca_keys_undecipherable_flag(mongo: &dyn MongoDao) -> Result<(), CommonError> {
+    let pipeline = vec![
+        // 1. Only process records that are currently marked as undecipherable
+        doc! { "$match": { "non_dechiffrable": true } },
+
+        // 2. Join with the symmetric 'cles' collection
+        doc! {
+            "$lookup": {
+                "from": NOM_COLLECTION_SYMMETRIQUE_CLES,
+                "localField": "cle_id",
+                "foreignField": "cle_id",
+                "as": "matches"
+            }
+        },
+
+        // 3. Filter to keep only those that found at least one matching record in 'cles'
+        doc! { "$match": { "matches.0": { "$exists": true } } },
+
+        // 4. Set the flag to false
+        doc! { "$set": { "non_dechiffrable": false } },
+
+        // 5. Remove the temporary 'matches' field used for joining
+        doc! { "$project": { "matches": 0 } },
+
+        // 6. Merge the updated documents back into the CA/cles collection
+        doc! {
+            "$merge": {
+                "into": NOM_COLLECTION_CA_CLES,
+                "on": "_id",
+                "whenMatched": "replace"
+            }
+        },
+    ];
+
+    let collection_ca = mongo.get_collection(NOM_COLLECTION_CA_CLES)?;
+    collection_ca.aggregate(pipeline).await?;
+
+    debug!("check_ca_keys_undecipherable_flag Check Done");
+
+    Ok(())
+}

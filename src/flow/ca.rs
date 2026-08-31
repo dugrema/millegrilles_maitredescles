@@ -1,5 +1,5 @@
 use crate::constants::*;
-use crate::external::mongo::{check_key_exists, count_ca_undecipherable_keys, create_index_mongodb_ca, create_index_mongodb_symmetric, marquer_cles_ca_timeout, process_ca_key_sync};
+use crate::external::mongo::{check_ca_keys_undecipherable_flag, check_key_exists, count_ca_undecipherable_keys, create_index_mongodb_ca, create_index_mongodb_symmetric, marquer_cles_ca_timeout, process_ca_key_sync};
 use crate::external::mq::{init_ca_queues, QUEUE_CA_BACKUP, QUEUE_CA_NEWKEYS, QUEUE_CA_REQUESTS, QUEUE_CA_TICKER};
 use crate::flow::maintenance::validate_ticker;
 use crate::flow::transactions::KeyMasterTransactionService;
@@ -209,6 +209,12 @@ async fn ticker_job_ca<M>(mongo: &M, trigger: MessageValidated) -> Result<(), Co
     let minute = trigger_value.get_date().minute();
 
     debug!("ticker_job_ca for h:{} m:{}",hour,minute);
+
+    if hour % 3 == 0 && minute == 39 {
+        if let Err(e) = check_ca_keys_undecipherable_flag(mongo).await {
+            error!("Error processing check_ca_keys_undecipherable_flag: {}", e);
+        }
+    }
 
     // The sync content is produced every hour at minute 42.
     // Try to process twice per hour in case the first pass is missed
