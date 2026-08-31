@@ -308,7 +308,7 @@ pub async fn prepare_symmetric_key<M>(
 
     match collection.find_one(filtre).await? {
         Some(cle_locale) => {
-            decryption.set_cle_symmetrique(cle_locale.cle)?;
+            decryption.set_key(cle_locale.cle)?;
             info!("prepare_symmetric_key Local symmetric key is loaded, fingerprint: {}", fingerprint);
             Ok(())
         },
@@ -320,13 +320,13 @@ pub async fn prepare_symmetric_key<M>(
             }
 
             info!("No CA decryption key found, this is a new system. Initializing new KeyMaster symmetric key.");
-            decryption.generer_cle_symmetrique()?;
+            decryption.generate_new_key()?;
 
             // Encrypt the new key for CA and local
-            let encrytped_ca_key = decryption.get_cle_symmetrique_chiffree(
+            let encrytped_ca_key = decryption.get_encrypted_key(
                 &private_key.enveloppe_ca.certificat.public_key()?
             )?;
-            let encrypted_local_key = decryption.get_cle_symmetrique_chiffree(
+            let encrypted_local_key = decryption.get_encrypted_key(
                 &private_key.enveloppe_pub.certificat.public_key()?
             )?;
 

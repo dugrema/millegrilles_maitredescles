@@ -1,17 +1,17 @@
 use crate::models::CleInterneChiffree;
+use millegrilles_common_rust::certificats::VerificateurPermissions;
 use millegrilles_common_rust::chacha20poly1305::aead::{Aead, OsRng};
 use millegrilles_common_rust::chacha20poly1305::{AeadCore, KeyInit, XChaCha20Poly1305};
-use millegrilles_common_rust::error::Error;
+use millegrilles_common_rust::constantes::RolesCertificats;
+use millegrilles_common_rust::error::Error as CommonError;
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::CleSecrete;
 use millegrilles_common_rust::millegrilles_cryptographie::x25519::{CleSecreteX25519, chiffrer_asymmetrique_ed25519, dechiffrer_asymmetrique_ed25519};
 use millegrilles_common_rust::millegrilles_cryptographie::x509::EnveloppePrivee;
+use millegrilles_common_rust::multibase;
 use millegrilles_common_rust::multibase::Base;
 use millegrilles_common_rust::openssl::pkey::{PKey, Public};
 use std::fmt::{Debug, Formatter};
 use std::sync::{Arc, Mutex};
-use millegrilles_common_rust::certificats::VerificateurPermissions;
-use millegrilles_common_rust::constantes::RolesCertificats;
-use millegrilles_common_rust::multibase;
 
 pub struct SymmetricEncryptionHandler {
     /// Enveloppe de la cle prive locale.
@@ -61,7 +61,7 @@ impl SymmetricEncryptionHandler {
         }
     }
 
-    pub fn fingerprint(&self) -> Result<String, Error> {
+    pub fn fingerprint(&self) -> Result<String, CommonError> {
         Ok(self.enveloppe_privee.fingerprint()?)
     }
 
@@ -70,14 +70,14 @@ impl SymmetricEncryptionHandler {
         self.cle_symmetrique.lock().expect("lock").is_some()
     }
 
-    pub fn generer_cle_symmetrique(&self) -> Result<(), Error> {
+    pub fn generate_new_key(&self) -> Result<(), CommonError> {
         // Generer une cle secrete 32 bytes pour chiffrage symmetrique
         let mut guard = self.cle_symmetrique.lock().expect("lock");
         *guard = Some(CleSecrete::generer());
         Ok(())
     }
 
-    pub fn get_cle_symmetrique_chiffree(&self, cle_publique: &PKey<Public>) -> Result<String, Error> {
+    pub fn get_encrypted_key(&self, cle_publique: &PKey<Public>) -> Result<String, CommonError> {
         // Conserver versions asymmetriques de la cle privee
         match self.cle_symmetrique.lock().expect("lock").as_ref() {
             Some(inner) => {
@@ -90,7 +90,7 @@ impl SymmetricEncryptionHandler {
         }
     }
 
-    pub fn set_cle_symmetrique<S>(&self, cle: S) -> Result<(), Error>
+    pub fn set_key<S>(&self, cle: S) -> Result<(), CommonError>
         where S: AsRef<str>
     {
         let cle = cle.as_ref();
@@ -103,7 +103,7 @@ impl SymmetricEncryptionHandler {
         Ok(())
     }
 
-    pub fn chiffrer_cle_secrete(&self, cle: &[u8]) -> Result<CleInterneChiffree, Error> {
+    pub fn encrypt(&self, cle: &[u8]) -> Result<CleInterneChiffree, CommonError> {
         let (nonce, ciphertext) = {
             let guard = self.cle_symmetrique.lock().expect("lock");
             match guard.as_ref() {
@@ -129,7 +129,7 @@ impl SymmetricEncryptionHandler {
         Ok(CleInterneChiffree {cle: cle_chiffree, nonce: nonce_string})
     }
 
-    pub fn dechiffer_cle_secrete(&self, cle: CleInterneChiffree) -> Result<CleSecreteX25519, Error> {
+    pub fn decrypt(&self, cle: CleInterneChiffree) -> Result<CleSecreteX25519, CommonError> {
         let nonce = multibase::decode(cle.nonce)?;
         let cle_chiffree = multibase::decode(cle.cle)?;
 
@@ -148,7 +148,7 @@ impl SymmetricEncryptionHandler {
 
                 Ok(cle_secrete)
             },
-            None => panic!("Cle secrete non initialisee")
+            None => Err(CommonError::Str("Secret key not initialised"))
         }
     }
 }

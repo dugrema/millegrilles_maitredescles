@@ -82,11 +82,11 @@ pub async fn emettre_cles_symmetriques<M>(middleware: &M, rechiffreur: &Symmetri
     let enveloppes_publiques = middleware.get_publickeys_chiffrage();
 
     // Recuperer cles symmetriques chiffrees pour CA et tous les maitre des cles connus
-    let cle_secrete_chiffree_ca = rechiffreur.get_cle_symmetrique_chiffree(
+    let cle_secrete_chiffree_ca = rechiffreur.get_encrypted_key(
         &enveloppe_privee.enveloppe_ca.certificat.public_key()?)?;
     let mut cles = HashMap::new();
     for cle in enveloppes_publiques.into_iter() {
-        let cle_rechiffree = rechiffreur.get_cle_symmetrique_chiffree(&cle.certificat.public_key()?)?;
+        let cle_rechiffree = rechiffreur.get_encrypted_key(&cle.certificat.public_key()?)?;
         cles.insert(cle.fingerprint()?, cle_rechiffree);
     }
 
@@ -113,7 +113,7 @@ pub async fn preparer_rechiffreur<M>(_middleware: &M, handler_rechiffrage: &Symm
     where M: GenerateurMessages + ValidateurX509
 {
     info!("preparer_rechiffreur Generer nouvelle cle symmetrique de rechiffrage");
-    handler_rechiffrage.generer_cle_symmetrique()
+    handler_rechiffrage.generate_new_key()
 }
 
 /// Requete utilisee pour parcourir toutes les cles du CA a partir d'une partition
@@ -207,7 +207,7 @@ impl CleSecreteRechiffrage {
         let cle_id = self.signature.get_cle_ref()?.to_string();
 
         // Rechiffrer cle
-        let cle_rechiffree = handler_rechiffrage.chiffrer_cle_secrete(&cle_secrete.0[..])?;
+        let cle_rechiffree = handler_rechiffrage.encrypt(&cle_secrete.0[..])?;
         Ok((cle_id, cle_rechiffree))
     }
 

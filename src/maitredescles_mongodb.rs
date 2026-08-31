@@ -157,7 +157,7 @@ async fn preparer_rechiffreur_mongo_session<M>(middleware: &M, handler_rechiffra
             match collection.find_one(filtre).session(&mut *session).await? {
                 Some(doc_cle_locale) => {
                     let cle_locale: DocumentCleRechiffrage = convertir_bson_deserializable(doc_cle_locale)?;
-                    handler_rechiffrage.set_cle_symmetrique(cle_locale.cle)?;
+                    handler_rechiffrage.set_key(cle_locale.cle)?;
                     info!("preparer_rechiffreur_mongo Cle de rechiffrage locale est chargee");
                 },
                 None => {
@@ -177,8 +177,8 @@ async fn preparer_rechiffreur_mongo_session<M>(middleware: &M, handler_rechiffra
             preparer_rechiffreur(middleware, handler_rechiffrage).await?;
 
             // Conserver la cle de rechiffrage
-            let cle_secrete_chiffree_ca = handler_rechiffrage.get_cle_symmetrique_chiffree(&enveloppe_privee.enveloppe_ca.certificat.public_key()?)?;
-            let cle_secrete_chiffree_local = handler_rechiffrage.get_cle_symmetrique_chiffree(&enveloppe_privee.enveloppe_pub.certificat.public_key()?)?;
+            let cle_secrete_chiffree_ca = handler_rechiffrage.get_encrypted_key(&enveloppe_privee.enveloppe_ca.certificat.public_key()?)?;
+            let cle_secrete_chiffree_local = handler_rechiffrage.get_encrypted_key(&enveloppe_privee.enveloppe_pub.certificat.public_key()?)?;
             debug!("Cle secrete chiffree pour instance {} :\nCA = {}\n local = {}", instance_id, cle_secrete_chiffree_ca, cle_secrete_chiffree_local);
 
             let cle_ca = doc! {
@@ -307,7 +307,7 @@ pub async fn sauvegarder_cle_secrete<M>(
 where M: MongoDao
 {
     // Rechiffrer avec le handler de rechiffrage
-    let cle_rechiffree = handler_rechiffrage.chiffrer_cle_secrete(&cle_secrete.0)?;
+    let cle_rechiffree = handler_rechiffrage.encrypt(&cle_secrete.0)?;
 
     let nom_collection_cles = NOM_COLLECTION_SYMMETRIQUE_CLES;
     let collection = middleware.get_collection(nom_collection_cles)?;
@@ -1417,7 +1417,7 @@ pub async fn commande_cle_symmetrique<M>(middleware: &M, m: MessageValide, handl
     }
 
     // Dechiffrage de la cle, mise en memoire - si echec, on ne peut pas dechiffrer la cle
-    handler_rechiffrage.set_cle_symmetrique(commande.cle.as_str())?;
+    handler_rechiffrage.set_key(commande.cle.as_str())?;
 
     let cle_locale = doc! {
         "type": "local",
@@ -1513,7 +1513,7 @@ pub async fn commande_rotation_certificat<M>(middleware: &M, m: MessageValide, h
         debug!("commande_rotation_certificat Recu commande de rotation de certificat MaitreDesCles local");
         // let public_keys = certificat.fingerprint_cert_publickeys()?;
         let public_key = &certificat.certificat.public_key()?;
-        let cle_secrete_chiffree_local = handler_rechiffrage.get_cle_symmetrique_chiffree(public_key)?;
+        let cle_secrete_chiffree_local = handler_rechiffrage.get_encrypted_key(public_key)?;
         debug!("Cle secrete chiffree pour instance {}:\n local = {}", instance_id, cle_secrete_chiffree_local);
         let cle_locale = doc! {
             "type": "local",
@@ -1580,7 +1580,7 @@ pub async fn evenement_cle_rechiffrage<M>(middleware: &M, m: MessageValide, hand
         let cle_tierce_vec = multibase::decode(cle_tierce)?;
         let cle_dechiffree = dechiffrer_asymmetrique_ed25519(
             &cle_tierce_vec.1[..], &enveloppe_signature.cle_privee)?;
-        let cle_chiffree = handler_rechiffrage.chiffrer_cle_secrete(&cle_dechiffree.0[..])?;
+        let cle_chiffree = handler_rechiffrage.encrypt(&cle_dechiffree.0[..])?;
 
         let filtre_cle = doc! {
             "type": "tiers",

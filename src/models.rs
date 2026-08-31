@@ -137,7 +137,7 @@ impl RowClePartition {
             None => Err(Error::Str("to_cle_secrete_serializee nonce manquant"))
         }?;
 
-        let cle_secrete = rechiffrage_handler.dechiffer_cle_secrete(cle_interne)?;
+        let cle_secrete = rechiffrage_handler.decrypt(cle_interne)?;
 
         let cle_id = self.cle_id.clone();
 

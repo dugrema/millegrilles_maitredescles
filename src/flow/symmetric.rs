@@ -475,7 +475,7 @@ async fn process_newkeys(
     // Decrypt the key
     let enveloppe_signature = config.get_configuration_pki().get_enveloppe_privee();
     let cle_secrete = command.get_cle_secrete(enveloppe_signature.as_ref())?;
-    let cle_rechiffree = handler_rechiffrage.chiffrer_cle_secrete(&cle_secrete.0)?;
+    let cle_rechiffree = handler_rechiffrage.encrypt(&cle_secrete.0)?;
 
     // Save the key (volatile data, the redo-log is handled by the CA)
     save_symmetric_key(mongo, command.signature, cle_rechiffree).await?;
