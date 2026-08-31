@@ -11,6 +11,7 @@ mod maintenance;
 pub mod state;
 pub mod external;
 pub mod flow;
+pub mod errors;
 
 use crate::flow::symmetric::symmetric_init_tasks;
 use crate::state::AppContext;

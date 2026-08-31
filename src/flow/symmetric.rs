@@ -1,9 +1,9 @@
 use crate::constants::*;
+use crate::errors::{ErreurPermissionRechiffrage, ErrorPermissionRefusee};
 use crate::external::crypto::SymmetricEncryptionHandler;
 use crate::external::mongo::{create_index_mongodb_custom, create_index_mongodb_partition, get_symmetric_keys, save_symmetric_key};
 use crate::external::mq::{QUEUE_SYMMETRIC_CERTIFICATES, QUEUE_SYMMETRIC_GETKEYS, QUEUE_SYMMETRIC_NEWKEYS, emit_certificate, init_symmetric_queues};
 use crate::flow::maintenance::validate_ticker;
-use crate::maitredescles_commun::{ErreurPermissionRechiffrage, ErrorPermissionRefusee};
 use crate::models::{ErrorMessage, KeyDecryptionRefused};
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::certificats::VerificateurPermissions;
@@ -94,8 +94,6 @@ impl MaitreDesClesSymmetricServiceImpl {
                 Ok(message) => {
                     if let Err(e) = ticker_job_symmetric(
                         self.outbound.as_ref(),
-                        self.config.as_ref(),
-                        self.mongo.as_ref(),
                         self.decryption.as_ref(),
                         message
                     ).await {
@@ -184,15 +182,11 @@ impl MaitreDesClesSymmetricServiceImpl {
 
 impl MaitreDesClesSymmetricService for MaitreDesClesSymmetricServiceImpl {}
 
-async fn ticker_job_symmetric<M>(
+async fn ticker_job_symmetric(
     outbound: &MessageOutboundFacade,
-    config: &dyn ConfigService,
-    mongo: &M,
     decryption: &SymmetricEncryptionHandler,
     trigger: MessageValidated,
-) -> Result<(), CommonError>
-where M: MongoDaoTyped
-{
+) -> Result<(), CommonError> {
     // Ensure this is an authorized module
     if let Err(e) = validate_ticker(&trigger).await {
         error!("Invalid ticker message, rejecting: {}", e);

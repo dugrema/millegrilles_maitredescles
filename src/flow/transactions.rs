@@ -1,15 +1,16 @@
 use crate::constants::{NOM_COLLECTION_CA_CLES, NOM_COLLECTION_TRACKING_CA, NOM_COLLECTION_TRANSACTIONS_CA, TRANSACTION_CLE, TRANSACTION_CLE_V2};
-use crate::maitredescles_commun::{RowCleCaRef, TransactionCleV2};
+use crate::models::RowCleCaRef;
+use crate::models::TransactionCleV2;
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson;
 use millegrilles_common_rust::chrono::Utc;
 use millegrilles_common_rust::error::{Error as CommonError, Error};
 use millegrilles_common_rust::mongo_dao::MongoDao;
+use millegrilles_common_rust::serde_json::Value;
 use millegrilles_common_rust::v3::impls::transaction_service::TransactionServiceImpl;
 use millegrilles_common_rust::v3::models::{BatchInsertions, TransactionOperationAggregator, TransactionWrapper};
 use millegrilles_common_rust::v3::{ConfigService, FormatService, TransactionRouter, TransactionService};
 use std::sync::Arc;
-use millegrilles_common_rust::serde_json::Value;
 
 pub struct KeyMasterTransactionService {
     ca: Box<dyn TransactionService>,

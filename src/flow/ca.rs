@@ -3,8 +3,8 @@ use crate::external::mongo::{check_key_exists, create_index_mongodb_custom, marq
 use crate::external::mq::{QUEUE_CA_BACKUP, QUEUE_CA_NEWKEYS, QUEUE_CA_TICKER, init_ca_queues};
 use crate::flow::maintenance::validate_ticker;
 use crate::flow::transactions::KeyMasterTransactionService;
-use crate::maitredescles_commun::TransactionCleV2;
 use crate::models::ErrorMessage;
+use crate::models::TransactionCleV2;
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::chiffrage_cle::CommandeAjouterCleDomaine;
 use millegrilles_common_rust::chrono::Timelike;

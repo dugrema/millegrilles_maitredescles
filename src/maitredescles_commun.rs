@@ -5,6 +5,7 @@ use std::sync::Arc;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::constants::{DOMAINE_NOM, EVENEMENT_DEMANDE_CLE_SYMMETRIQUE, REQUETE_TRANSFERT_CLES};
+use crate::errors::{ErreurPermissionRechiffrage, ErrorPermissionRefusee};
 use crate::external::crypto::SymmetricEncryptionHandler;
 use crate::models::CleInterneChiffree;
 use millegrilles_common_rust::base64::{Engine as _, engine::general_purpose::STANDARD_NO_PAD as base64_nopad};
@@ -223,12 +224,6 @@ pub struct CommandeRechiffrerBatchDechiffree {
     pub cles: HashMap<String, CleSecreteRechiffrage>
 }
 
-/// Transaction de sauvegarde de cle CA version 2.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct TransactionCleV2 {
-    pub signature: SignatureDomaines
-}
-
 /// Transaction orignale de sauvegarde de cle CA.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionCle {
@@ -253,89 +248,6 @@ pub struct TransactionCle {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub partition: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct RowClePartition {
-    // Identite
-    pub cle_id: String,
-    pub signature: SignatureDomaines,
-
-    pub cle_symmetrique: Option<String>,
-    pub nonce_symmetrique: Option<String>,
-
-    // Information de dechiffrage contenu (utilise avec signature version 0)
-    #[serde(default, with="optionformatchiffragestr", skip_serializing_if="Option::is_none")]
-    pub format: Option<FormatChiffrage>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub iv: Option<String>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub tag: Option<String>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub header: Option<String>,
-
-    pub confirmation_ca: Option<bool>,
-}
-
-impl RowClePartition {
-
-    pub fn to_cle_secrete_serialisee(self, rechiffrage_handler: &SymmetricEncryptionHandler)
-                                     -> Result<CleSecreteSerialisee, Error>
-    {
-        let cle_interne = match self.cle_symmetrique.as_ref() {
-            Some(cle) => match self.nonce_symmetrique.as_ref() {
-                Some(nonce) => Ok(CleInterneChiffree { cle: cle.clone(), nonce: nonce.clone() }),
-                None => Err(Error::Str("to_cle_secrete_serializee cle_symmetrique manquante"))
-            },
-            None => Err(Error::Str("to_cle_secrete_serializee nonce manquant"))
-        }?;
-
-        let cle_secrete = rechiffrage_handler.dechiffer_cle_secrete(cle_interne)?;
-
-        let cle_id = self.cle_id.clone();
-
-        // Retirer le 'm' multibase du iv/header pour convertir en format nonce
-        let nonce = match self.iv {
-            Some(inner) => Some(inner.as_str()[1..].to_string()),
-            None => match self.header {
-                Some(inner) => Some(inner.as_str()[1..].to_string()),
-                None => None
-            }
-        };
-
-        let verification = match self.tag {
-            Some(inner) => Some(inner),
-            None => match self.signature.version {
-                SignatureDomainesVersion::NonSigne => Some(self.signature.signature.to_string()),
-                _ => None
-            }
-        };
-
-        Ok(CleSecreteSerialisee::from_cle_secrete(cle_secrete, Some(cle_id), self.format, nonce, verification)?)
-    }
-
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct RowCleCaRef<'a> {
-    pub cle_id: &'a str,
-    pub signature: SignatureDomainesRef<'a>,
-    //pub dirty: Option<bool>,
-    pub non_dechiffrable: Option<bool>,
-    #[serde(rename(deserialize="_mg-creation"))]
-        // deserialize_with="bson::serde_helpers::chrono_datetime_as_bson_datetime::deserialize")]
-    pub date_creation: DateTime<Utc>,
-
-    // Information de dechiffrage contenu (utilise avec signature version 0)
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "optionformatchiffragestr")]
-    pub format: Option<FormatChiffrage>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub iv: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tag: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub header: Option<&'a str>,
-
 }
 
 #[derive(Clone, Deserialize)]
@@ -363,15 +275,6 @@ pub struct RowClePartitionRef<'a> {
     // deserialize_with="bson::serde_helpers::chrono_datetime_as_bson_datetime::deserialize")]
     #[allow(unused)]
     pub date_creation: DateTime<Utc>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct DocumentCleRechiffrage {
-    #[serde(rename="type")]
-    pub type_: String,
-    pub instance_id: String,
-    pub fingerprint: Option<String>,
-    pub cle: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -412,21 +315,6 @@ pub async fn emettre_demande_cle_symmetrique<M,S>(middleware: &M, cle_ca: S) -> 
     middleware.emettre_evenement(routage, &evenement).await?;
 
     Ok(())
-}
-
-#[derive(Debug)]
-pub struct ErrorPermissionRefusee {
-    pub code: usize,
-    pub err: String,
-}
-
-pub enum ErreurPermissionRechiffrage { Refuse(ErrorPermissionRefusee), Error(Error) }
-
-impl<E> From<E> for ErreurPermissionRechiffrage where E: std::error::Error {
-    fn from(value: E) -> Self {
-        let err = Error::String(format!("ErreurPermissionRechiffrage {:?}", value));
-        Self::Error(err)
-    }
 }
 
 pub async fn verifier_permission_rechiffrage<M>(middleware: &M, m: &MessageValide, requete: &RequeteDechiffrage)

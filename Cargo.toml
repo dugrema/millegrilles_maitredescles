@@ -11,8 +11,5 @@ edition = "2024"
 # millegrilles_common_rust = { git = "https://github.com/dugrema/millegrilles_common_rust.git", branch = "tracing20260827" }
 millegrilles_common_rust = { path = "/home/mathieu/RustroverProjects/millegrilles_common_rust" }
 
-# tracing = "0.1.44"
-# tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 serde = { version = "1.0.228", features = ["derive"] }
-# sqlite = { version = "0.37.0" }
 zeroize = "1.8.2"

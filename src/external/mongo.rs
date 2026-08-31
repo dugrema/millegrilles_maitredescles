@@ -1,8 +1,8 @@
 use crate::constants::*;
 use crate::external::crypto::SymmetricEncryptionHandler;
 use crate::flow::transactions::KeyMasterTransactionService;
-use crate::maitredescles_commun::{DocumentCleRechiffrage, RowClePartition, TransactionCleV2};
-use crate::models::CleInterneChiffree;
+use crate::models::DocumentCleRechiffrage;
+use crate::models::{CleInterneChiffree, RowClePartition, TransactionCleV2};
 use millegrilles_common_rust::bson::doc;
 use millegrilles_common_rust::chiffrage_cle::CommandeAjouterCleDomaine;
 use millegrilles_common_rust::chrono::{Duration, Utc};
