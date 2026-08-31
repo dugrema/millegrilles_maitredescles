@@ -73,7 +73,14 @@ impl AppContext {
             MaitreDesClesCAServiceImpl::new(config.clone(), outbound.clone(), transaction.clone(), mongo.clone(), format.clone())
         );
         let symmetric_service = Arc::new(
-            MaitreDesClesSymmetricServiceImpl::new(config.clone(), outbound.clone(), security.clone(), mongo.clone(), decryption.clone())
+            MaitreDesClesSymmetricServiceImpl::new(
+                config.clone(),
+                outbound.clone(),
+                security.clone(),
+                security.clone(),
+                mongo.clone(),
+                decryption.clone()
+            )
         );
 
         info!("Configure middleware resources : queues, index, tables, ...");
@@ -132,6 +139,7 @@ async fn init_config() -> Result<ConfigServiceDbImpl, CommonError> {
 async fn init_security(config: &dyn ConfigService) -> Result<SecurityServiceImpl, CommonError> {
     let validator = build_store_path_v2(&config.get_configuration_pki().ca_certfile).map_err(|e| e.to_string())?;
     let security_impl = SecurityServiceImpl::new(
+        config.get_configuration_pki().get_enveloppe_privee(),
         Arc::new(validator),
         CleChiffrageHandlerImpl::new(),
     );

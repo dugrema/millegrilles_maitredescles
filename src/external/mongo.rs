@@ -1,31 +1,26 @@
+use std::collections::HashMap;
 use crate::constants::*;
 use crate::external::crypto::SymmetricEncryptionHandler;
-use crate::flow::transactions::KeyMasterTransactionService;
 use crate::models::DocumentCleRechiffrage;
-use crate::models::{CleInterneChiffree, RowClePartition, TransactionCleV2};
-use millegrilles_common_rust::bson::doc;
-use millegrilles_common_rust::chiffrage_cle::CommandeAjouterCleDomaine;
+use crate::models::{CleInterneChiffree, RowClePartition};
+use millegrilles_common_rust::bson::{doc, Document};
 use millegrilles_common_rust::chrono::{Duration, Utc};
 use millegrilles_common_rust::common_messages::ResponseRequestDechiffrageV2Cle;
 use millegrilles_common_rust::configuration::ConfigMessages;
-use millegrilles_common_rust::constantes::{Securite, CHAMP_CREATION, CHAMP_MODIFICATION, TRANSACTION_CHAMP_ID, FIELD_BID, INDEX_BID, INDEX_DATE_PROCESSED, FIELD_DATE_PROCESSED};
+use millegrilles_common_rust::constantes::{CHAMP_CREATION, CHAMP_MODIFICATION, FIELD_BID, FIELD_DATE_PROCESSED, INDEX_BID, INDEX_DATE_PROCESSED, TRANSACTION_CHAMP_ID};
 use millegrilles_common_rust::error::{Error as CommonError, Error};
-use millegrilles_common_rust::generateur_messages::RoutageMessageAction;
 use millegrilles_common_rust::jwt_simple::prelude::Deserialize;
 use millegrilles_common_rust::millegrilles_cryptographie::heapless;
-use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::{SignatureDomaines, SignatureDomainesRef};
-use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageKind;
+use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::{SignatureDomaines, SignatureDomainesVersion};
 use millegrilles_common_rust::millegrilles_cryptographie::x509::EnveloppePrivee;
 use millegrilles_common_rust::mongo_dao::{ChampIndex, IndexOptions, MongoDao, MongoDaoTyped, start_transaction_regular};
 use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::mongodb::options::Hint;
-use millegrilles_common_rust::serde_json::Value;
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::tracing::{debug, error, info, warn};
-use millegrilles_common_rust::v3::facades::message_inbound::MessageValidated;
-use millegrilles_common_rust::v3::models::TransactionWrapper;
-use millegrilles_common_rust::v3::{ConfigService, FormatService};
-use millegrilles_common_rust::{bson, serde_json};
+use millegrilles_common_rust::bson;
+use millegrilles_common_rust::tokio_util::io::simplex::new;
+use crate::maitredescles_commun::CleSecreteRechiffrage;
 // DB / Index creation
 
 const KEY_CA: &str = "CA";
@@ -33,7 +28,6 @@ pub const KEY_LOCAL: &str = "local";
 
 
 pub async fn create_index_mongodb_ca(db: &dyn MongoDao, config: &dyn ConfigMessages) -> Result<(), CommonError> {
-
     db.create_index(
         config,
         NOM_COLLECTION_TRANSACTIONS_CA,
@@ -43,7 +37,7 @@ pub async fn create_index_mongodb_ca(db: &dyn MongoDao, config: &dyn ConfigMessa
         Some(IndexOptions {
             nom_index: Some(String::from(INDEX_REDO_LOG_ID)),
             unique: true,
-        })
+        }),
     ).await?;
 
     db.create_index(
@@ -439,4 +433,31 @@ pub async fn count_ca_undecipherable_keys(mongo: &dyn MongoDao) -> Result<usize,
         .hint(Hint::Name(INDEX_NON_DECHIFFRABLES.into()))
         .await?;
     Ok(compte as usize)
+}
+
+pub async fn save_symmetric_batch(mongo: &dyn MongoDao, keys: Vec<RowClePartition>) -> Result<(), CommonError> {
+
+    let collection = mongo.get_collection(NOM_COLLECTION_SYMMETRIQUE_CLES)?;
+
+    let key_docs: Vec<Document> = keys
+        .into_iter()
+        .map(|k| bson::serialize_to_document(&k).unwrap())
+        .collect();
+
+    // Try to insert all values in a single batch
+    let mut session = mongo.get_session().await?;
+    session.start_transaction().await?;
+    match collection.insert_many(&key_docs).session(&mut session).await {
+        Ok(_) => {
+            session.commit_transaction().await?;
+            Ok(())
+        },
+        Err(e) => {
+            warn!("Error saving batch of keys using insert: {:?}", e);
+            session.abort_transaction().await?;
+
+            // Try upsert instead, the error was likely on a duplicate key.
+            todo!()
+        }
+    }
 }

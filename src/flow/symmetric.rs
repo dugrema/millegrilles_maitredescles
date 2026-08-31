@@ -4,8 +4,8 @@ use crate::external::crypto::SymmetricEncryptionHandler;
 use crate::external::mongo::*;
 use crate::external::mq::*;
 use crate::flow::maintenance::validate_ticker;
-use crate::maitredescles_commun::CommandeCleSymmetrique;
-use crate::models::{DocumentCleRechiffrage, ErrorMessage, KeyDecryptionRefused};
+use crate::maitredescles_commun::{CommandeCleSymmetrique, CommandeRechiffrerBatchChiffree, CommandeRechiffrerBatchDechiffree};
+use crate::models::{DocumentCleRechiffrage, ErrorMessage, KeyDecryptionRefused, RowClePartition};
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::certificats::VerificateurPermissions;
 use millegrilles_common_rust::chiffrage_cle::CommandeAjouterCleDomaine;
@@ -18,7 +18,7 @@ use millegrilles_common_rust::messages_generiques::MessageCedule;
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageKind;
 use millegrilles_common_rust::millegrilles_cryptographie::x509::EnveloppeCertificat;
 use millegrilles_common_rust::mongo_dao::{MongoDao, MongoDaoImpl, MongoDaoTyped};
-use millegrilles_common_rust::tokio;
+use millegrilles_common_rust::{serde_json, tokio};
 use millegrilles_common_rust::tokio::task::JoinSet;
 use millegrilles_common_rust::tracing::{debug, error, info, warn};
 use millegrilles_common_rust::v3::facades::message_inbound::{MessageInboundValidator, MessageValidated};
@@ -26,8 +26,11 @@ use millegrilles_common_rust::v3::facades::message_outbound::MessageOutboundFaca
 use millegrilles_common_rust::v3::impls::config_service::ConfigServiceDbImpl;
 use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl;
 use millegrilles_common_rust::v3::impls::rabbitmq_consumer::DeliveryInfo;
-use millegrilles_common_rust::v3::{ConfigService, PkiService};
+use millegrilles_common_rust::v3::{ChiffrageService, ConfigService, PkiService};
 use std::sync::Arc;
+use millegrilles_common_rust::generateur_messages::RoutageMessageAction;
+use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::FormatChiffrage;
+use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::SignatureDomainesVersion;
 
 #[async_trait]
 pub trait MaitreDesClesSymmetricService {}
@@ -36,6 +39,7 @@ pub struct MaitreDesClesSymmetricServiceImpl {
     config: Arc<dyn ConfigService>,
     outbound: Arc<MessageOutboundFacade>,
     pki: Arc<dyn PkiService>,
+    chiffrage: Arc<dyn ChiffrageService>,
     mongo: Arc<MongoDaoImpl>,
     decryption: Arc<SymmetricEncryptionHandler>,
 }
@@ -45,10 +49,11 @@ impl MaitreDesClesSymmetricServiceImpl {
         config: Arc<dyn ConfigService>,
         outbound: Arc<MessageOutboundFacade>,
         pki: Arc<dyn PkiService>,
+        chiffrage: Arc<dyn ChiffrageService>,
         mongo: Arc<MongoDaoImpl>,
         decryption: Arc<SymmetricEncryptionHandler>,
     ) -> Self {
-        Self { config: config, outbound, pki, mongo, decryption }
+        Self { config: config, outbound, pki, chiffrage, mongo, decryption }
     }
 
     pub async fn configure(&self, mq: &MessagingServiceImpl, config: &ConfigServiceDbImpl) -> Result<(), CommonError> {
@@ -198,10 +203,11 @@ impl MaitreDesClesSymmetricServiceImpl {
         while let Some(result) = streamer.next().await {
             match result {
                 Ok(message) => {
-                    process_instance_command(
+                    route_instance_command(
                         self.config.as_ref(),
                         self.outbound.as_ref(),
                         self.mongo.as_ref(),
+                        self.chiffrage.as_ref(),
                         self.decryption.as_ref(),
                         message
                     ).await;
@@ -518,6 +524,42 @@ async fn process_newkeys(
     Ok(())
 }
 
+async fn route_instance_command(
+    config: &dyn ConfigService,
+    outbound: &MessageOutboundFacade,
+    mongo: &MongoDaoImpl,
+    chiffrage: &dyn ChiffrageService,
+    decryption: &SymmetricEncryptionHandler,
+    message: MessageValidated
+) {
+    let action = match message.message.routage.as_ref() {
+        Some(routage) => match routage.action.as_ref() {
+            Some(action) => action.clone(),
+            None => {
+                // Bad message, no action
+                return
+            }
+        },
+        None => {
+            // Bad message, no routing
+            return
+        }
+    };
+
+    let result = match action.as_str() {
+        COMMANDE_CLE_SYMMETRIQUE => repair_symmetric_key(config, outbound, decryption, mongo, message).await,
+        COMMANDE_RECHIFFRER_BATCH => save_key_batch(chiffrage, decryption, outbound, mongo, message).await,
+        _ => {
+            warn!("process_newkeys_thread Unsupported action type: {}", action);
+            return
+        }
+    };
+
+    if let Err(e) = result {
+        error!("process_newkeys_thread Error: {:?}", e);
+    }
+}
+
 /// This uses a command from Coup D'Oeil to set the symmetric key from a CA re-encrypted version
 async fn repair_symmetric_key(
     config: &dyn ConfigService,
@@ -578,36 +620,63 @@ async fn repair_symmetric_key(
     Ok(())
 }
 
-async fn process_instance_command(
-    config: &dyn ConfigService,
-    outbound: &MessageOutboundFacade,
-    mongo: &MongoDaoImpl,
+async fn save_key_batch(
+    chiffrage: &dyn ChiffrageService,
     decryption: &SymmetricEncryptionHandler,
-    message: MessageValidated
-) {
-    let action = match message.message.routage.as_ref() {
-        Some(routage) => match routage.action.as_ref() {
-            Some(action) => action.clone(),
-            None => {
-                // Bad message, no action
-                return
-            }
-        },
-        None => {
-            // Bad message, no routing
-            return
-        }
-    };
+    outbound: &MessageOutboundFacade,
+    mongo: &dyn MongoDao,
+    wrapper: MessageValidated,
+) -> Result<(), CommonError> {
+    let command: CommandeRechiffrerBatchChiffree = wrapper.message.deserialize()?;
+    let decrypted_batch: CommandeRechiffrerBatchDechiffree = serde_json::from_value(
+        chiffrage.decrypt_document(command.cles)?
+    )?;
 
-    let result = match action.as_str() {
-        COMMANDE_CLE_SYMMETRIQUE => repair_symmetric_key(config, outbound, decryption, mongo, message ).await,
-        _ => {
-            warn!("process_newkeys_thread Unsupported action type: {}", action);
-            return
-        }
-    };
+    // Map keys to database struct
+    let mut keys = Vec::with_capacity(decrypted_batch.cles.len());
+    for (_key_id, key) in decrypted_batch.cles {
+        // Encrypt key
+        let (key_id, cle_rechiffree) = key.rechiffrer_cle(decryption)?;
 
-    if let Err(e) = result {
-        error!("process_newkeys_thread Error: {:?}", e);
+        let mut row = RowClePartition {
+            cle_id: key_id,
+            signature: key.signature.clone(),
+            cle_symmetrique: Some(cle_rechiffree.cle),
+            nonce_symmetrique: Some(cle_rechiffree.nonce),
+            // Deprecated fields
+            format: None,
+            iv: None,
+            tag: None,
+            header: None,
+            // The batch was decrypted from the CA list of keys
+            confirmation_ca: Some(true),
+        };
+
+        // Copy deprecated values when applicable
+        match key.signature.version {
+            SignatureDomainesVersion::NonSigne => {
+                // set_on_insert.insert(CHAMP_HACHAGE_BYTES, cle.signature.signature.as_str());
+                if let Some(format) = key.format {
+                    if let Ok(value) = FormatChiffrage::try_from(format.as_str()) {
+                        row.format = Some(value);
+                    }
+                }
+                if let Some(header) = key.header {
+                    row.header = Some(header);
+                }
+            },
+            _ => ()
+        }
+
+        keys.push(row);
     }
+
+    save_symmetric_batch(mongo, keys).await?;
+
+    // let routage_event = RoutageMessageAction::builder(
+    //     DOMAINE_NOM, EVENEMENT_CLE_RECUE_PARTITION, vec![Securite::L4Secure]
+    // ).build();
+    //     middleware.emettre_evenement(routage_event, &event_contenu).await?;
+
+    outbound.respond(wrapper.delivery_info, ErrorMessage::ok()).await
 }

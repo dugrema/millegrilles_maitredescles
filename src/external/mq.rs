@@ -183,6 +183,7 @@ pub fn init_symmetric_queues(config: &dyn ConfigService, mq: &MessagingServiceIm
     mq.add_named_queue(ConfigQueue {
         nom_queue: format!("{}/{}/{}", DOMAINE_NOM, QUEUE_SYMMETRIC_COMMANDS, fingerprint_pk),
         routing_keys: vec![
+            ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_RECHIFFRER_BATCH), exchange: Securite::L3Protege },
             ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, fingerprint_pk, COMMANDE_CLE_SYMMETRIQUE), exchange: Securite::L3Protege },
         ],
         ttl: Some(QUEUE_TTL_DEFAULT),
