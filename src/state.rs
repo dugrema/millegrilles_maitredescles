@@ -1,5 +1,4 @@
 use crate::external::crypto::SymmetricEncryptionHandler;
-use crate::external::mongo::prepare_symmetric_key;
 use crate::flow::ca::{MaitreDesClesCAService, MaitreDesClesCAServiceImpl};
 use crate::flow::symmetric::{MaitreDesClesSymmetricService, MaitreDesClesSymmetricServiceImpl};
 use crate::flow::transactions::KeyMasterTransactionService;
@@ -10,7 +9,7 @@ use millegrilles_common_rust::error::Error as CommonError;
 use millegrilles_common_rust::mongo_dao::{MongoDaoImpl, initialiser};
 use millegrilles_common_rust::tokio::task::JoinSet;
 use millegrilles_common_rust::tokio_util::sync::CancellationToken;
-use millegrilles_common_rust::tracing::{debug, info, warn};
+use millegrilles_common_rust::tracing::{debug, info};
 use millegrilles_common_rust::v3::facades::message_inbound::MessageInboundValidator;
 use millegrilles_common_rust::v3::facades::message_outbound::MessageOutboundFacade;
 use millegrilles_common_rust::v3::impls::config_service::ConfigServiceDbImpl;
