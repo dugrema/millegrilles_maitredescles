@@ -1,12 +1,13 @@
 use crate::constants::*;
-use crate::external::mongo::{check_key_exists, create_index_mongodb_custom, create_index_mongodb_partition, get_symmetric_keys, save_symmetric_key};
-use crate::external::mq::{emit_certificate, init_symmetric_queues, QUEUE_CA_NEWKEYS, QUEUE_SYMMETRIC_CERTIFICATES, QUEUE_SYMMETRIC_GETKEYS, QUEUE_SYMMETRIC_NEWKEYS};
+use crate::external::mongo::{create_index_mongodb_custom, create_index_mongodb_partition, get_symmetric_keys, save_symmetric_key};
+use crate::external::mq::{QUEUE_SYMMETRIC_CERTIFICATES, QUEUE_SYMMETRIC_GETKEYS, QUEUE_SYMMETRIC_NEWKEYS, emit_certificate, init_symmetric_queues};
 use crate::flow::maintenance::validate_ticker;
-use crate::maitredescles_commun::{ErreurPermissionRechiffrage, ErrorPermissionRefusee, TransactionCleV2};
+use crate::maitredescles_commun::{ErreurPermissionRechiffrage, ErrorPermissionRefusee};
 use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
 use crate::models::{ErrorMessage, KeyDecryptionRefused};
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::certificats::VerificateurPermissions;
+use millegrilles_common_rust::chiffrage_cle::CommandeAjouterCleDomaine;
 use millegrilles_common_rust::chrono::Timelike;
 use millegrilles_common_rust::common_messages::{ReponseRequeteDechiffrageV2, RequeteDechiffrage, ResponseRequestDechiffrageV2Cle};
 use millegrilles_common_rust::constantes::{DELEGATION_GLOBALE_PROPRIETAIRE, REQUETE_CERT_MAITREDESCLES, Securite};
@@ -15,8 +16,7 @@ use millegrilles_common_rust::futures::StreamExt;
 use millegrilles_common_rust::messages_generiques::MessageCedule;
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageKind;
 use millegrilles_common_rust::millegrilles_cryptographie::x509::EnveloppeCertificat;
-use millegrilles_common_rust::mongo_dao::{MongoDaoImpl, MongoDaoTyped};
-use millegrilles_common_rust::{serde_json, tokio};
+use millegrilles_common_rust::mongo_dao::{MongoDao, MongoDaoImpl, MongoDaoTyped};
 use millegrilles_common_rust::tokio::task::JoinSet;
 use millegrilles_common_rust::tracing::{debug, error, info, warn};
 use millegrilles_common_rust::v3::facades::message_inbound::{MessageInboundValidator, MessageValidated};
@@ -25,10 +25,8 @@ use millegrilles_common_rust::v3::impls::config_service::ConfigServiceDbImpl;
 use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl;
 use millegrilles_common_rust::v3::impls::rabbitmq_consumer::DeliveryInfo;
 use millegrilles_common_rust::v3::{ConfigService, PkiService};
+use millegrilles_common_rust::tokio;
 use std::sync::Arc;
-use millegrilles_common_rust::chiffrage_cle::CommandeAjouterCleDomaine;
-use millegrilles_common_rust::mongodb::ClientSession;
-use crate::flow::transactions::KeyMasterTransactionService;
 
 #[async_trait]
 pub trait MaitreDesClesSymmetricService {}
@@ -374,6 +372,7 @@ pub async fn symmetric_init_tasks(outbound: &MessageOutboundFacade, decryption: 
         error!("Error on initial emission of certificate : {:?}", e);
     }
 }
+
 async fn process_certificate_message(outbound: &MessageOutboundFacade, message: MessageValidated) -> Result<(), CommonError> {
     let routage = match message.message.routage {
         Some(routage) => routage,
@@ -421,13 +420,12 @@ async fn process_certificate_message(outbound: &MessageOutboundFacade, message: 
     }
 }
 
-async fn process_newkeys<M>(
+async fn process_newkeys(
     config: &dyn ConfigService,
     handler_rechiffrage: &HandlerCleRechiffrage,
-    mongo: &M,
+    mongo: &dyn MongoDao,
     wrapper: MessageValidated
-) -> Result<(), CommonError> where M: MongoDaoTyped {
-
+) -> Result<(), CommonError> {
     // Parse to validate and check for duplicates
     let command: CommandeAjouterCleDomaine = wrapper.message.deserialize()?;
 
