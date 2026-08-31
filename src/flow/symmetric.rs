@@ -633,10 +633,13 @@ async fn save_key_batch(
     )?;
 
     // Map keys to database struct
+    let mut key_ids = Vec::with_capacity(decrypted_batch.cles.len());
     let mut keys = Vec::with_capacity(decrypted_batch.cles.len());
     for (_key_id, key) in decrypted_batch.cles {
         // Encrypt key
         let (key_id, cle_rechiffree) = key.rechiffrer_cle(decryption)?;
+
+        key_ids.push(key_id.clone());
 
         let mut row = RowClePartition {
             cle_id: key_id,
@@ -649,7 +652,7 @@ async fn save_key_batch(
             tag: None,
             header: None,
             // The batch was decrypted from the CA list of keys
-            confirmation_ca: Some(true),
+            // confirmation_ca: Some(true),
         };
 
         // Copy deprecated values when applicable
@@ -671,7 +674,10 @@ async fn save_key_batch(
         keys.push(row);
     }
 
+    // Save the keys
     save_symmetric_batch(mongo, keys).await?;
+    // Set the key flags to decipherable
+    set_ca_batch_decipherable(mongo, key_ids).await?;
 
     // let routage_event = RoutageMessageAction::builder(
     //     DOMAINE_NOM, EVENEMENT_CLE_RECUE_PARTITION, vec![Securite::L4Secure]

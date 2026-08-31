@@ -216,21 +216,6 @@ async fn ticker_job_ca<M>(mongo: &M, trigger: MessageValidated) -> Result<(), Co
         }
     }
 
-    // The sync content is produced every hour at minute 42.
-    // Try to process twice per hour in case the first pass is missed
-    // if minute % 30 == 25
-    // {
-    //     if let Err(e) = process_ca_key_sync(mongo).await {
-    //         warn!("ticker_job_ca Error processing CA key sync : {:?}", e);
-    //     }
-    // }
-
-    // if hour % 6 == 3 && minute == 25 {
-    //     if let Err(e) = marquer_cles_ca_timeout(mongo).await {
-    //         warn!("ticker_job_ca Failed to mark CA key timeout : {:?}", e);
-    //     }
-    // }
-
     Ok(())
 }
 
@@ -259,7 +244,6 @@ async fn process_newkeys<M>(
 
     outbound.respond(delivery_info, ErrorMessage::ok()).await
 }
-
 
 async fn process_requests(
     outbound: &MessageOutboundFacade,

@@ -416,11 +416,15 @@ pub async fn save_symmetric_key(
         header: None,
 
         // Other flags
-        confirmation_ca: Some(false),
+        // confirmation_ca: Some(false),
     };
 
     let collection = mongo.get_collection(NOM_COLLECTION_SYMMETRIQUE_CLES)?;
     collection.insert_one(bson::serialize_to_document(&new_key_row)?).await?;
+
+    // Set the CA key flags to decipherable.
+    // May misfire if symmetric key processed before CA. This will be handled by the cleanup process.
+    set_ca_batch_decipherable(mongo, vec![key_id.to_string()]).await?;
 
     Ok(())
 }
@@ -561,5 +565,14 @@ pub async fn check_ca_keys_undecipherable_flag(mongo: &dyn MongoDao) -> Result<(
 
     debug!("check_ca_keys_undecipherable_flag Check Done");
 
+    Ok(())
+}
+
+/// Sets the flag "non_dechiffrable" to false in the CA table.
+pub async fn set_ca_batch_decipherable(mongo: &dyn MongoDao, keys: Vec<String>) -> Result<(), CommonError> {
+    let collection_ca = mongo.get_collection(NOM_COLLECTION_CA_CLES)?;
+    let filter = doc!{"cle_id": {"$in": keys}};
+    let ops = doc!{"$set": {CHAMP_NON_DECHIFFRABLE: false}};
+    collection_ca.update_many(filter, ops).await?;
     Ok(())
 }

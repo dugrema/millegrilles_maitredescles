@@ -122,7 +122,7 @@ pub struct RowClePartition {
     #[serde(skip_serializing_if="Option::is_none")]
     pub header: Option<String>,
 
-    pub confirmation_ca: Option<bool>,
+    // pub confirmation_ca: Option<bool>,
 }
 
 impl RowClePartition {
