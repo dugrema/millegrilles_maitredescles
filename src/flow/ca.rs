@@ -289,8 +289,13 @@ async fn request_count_undecipherable_keys(
     mongo: &dyn MongoDao,
     wrapper: MessageValidated,
 ) -> Result<(), CommonError> {
+    if ! wrapper.certificate.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
+        return Err(CommonError::Str("Access denied, must be admin"))
+    }
+
     let value = count_ca_undecipherable_keys(mongo).await?;
     let response = UndecipherableKeyCountResponse { compte: value };
+
     outbound.respond(wrapper.delivery_info, serde_json::to_value(&response)?).await
 }
 
