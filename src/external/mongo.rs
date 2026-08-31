@@ -15,7 +15,7 @@ use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::{Signat
 use millegrilles_common_rust::millegrilles_cryptographie::x509::EnveloppePrivee;
 use millegrilles_common_rust::mongo_dao::{ChampIndex, IndexOptions, MongoDao, MongoDaoTyped, start_transaction_regular};
 use millegrilles_common_rust::mongodb::ClientSession;
-use millegrilles_common_rust::mongodb::options::Hint;
+use millegrilles_common_rust::mongodb::options::{Hint, UpdateOneModel, WriteModel};
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::tracing::{debug, error, info, warn};
 use millegrilles_common_rust::bson;
@@ -447,7 +447,7 @@ pub async fn save_symmetric_batch(mongo: &dyn MongoDao, keys: Vec<RowClePartitio
     // Try to insert all values in a single batch
     let mut session = mongo.get_session().await?;
     session.start_transaction().await?;
-    match collection.insert_many(&key_docs).session(&mut session).await {
+    match collection.insert_many(&key_docs).session(&mut session).ordered(false).await {
         Ok(_) => {
             session.commit_transaction().await?;
             Ok(())
@@ -456,8 +456,34 @@ pub async fn save_symmetric_batch(mongo: &dyn MongoDao, keys: Vec<RowClePartitio
             warn!("Error saving batch of keys using insert: {:?}", e);
             session.abort_transaction().await?;
 
-            // Try upsert instead, the error was likely on a duplicate key.
-            todo!()
+            let mut write_actions = Vec::with_capacity(key_docs.len());
+            for key in key_docs {
+                let model = WriteModel::UpdateOne(UpdateOneModel::builder()
+                    .namespace(collection.namespace())
+                    .filter(doc! {
+                        "cle_id": key.get("cle_id").expect("cle_id"),
+                    })
+                    .update(doc! {
+                        "$setOnInsert": key,
+                    })
+                    .upsert(true)
+                    .build()
+                );
+                write_actions.push(model);
+            }
+
+            // Run the bulk upsert
+            session.start_transaction().await?;
+            match mongo.bulk_write(write_actions, Some(&mut session), false).await {
+                Ok(_) => {
+                    session.commit_transaction().await?;
+                    Ok(())
+                }
+                Err(e) => {
+                    session.abort_transaction().await?;
+                    Err(e)
+                }
+            }
         }
     }
 }
