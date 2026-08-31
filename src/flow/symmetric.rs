@@ -1,7 +1,7 @@
 use crate::constants::*;
 use crate::errors::{ErreurPermissionRechiffrage, ErrorPermissionRefusee};
 use crate::external::crypto::SymmetricEncryptionHandler;
-use crate::external::mongo::{create_index_mongodb_custom, create_index_mongodb_partition, get_symmetric_keys, save_symmetric_key};
+use crate::external::mongo::{create_index_mongodb_custom, create_index_mongodb_partition, get_symmetric_keys, prepare_symmetric_key, save_symmetric_key};
 use crate::external::mq::{QUEUE_SYMMETRIC_CERTIFICATES, QUEUE_SYMMETRIC_GETKEYS, QUEUE_SYMMETRIC_NEWKEYS, emit_certificate, init_symmetric_queues};
 use crate::flow::maintenance::validate_ticker;
 use crate::models::{ErrorMessage, KeyDecryptionRefused};
@@ -361,9 +361,27 @@ async fn check_key_decryption_request(
 }
 
 /// Tasks to run once on initialisation
-pub async fn symmetric_init_tasks(outbound: &MessageOutboundFacade, decryption: &SymmetricEncryptionHandler) {
-    if let Err(e) = emit_certificate(&outbound, &decryption).await {
-        error!("Error on initial emission of certificate : {:?}", e);
+pub async fn symmetric_init_tasks(
+    config: &dyn ConfigService,
+    mongo: &MongoDaoImpl,
+    outbound: &MessageOutboundFacade,
+    decryption: &SymmetricEncryptionHandler
+) {
+    // Try to load decryption key from mongo
+    let enveloppe_privee = config.get_configuration_pki().get_enveloppe_privee();
+
+    match prepare_symmetric_key(mongo, enveloppe_privee.as_ref(), decryption).await {
+        Ok(()) => {
+            if let Err(e) = emit_certificate(&outbound, &decryption).await {
+                error!("Error on initial emission of certificate : {:?}", e);
+            }
+        },
+        Err(e) => {
+            warn!("Error loading symmetric key : {}", e);
+            // let cle_ca: DocumentCleRechiffrage = convertir_bson_deserializable(doc_cle_ca)?;
+            // info!("preparer_rechiffreur_mongo Demander la cle de rechiffrage");
+            // emettre_demande_cle_symmetrique(middleware, cle_ca.cle).await?;
+        }
     }
 }
 

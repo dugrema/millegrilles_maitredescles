@@ -21,12 +21,15 @@ use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::mongodb::options::Hint;
 use millegrilles_common_rust::serde_json::Value;
 use millegrilles_common_rust::tokio_stream::StreamExt;
-use millegrilles_common_rust::tracing::{debug, info, warn};
+use millegrilles_common_rust::tracing::{debug, error, info, warn};
 use millegrilles_common_rust::v3::facades::message_inbound::MessageValidated;
 use millegrilles_common_rust::v3::models::TransactionWrapper;
 use millegrilles_common_rust::v3::{ConfigService, FormatService};
 use millegrilles_common_rust::{bson, serde_json};
 // DB / Index creation
+
+const KEY_CA: &str = "CA";
+const KEY_LOCAL: &str = "local";
 
 pub async fn create_index_mongodb_custom(db: &dyn MongoDao, config: &dyn ConfigMessages, key_collection_name: &str) -> Result<(), CommonError> {
     // Index cle_id
@@ -274,7 +277,10 @@ pub async fn get_symmetric_keys<M>(
     Ok(cles)
 }
 
-pub async fn load_symmetric_key<M>(
+/// This loads a symmetric key from the database. If the key is not found, will generate a
+/// new symmetric key batch (CA and local) only when a CA key does not exist.
+/// Raises error when a CA key exists and no matching local key is found.
+pub async fn prepare_symmetric_key<M>(
     mongo: &M,
     private_key: &EnveloppePrivee,
     decryption: &SymmetricEncryptionHandler
@@ -284,25 +290,86 @@ pub async fn load_symmetric_key<M>(
     let collection =
         mongo.get_collection_typed::<DocumentCleRechiffrage>(NOM_COLLECTION_CONFIGURATION)?;
 
+    let fingerprint = private_key.fingerprint()?;
     let filtre = doc!{
-        "type": "local",
+        "type": KEY_LOCAL,
         "instance_id": instance_id.as_str(),
-        "fingerprint": private_key.fingerprint()?,
+        "fingerprint": &fingerprint,
     };
 
     match collection.find_one(filtre).await? {
         Some(cle_locale) => {
             decryption.set_cle_symmetrique(cle_locale.cle)?;
-            info!("load_symmetric_key Local symmetric key is loaded ");
+            info!("prepare_symmetric_key Local symmetric key is loaded, fingerprint: {}", fingerprint);
+            Ok(())
         },
         None => {
-            // let cle_ca: DocumentCleRechiffrage = convertir_bson_deserializable(doc_cle_ca)?;
-            // info!("preparer_rechiffreur_mongo Demander la cle de rechiffrage");
-            // emettre_demande_cle_symmetrique(middleware, cle_ca.cle).await?;
-            return Err(CommonError::Str("load_symmetric_key Waiting for symmetric key"));
+            // Check if a "CA" encrypted key is available for this instance
+            let filtre = doc!{"type": KEY_CA};
+            match collection.find_one(filtre).await? {
+                Some(_ca_key) => {
+                    // There is a CA encrypted key, need to wait for admin to decrypt using master key.
+                    Err(CommonError::Str("prepare_symmetric_key Waiting for symmetric key"))
+                }
+                None => {
+                    info!("No CA decryption key found, this is a new system. Initializing new KeyMaster symmetric key.");
+                    decryption.generer_cle_symmetrique()?;
+
+                    // Encrypt the new key for CA and local
+                    let encrytped_ca_key = decryption.get_cle_symmetrique_chiffree(
+                        &private_key.enveloppe_ca.certificat.public_key()?
+                    )?;
+                    let encrypted_local_key = decryption.get_cle_symmetrique_chiffree(
+                        &private_key.enveloppe_pub.certificat.public_key()?
+                    )?;
+
+                    debug!("Encrypted key\nCA : {}\ninstance_id {} : {}",
+                        instance_id, encrytped_ca_key, encrypted_local_key
+                    );
+
+                    // Save the keys
+                    let mut keys = Vec::new();
+                    keys.push(DocumentCleRechiffrage {
+                        type_: KEY_CA.to_string(),
+                        instance_id: KEY_CA.to_string(),
+                        fingerprint: None,
+                        cle: encrytped_ca_key,
+                    });
+                    keys.push(DocumentCleRechiffrage {
+                        type_: KEY_LOCAL.to_string(),
+                        instance_id: instance_id.to_string(),
+                        fingerprint: Some(fingerprint.clone()),
+                        cle: encrypted_local_key,
+                    });
+
+                    // Save keys using a session
+                    let mut session = mongo.get_session().await?;
+                    session.start_transaction().await?;
+                    match save_symmetric_keys(mongo, &mut session, keys).await {
+                        Ok(()) => session.commit_transaction().await?,
+                        Err(e) => {
+                            error!("prepare_symmetric_key Error saving keys: {:?}", e);
+                            session.abort_transaction().await?;
+                        }
+                    }
+
+                    Ok(())
+                }
+            }
         }
     }
+}
 
+/// Save a new symmetric key
+pub async fn save_symmetric_keys(
+    mongo: &dyn MongoDao,
+    session: &mut ClientSession,
+    keys: Vec<DocumentCleRechiffrage>,
+) -> Result<(), CommonError> {
+    let collection = mongo.get_collection(NOM_COLLECTION_CONFIGURATION)?;
+    for key in keys {
+        collection.insert_one(bson::serialize_to_document(&key)?).session(&mut *session).await?;
+    }
     Ok(())
 }
 

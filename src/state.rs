@@ -1,5 +1,5 @@
 use crate::external::crypto::SymmetricEncryptionHandler;
-use crate::external::mongo::load_symmetric_key;
+use crate::external::mongo::prepare_symmetric_key;
 use crate::flow::ca::{MaitreDesClesCAService, MaitreDesClesCAServiceImpl};
 use crate::flow::symmetric::{MaitreDesClesSymmetricService, MaitreDesClesSymmetricServiceImpl};
 use crate::flow::transactions::KeyMasterTransactionService;
@@ -91,15 +91,6 @@ impl AppContext {
             symmetric_service.clone(),
             shutdown_token.clone(),
         ).await?;
-
-        // Try to load decryption key from mongo
-        if let Err(e) = load_symmetric_key(
-            mongo.as_ref(),
-            config.get_configuration_pki().get_enveloppe_privee().as_ref(),
-            decryption.as_ref()
-        ).await {
-            warn!("Error loading symmetric key : {}", e);
-        }
 
         Ok(AppContext {
             join_set,
