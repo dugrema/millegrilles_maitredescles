@@ -76,7 +76,7 @@ async fn save_new_key(
         cle_id: cle_id.as_str(),
         signature: (&signature).into(),
         non_dechiffrable: Some(true),
-        date_creation: Utc::now(),
+        date_creation: wrapper.message.estampille,
         // Deprecated fields
         format: None,
         iv: None,
