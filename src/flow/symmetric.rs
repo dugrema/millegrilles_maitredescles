@@ -1,9 +1,10 @@
 use crate::constants::*;
 use crate::errors::{ErreurPermissionRechiffrage, ErrorPermissionRefusee};
 use crate::external::crypto::SymmetricEncryptionHandler;
-use crate::external::mongo::{create_index_mongodb_custom, create_index_mongodb_partition, get_symmetric_ca_key, get_symmetric_keys, prepare_symmetric_key, save_symmetric_key, save_symmetric_keys, KEY_LOCAL};
-use crate::external::mq::{emit_certificate, emit_local_symmetric_key_decryption_request, init_symmetric_queues, QUEUE_SYMMETRIC_CERTIFICATES, QUEUE_SYMMETRIC_GETKEYS, QUEUE_SYMMETRIC_NEWKEYS, QUEUE_SYMMETRIC_JOB_TICKER, QUEUE_SYMMETRIC_COMMANDS};
+use crate::external::mongo::*;
+use crate::external::mq::*;
 use crate::flow::maintenance::validate_ticker;
+use crate::maitredescles_commun::CommandeCleSymmetrique;
 use crate::models::{DocumentCleRechiffrage, ErrorMessage, KeyDecryptionRefused};
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::certificats::VerificateurPermissions;
@@ -27,7 +28,6 @@ use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl
 use millegrilles_common_rust::v3::impls::rabbitmq_consumer::DeliveryInfo;
 use millegrilles_common_rust::v3::{ConfigService, PkiService};
 use std::sync::Arc;
-use crate::maitredescles_commun::CommandeCleSymmetrique;
 
 #[async_trait]
 pub trait MaitreDesClesSymmetricService {}
@@ -53,8 +53,7 @@ impl MaitreDesClesSymmetricServiceImpl {
 
     pub async fn configure(&self, mq: &MessagingServiceImpl, config: &ConfigServiceDbImpl) -> Result<(), CommonError> {
         init_symmetric_queues(config, mq)?;
-        create_index_mongodb_custom(self.mongo.as_ref(), config.config.as_ref(), NOM_COLLECTION_SYMMETRIQUE_CLES).await?;
-        create_index_mongodb_partition(self.mongo.as_ref(), config.config.as_ref()).await?;
+        create_index_mongodb_symmetric(self.mongo.as_ref(), config.config.as_ref()).await?;
         Ok(())
     }
 

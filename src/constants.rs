@@ -9,6 +9,7 @@ pub const INDEX_CLES_HACHAGE_BYTES: &str = "index_hachage_bytes";
 pub const INDEX_CLE_ID: &str = "index_cle_id";
 //pub const INDEX_CLES_HACHAGE_BYTES_DOMAINES: &str = "index_hachage_bytes_domaines";
 pub const INDEX_NON_DECHIFFRABLES: &str = "index_non_dechiffrables";
+pub const INDEX_REDO_LOG_ID: &str = "redo_log_id";
 pub const NOM_Q_DECHIFFRAGE: &str = "MaitreDesCles/dechiffrage";
 pub const REQUETE_SYNCHRONISER_CLES: &str = "synchroniserCles";
 pub const REQUETE_DECHIFFRAGE: &str = "dechiffrage";

@@ -8,7 +8,7 @@ use millegrilles_common_rust::chiffrage_cle::CommandeAjouterCleDomaine;
 use millegrilles_common_rust::chrono::{Duration, Utc};
 use millegrilles_common_rust::common_messages::ResponseRequestDechiffrageV2Cle;
 use millegrilles_common_rust::configuration::ConfigMessages;
-use millegrilles_common_rust::constantes::{CHAMP_CREATION, CHAMP_MODIFICATION, Securite};
+use millegrilles_common_rust::constantes::{Securite, CHAMP_CREATION, CHAMP_MODIFICATION, TRANSACTION_CHAMP_ID, FIELD_BID_TRUNCATED, INDEX_BID, INDEX_DATE_PROCESSED, FIELD_DATE_PROCESSED};
 use millegrilles_common_rust::error::{Error as CommonError, Error};
 use millegrilles_common_rust::generateur_messages::RoutageMessageAction;
 use millegrilles_common_rust::jwt_simple::prelude::Deserialize;
@@ -31,74 +31,95 @@ use millegrilles_common_rust::{bson, serde_json};
 const KEY_CA: &str = "CA";
 pub const KEY_LOCAL: &str = "local";
 
-pub async fn create_index_mongodb_custom(db: &dyn MongoDao, config: &dyn ConfigMessages, key_collection_name: &str) -> Result<(), CommonError> {
-    // Index cle_id
-    let options_cle_id = IndexOptions {
-        nom_index: Some(String::from(INDEX_CLE_ID)),
-        unique: true,
-    };
-    let champs_index_cle_id = vec!(
-        ChampIndex { nom_champ: String::from(CHAMP_CLE_ID), direction: 1 },
-    );
+
+pub async fn create_index_mongodb_ca(db: &dyn MongoDao, config: &dyn ConfigMessages) -> Result<(), CommonError> {
+
     db.create_index(
         config,
-        key_collection_name,
-        champs_index_cle_id,
-        Some(options_cle_id),
+        NOM_COLLECTION_TRANSACTIONS_CA,
+        vec!(
+            ChampIndex { nom_champ: String::from(TRANSACTION_CHAMP_ID), direction: 1 },
+        ),
+        Some(IndexOptions {
+            nom_index: Some(String::from(INDEX_REDO_LOG_ID)),
+            unique: true,
+        })
     ).await?;
 
-    // Index cles non dechiffrable
-    let options_non_dechiffrables = IndexOptions {
-        nom_index: Some(String::from(INDEX_NON_DECHIFFRABLES)),
-        unique: false,
-    };
-    let champs_index_non_dechiffrables = vec!(
-        ChampIndex {nom_champ: String::from(CHAMP_NON_DECHIFFRABLE), direction: 1},
-        ChampIndex {nom_champ: String::from(CHAMP_CREATION), direction: 1},
-    );
     db.create_index(
         config,
-        key_collection_name,
-        champs_index_non_dechiffrables,
-        Some(options_non_dechiffrables)
+        NOM_COLLECTION_TRACKING_CA,
+        vec!(
+            ChampIndex { nom_champ: String::from(FIELD_BID_TRUNCATED), direction: 1 },
+        ),
+        Some(IndexOptions {
+            nom_index: Some(String::from(INDEX_BID)),
+            unique: true,
+        })
     ).await?;
 
+    db.create_index(
+        config,
+        NOM_COLLECTION_TRACKING_CA,
+        vec!(
+            ChampIndex { nom_champ: String::from(FIELD_DATE_PROCESSED), direction: 1 },
+        ),
+        Some(IndexOptions {
+            nom_index: Some(String::from(INDEX_DATE_PROCESSED)),
+            unique: false,
+        })
+    ).await?;
+
+    db.create_index(
+        config,
+        NOM_COLLECTION_CA_CLES,
+        vec!(
+            ChampIndex { nom_champ: String::from(CHAMP_CLE_ID), direction: 1 },
+        ),
+        Some(IndexOptions {
+            nom_index: Some(String::from(INDEX_CLE_ID)),
+            unique: true,
+        })
+    ).await?;
+
+    db.create_index(
+        config,
+        NOM_COLLECTION_CA_CLES,
+        vec!(
+            ChampIndex {nom_champ: String::from(CHAMP_NON_DECHIFFRABLE), direction: 1},
+            ChampIndex {nom_champ: String::from(CHAMP_CREATION), direction: 1},
+        ),
+        Some(IndexOptions {
+            nom_index: Some(String::from(INDEX_NON_DECHIFFRABLES)),
+            unique: false,
+        })
+    ).await?;
     Ok(())
 }
 
-pub async fn create_index_mongodb_partition(db: &dyn MongoDao, config: &dyn ConfigMessages) -> Result<(), CommonError> {
-    let collection_cles = NOM_COLLECTION_SYMMETRIQUE_CLES;
-
-    // Index confirmation ca (table cles)
-    let options_confirmation_ca = IndexOptions {
-        nom_index: Some(String::from(INDEX_CONFIRMATION_CA)),
-        unique: false
-    };
-    let champs_index_confirmation_ca = vec!(
-        ChampIndex { nom_champ: String::from(CHAMP_CONFIRMATION_CA), direction: 1 },
-    );
-    db.create_index(
-        config,
-        collection_cles,
-        champs_index_confirmation_ca,
-        Some(options_confirmation_ca)
+pub async fn create_index_mongodb_symmetric(db: &dyn MongoDao, config: &dyn ConfigMessages) -> Result<(), CommonError> {
+    db.create_index(config, NOM_COLLECTION_SYMMETRIQUE_CLES,
+        vec!(
+            ChampIndex { nom_champ: String::from(CHAMP_CLE_ID), direction: 1 },
+        ),
+        Some(IndexOptions { nom_index: Some(String::from(INDEX_CLE_ID)), unique: true })
     ).await?;
 
-    // Index confirmation ca (table cles)
-    let options_configuration = IndexOptions {
-        nom_index: Some(String::from("pk")),
-        unique: true
-    };
-    let champs_index_configuration = vec!(
-        ChampIndex { nom_champ: String::from("type"), direction: 1 },
-        ChampIndex { nom_champ: String::from("instance_id"), direction: 1 },
-        ChampIndex { nom_champ: String::from("fingerprint"), direction: 1 },
-    );
-    db.create_index(
-        config,
-        NOM_COLLECTION_CONFIGURATION,
-        champs_index_configuration,
-        Some(options_configuration)
+    db.create_index(config, NOM_COLLECTION_SYMMETRIQUE_CLES,
+        vec!(
+            ChampIndex {nom_champ: String::from(CHAMP_NON_DECHIFFRABLE), direction: 1},
+            ChampIndex {nom_champ: String::from(CHAMP_CREATION), direction: 1},
+        ),
+        Some(IndexOptions { nom_index: Some(String::from(INDEX_NON_DECHIFFRABLES)), unique: false })
+    ).await?;
+
+    db.create_index(config, NOM_COLLECTION_CONFIGURATION,
+        vec!(
+            ChampIndex { nom_champ: String::from("type"), direction: 1 },
+            ChampIndex { nom_champ: String::from("instance_id"), direction: 1 },
+            ChampIndex { nom_champ: String::from("fingerprint"), direction: 1 },
+        ),
+        Some(IndexOptions { nom_index: Some(String::from("pk")), unique: true })
     ).await?;
 
     Ok(())

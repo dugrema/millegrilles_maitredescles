@@ -1,5 +1,5 @@
 use crate::constants::*;
-use crate::external::mongo::{check_key_exists, create_index_mongodb_custom, marquer_cles_ca_timeout, process_ca_key_sync};
+use crate::external::mongo::{check_key_exists, create_index_mongodb_ca, create_index_mongodb_symmetric, marquer_cles_ca_timeout, process_ca_key_sync};
 use crate::external::mq::{QUEUE_CA_BACKUP, QUEUE_CA_NEWKEYS, QUEUE_CA_TICKER, init_ca_queues};
 use crate::flow::maintenance::validate_ticker;
 use crate::flow::transactions::KeyMasterTransactionService;
@@ -46,7 +46,7 @@ impl MaitreDesClesCAServiceImpl {
 
     pub async fn configure(&self, mq: &MessagingServiceImpl, config: &ConfigServiceDbImpl) -> Result<(), CommonError> {
         init_ca_queues(mq)?;
-        create_index_mongodb_custom(self.mongo.as_ref(), config.config.as_ref(), NOM_COLLECTION_CA_CLES).await?;
+        create_index_mongodb_ca(self.mongo.as_ref(), config.config.as_ref() ).await?;
         Ok(())
     }
 
@@ -169,18 +169,18 @@ async fn ticker_job_ca<M>(mongo: &M, trigger: MessageValidated) -> Result<(), Co
 
     // The sync content is produced every hour at minute 42.
     // Try to process twice per hour in case the first pass is missed
-    if minute % 30 == 25
-    {
-        if let Err(e) = process_ca_key_sync(mongo).await {
-            warn!("ticker_job_ca Error processing CA key sync : {:?}", e);
-        }
-    }
+    // if minute % 30 == 25
+    // {
+    //     if let Err(e) = process_ca_key_sync(mongo).await {
+    //         warn!("ticker_job_ca Error processing CA key sync : {:?}", e);
+    //     }
+    // }
 
-    if hour % 6 == 3 && minute == 25 {
-        if let Err(e) = marquer_cles_ca_timeout(mongo).await {
-            warn!("ticker_job_ca Failed to mark CA key timeout : {:?}", e);
-        }
-    }
+    // if hour % 6 == 3 && minute == 25 {
+    //     if let Err(e) = marquer_cles_ca_timeout(mongo).await {
+    //         warn!("ticker_job_ca Failed to mark CA key timeout : {:?}", e);
+    //     }
+    // }
 
     Ok(())
 }
