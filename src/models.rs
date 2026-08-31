@@ -200,3 +200,7 @@ pub struct DocumentCleRechiffrage {
     pub cle: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SymmetricKeyDecryptionRequest {
+    pub cle_symmetrique_ca: String,
+}

@@ -1,11 +1,14 @@
 use crate::constants::*;
 use crate::external::crypto::SymmetricEncryptionHandler;
-use crate::models::ErrorMessage;
+use crate::models::{ErrorMessage, SymmetricKeyDecryptionRequest};
 use millegrilles_common_rust::constantes::{COMMANDE_AJOUTER_CLE_DOMAINES, COMMANDE_CERT_MAITREDESCLES, COMMANDE_TRANSFERT_CLE, COMMANDE_TRANSFERT_CLE_CA, MAITREDESCLES_REQUETE_DECHIFFRAGE_MESSAGE, MAITREDESCLES_REQUETE_DECHIFFRAGE_V2, REQUETE_CERT_MAITREDESCLES, Securite};
 use millegrilles_common_rust::error::Error as CommonError;
-use millegrilles_common_rust::generateur_messages::RoutageMessageAction;
+use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange};
+use millegrilles_common_rust::serde_json;
+use millegrilles_common_rust::serde_json::json;
 use millegrilles_common_rust::tracing::debug;
+use millegrilles_common_rust::v3::ConfigService;
 use millegrilles_common_rust::v3::facades::message_outbound::MessageOutboundFacade;
 use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl;
 
@@ -339,4 +342,28 @@ pub async fn emit_certificate(outbound: &MessageOutboundFacade, decryption: &Sym
         // .correlation_id(COMMANDE_CERT_MAITREDESCLES)
         .build();
     outbound.emit_event(routing, ErrorMessage { ok: true, code: None, err: None}).await
+}
+
+/// Emits a request indicating the local symmetric key decryption is not available.
+/// The admin can use the master key to re-encrypt the symmetric key for this certificate.
+pub async fn emit_local_symmetric_key_decryption_request(
+    config: &dyn ConfigService,
+    outbound: &MessageOutboundFacade,
+    encrypted_symmetric_key_for_ca: &str
+) -> Result<(), CommonError> {
+    let private_key = config.get_configuration_pki().get_enveloppe_privee();
+    let instance_id = private_key.enveloppe_pub.get_common_name()?;
+
+    debug!("Request symmetric key for instance_id : {}", instance_id);
+
+    let request = SymmetricKeyDecryptionRequest {
+        cle_symmetrique_ca: encrypted_symmetric_key_for_ca.to_string()
+    };
+
+    let routing = RoutageMessageAction::builder(
+        DOMAINE_NOM, EVENEMENT_DEMANDE_CLE_SYMMETRIQUE, vec![Securite::L3Protege])
+        // .correlation_id(EVENEMENT_DEMANDE_CLE_SYMMETRIQUE)
+        .build();
+
+    outbound.emit_event(routing, serde_json::to_value(request)?).await
 }

@@ -1,8 +1,8 @@
 use crate::constants::*;
 use crate::errors::{ErreurPermissionRechiffrage, ErrorPermissionRefusee};
 use crate::external::crypto::SymmetricEncryptionHandler;
-use crate::external::mongo::{create_index_mongodb_custom, create_index_mongodb_partition, get_symmetric_keys, prepare_symmetric_key, save_symmetric_key};
-use crate::external::mq::{QUEUE_SYMMETRIC_CERTIFICATES, QUEUE_SYMMETRIC_GETKEYS, QUEUE_SYMMETRIC_NEWKEYS, emit_certificate, init_symmetric_queues};
+use crate::external::mongo::{create_index_mongodb_custom, create_index_mongodb_partition, get_symmetric_ca_key, get_symmetric_keys, prepare_symmetric_key, save_symmetric_key};
+use crate::external::mq::{emit_certificate, emit_local_symmetric_key_decryption_request, init_symmetric_queues, QUEUE_SYMMETRIC_CERTIFICATES, QUEUE_SYMMETRIC_GETKEYS, QUEUE_SYMMETRIC_NEWKEYS};
 use crate::flow::maintenance::validate_ticker;
 use crate::models::{ErrorMessage, KeyDecryptionRefused};
 use millegrilles_common_rust::async_trait::async_trait;
@@ -93,6 +93,8 @@ impl MaitreDesClesSymmetricServiceImpl {
             match result {
                 Ok(message) => {
                     if let Err(e) = ticker_job_symmetric(
+                        self.config.as_ref(),
+                        self.mongo.as_ref(),
                         self.outbound.as_ref(),
                         self.decryption.as_ref(),
                         message
@@ -183,6 +185,8 @@ impl MaitreDesClesSymmetricServiceImpl {
 impl MaitreDesClesSymmetricService for MaitreDesClesSymmetricServiceImpl {}
 
 async fn ticker_job_symmetric(
+    config: &dyn ConfigService,
+    mongo: &MongoDaoImpl,
     outbound: &MessageOutboundFacade,
     decryption: &SymmetricEncryptionHandler,
     trigger: MessageValidated,
@@ -199,6 +203,11 @@ async fn ticker_job_symmetric(
     let minute = trigger_value.get_date().minute();
 
     debug!("ticker_job_symmetric for h:{} m:{}",hour,minute);
+
+    if ! decryption.is_ready() {
+        // Emit request to decrypt symmetric key (admin with master key) every minute
+        emit_ca_symmetric_key(config, mongo, outbound).await;
+    }
 
     if minute % 2 == 0 {
         if let Err(e) = emit_certificate(outbound, decryption).await {
@@ -377,10 +386,32 @@ pub async fn symmetric_init_tasks(
             }
         },
         Err(e) => {
-            warn!("Error loading symmetric key : {}", e);
-            // let cle_ca: DocumentCleRechiffrage = convertir_bson_deserializable(doc_cle_ca)?;
-            // info!("preparer_rechiffreur_mongo Demander la cle de rechiffrage");
-            // emettre_demande_cle_symmetrique(middleware, cle_ca.cle).await?;
+            // An error here usually means there is no symmetric key available for the certificate
+            debug!("Error loading symmetric key : {}", e);
+            // Emit request to decrypt symmetric key (admin with master key)
+            emit_ca_symmetric_key(config, mongo, outbound).await;
+        }
+    }
+}
+
+async fn emit_ca_symmetric_key(config: &dyn ConfigService, mongo: &MongoDaoImpl, outbound: &MessageOutboundFacade) {
+    // Fetch the symmetric key to have the CA decrypt it (admin in Coup D'Oeil)
+    match get_symmetric_ca_key(mongo).await {
+        Ok(Some(ca_key)) => {
+            if let Err(e) = emit_local_symmetric_key_decryption_request(
+                config,
+                outbound,
+                ca_key.cle.as_str(),
+            ).await {
+                error!("Error on emit_local_symmetric_key_decryption_request: {:?}", e);
+            }
+        },
+        Ok(None) => {
+            // This must not happen, logic flaw in prepare_symmetric_key
+            panic!("prepare_symmetric_key No CA encrypted symmetric key found");
+        },
+        Err(e) => {
+            error!("Error in get_symmetric_ca_key symmetric key : {}", e);
         }
     }
 }
