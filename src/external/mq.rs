@@ -153,6 +153,7 @@ pub fn init_symmetric_queues(config: &dyn ConfigService, mq: &MessagingServiceIm
         routing_keys: vec![
             ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_CERT_MAITREDESCLES), exchange: Securite::L1Public },
             ConfigRoutingExchange { routing_key: format!("evenement.{}.{}", DOMAINE_NOM, REQUETE_CERT_MAITREDESCLES), exchange: Securite::L1Public },
+
         ],
         ttl: Some(QUEUE_TTL_DEFAULT),
         durable: true,
@@ -184,6 +185,7 @@ pub fn init_symmetric_queues(config: &dyn ConfigService, mq: &MessagingServiceIm
         routing_keys: vec![
             ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_RECHIFFRER_BATCH), exchange: Securite::L3Protege },
             ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, fingerprint_pk, COMMANDE_CLE_SYMMETRIQUE), exchange: Securite::L3Protege },
+            ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, fingerprint_pk, COMMAND_CERTIFICATE_ROTATION), exchange: Securite::L3Protege },
         ],
         ttl: Some(QUEUE_TTL_DEFAULT),
         durable: true,

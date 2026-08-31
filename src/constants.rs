@@ -21,6 +21,8 @@ pub const REQUEST_KEYS_FOR_CA: &str = "requestKeysForCa";
 // pub const COMMANDE_SAUVEGARDER_CLE: &str = "sauvegarderCle";
 pub const COMMANDE_CONFIRMER_CLES_SUR_CA: &str = "confirmerClesSurCa";
 pub const COMMANDE_CLE_SYMMETRIQUE: &str = "cleSymmetrique";
+pub const COMMAND_CERTIFICATE_ROTATION: &str = "rotationCertificat";
+
 pub const TRANSACTION_CLE: &str = "cle";
 pub const TRANSACTION_CLE_V2: &str = "cleV2";
 pub const CHAMP_CLE_SYMMETRIQUE: &str = "cle_symmetrique";

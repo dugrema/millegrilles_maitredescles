@@ -298,3 +298,8 @@ impl CleSecreteRechiffrage {
     }
 
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CommandCertificateRotation {
+    pub certificat: Vec<String>,
+}

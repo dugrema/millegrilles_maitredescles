@@ -4,7 +4,7 @@ use crate::external::crypto::SymmetricEncryptionHandler;
 use crate::external::mongo::*;
 use crate::external::mq::*;
 use crate::flow::maintenance::validate_ticker;
-use crate::models::CommandeRechiffrerBatchDechiffree;
+use crate::models::{CommandCertificateRotation, CommandeRechiffrerBatchDechiffree};
 use crate::models::{CommandeCleSymmetrique, CommandeRechiffrerBatchChiffree, DocumentCleRechiffrage, ErrorMessage, KeyDecryptionRefused, RowClePartition};
 use millegrilles_common_rust::certificats::VerificateurPermissions;
 use millegrilles_common_rust::chiffrage_cle::CommandeAjouterCleDomaine;
@@ -547,6 +547,7 @@ async fn route_instance_command(
     let result = match action.as_str() {
         COMMANDE_CLE_SYMMETRIQUE => repair_symmetric_key(config, outbound, decryption, mongo, message).await,
         COMMANDE_RECHIFFRER_BATCH => save_key_batch(chiffrage, decryption, outbound, mongo, message).await,
+        COMMAND_CERTIFICATE_ROTATION => certificate_rotation(decryption, outbound, mongo, message).await,
         _ => {
             warn!("process_newkeys_thread Unsupported action type: {}", action);
             return
@@ -683,4 +684,43 @@ async fn save_key_batch(
     //     middleware.emettre_evenement(routage_event, &event_contenu).await?;
 
     outbound.respond(wrapper.delivery_info, ErrorMessage::ok()).await
+}
+
+async fn certificate_rotation(
+    decryption: &SymmetricEncryptionHandler,
+    outbound: &MessageOutboundFacade,
+    mongo: &dyn MongoDao,
+    wrapper: MessageValidated,
+) -> Result<(), CommonError> {
+    let command: CommandCertificateRotation = wrapper.message.deserialize()?;
+    let cert_string = command.certificat.join("\n");
+    let enveloppe = EnveloppeCertificat::try_from(cert_string.as_str())?;
+
+    // Get information from new certificate
+    let instance_id = enveloppe.get_common_name()?;
+    let fingerprint = enveloppe.fingerprint()?;
+
+    // Encrypt the key for the new certificate
+    let key = decryption.get_encrypted_key(&enveloppe.certificat.public_key()?)?;
+
+    let mut keys = Vec::new();
+    keys.push(DocumentCleRechiffrage {
+        type_: KEY_LOCAL.to_string(),
+        instance_id: instance_id.to_string(),
+        fingerprint: Some(fingerprint.clone()),
+        cle: key,
+    });
+
+    // Save key for new certificate
+    if let Err(e) = save_symmetric_keys(mongo, None, keys).await {
+        error!("certificate_rotation Error saving key: {:?}", e);
+        outbound.respond(wrapper.delivery_info, ErrorMessage {
+            ok: false,
+            code: Some(500),
+            err: Some(format!("Generic error: {:?}", e))
+        }).await?;
+        return Ok(())
+    }
+
+    Ok(())
 }
