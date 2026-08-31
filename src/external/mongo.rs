@@ -8,7 +8,7 @@ use millegrilles_common_rust::chiffrage_cle::CommandeAjouterCleDomaine;
 use millegrilles_common_rust::chrono::{Duration, Utc};
 use millegrilles_common_rust::common_messages::ResponseRequestDechiffrageV2Cle;
 use millegrilles_common_rust::configuration::ConfigMessages;
-use millegrilles_common_rust::constantes::{Securite, CHAMP_CREATION, CHAMP_MODIFICATION, TRANSACTION_CHAMP_ID, FIELD_BID_TRUNCATED, INDEX_BID, INDEX_DATE_PROCESSED, FIELD_DATE_PROCESSED};
+use millegrilles_common_rust::constantes::{Securite, CHAMP_CREATION, CHAMP_MODIFICATION, TRANSACTION_CHAMP_ID, FIELD_BID, INDEX_BID, INDEX_DATE_PROCESSED, FIELD_DATE_PROCESSED};
 use millegrilles_common_rust::error::{Error as CommonError, Error};
 use millegrilles_common_rust::generateur_messages::RoutageMessageAction;
 use millegrilles_common_rust::jwt_simple::prelude::Deserialize;
@@ -50,7 +50,7 @@ pub async fn create_index_mongodb_ca(db: &dyn MongoDao, config: &dyn ConfigMessa
         config,
         NOM_COLLECTION_TRACKING_CA,
         vec!(
-            ChampIndex { nom_champ: String::from(FIELD_BID_TRUNCATED), direction: 1 },
+            ChampIndex { nom_champ: String::from(FIELD_BID), direction: 1 },
         ),
         Some(IndexOptions {
             nom_index: Some(String::from(INDEX_BID)),

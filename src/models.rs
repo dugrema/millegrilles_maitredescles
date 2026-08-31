@@ -1,6 +1,6 @@
 use crate::external::crypto::SymmetricEncryptionHandler;
 use crate::maitredescles_commun::RowClePartitionRef;
-use millegrilles_common_rust::chrono;
+use millegrilles_common_rust::{bson, chrono};
 use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::error::Error;
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::{FormatChiffrage, optionformatchiffragestr};
@@ -9,6 +9,7 @@ use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::{Signat
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::optionepochseconds;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
+use bson::serde_helpers::datetime::FromChrono04DateTime;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RequeteClesNonDechiffrable {
@@ -169,8 +170,7 @@ pub struct RowCleCaRef<'a> {
     pub signature: SignatureDomainesRef<'a>,
     //pub dirty: Option<bool>,
     pub non_dechiffrable: Option<bool>,
-    #[serde(rename(deserialize="_mg-creation"))]
-        // deserialize_with="bson::serde_helpers::chrono_datetime_as_bson_datetime::deserialize")]
+    #[serde(with = "FromChrono04DateTime")]
     pub date_creation: DateTime<Utc>,
 
     // Information de dechiffrage contenu (utilise avec signature version 0)
@@ -208,4 +208,12 @@ pub struct SymmetricKeyDecryptionRequest {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UndecipherableKeyCountResponse {
     pub compte: usize,
+}
+
+#[derive(Serialize)]
+pub struct ReponseClesNonDechiffrables {
+    pub cles: Vec<RecupererCleCa>,
+    #[serde(default, skip_serializing_if="Option::is_none", with="optionepochseconds")]
+    pub date_creation_max: Option<DateTime<Utc>>,
+    pub idx: u64,
 }

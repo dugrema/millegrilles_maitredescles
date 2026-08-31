@@ -2,7 +2,7 @@ use crate::constants::*;
 use crate::errors::ErreurPermissionRechiffrage;
 use crate::external::crypto::SymmetricEncryptionHandler;
 use crate::maitredescles_commun::{CleSecreteRechiffrage, CleSynchronisation, CleTransfert, CommandeCleSymmetrique, CommandeRechiffrerBatchChiffree, CommandeRechiffrerBatchDechiffree, CommandeRotationCertificat, CommandeTransfertClesCaV2, CommandeTransfertClesV2, EvenementClesRechiffrage, ReponseConfirmerClesSurCa, ReponseSynchroniserCles, RequeteSynchroniserCles, RequeteTransfert, TransactionCle, effectuer_requete_cles_manquantes, emettre_demande_cle_symmetrique, preparer_rechiffreur, verifier_permission_rechiffrage};
-use crate::models::{DocumentCleRechiffrage, RecupererCleCa, RequeteClesNonDechiffrable, RowCleCaRef, RowClePartition, TransactionCleV2};
+use crate::models::{DocumentCleRechiffrage, RecupererCleCa, ReponseClesNonDechiffrables, RequeteClesNonDechiffrable, RowCleCaRef, RowClePartition, TransactionCleV2};
 use millegrilles_common_rust::base64::{Engine as _, engine::general_purpose::STANDARD_NO_PAD as base64_nopad};
 use millegrilles_common_rust::bson::doc;
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
@@ -432,14 +432,6 @@ pub async fn requete_compter_cles_non_dechiffrables_ca<M>(middleware: &M, m: Mes
 
     let reponse = json!({ "compte": compte });
     Ok(Some(middleware.build_reponse(&reponse)?.0))
-}
-
-#[derive(Serialize)]
-struct ReponseClesNonDechiffrables {
-    cles: Vec<RecupererCleCa>,
-    #[serde(default, skip_serializing_if="Option::is_none", with="optionepochseconds")]
-    date_creation_max: Option<DateTime<Utc>>,
-    idx: u64,
 }
 
 pub async fn requete_cles_non_dechiffrables_v2<M>(middleware: &M, m: MessageValide, session: &mut ClientSession)

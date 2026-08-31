@@ -3,7 +3,7 @@ use crate::external::mongo::{check_key_exists, count_ca_undecipherable_keys, cre
 use crate::external::mq::{init_ca_queues, QUEUE_CA_BACKUP, QUEUE_CA_NEWKEYS, QUEUE_CA_REQUESTS, QUEUE_CA_TICKER};
 use crate::flow::maintenance::validate_ticker;
 use crate::flow::transactions::KeyMasterTransactionService;
-use crate::models::{ErrorMessage, UndecipherableKeyCountResponse};
+use crate::models::{ErrorMessage, RecupererCleCa, ReponseClesNonDechiffrables, RequeteClesNonDechiffrable, RowCleCaRef, UndecipherableKeyCountResponse};
 use crate::models::TransactionCleV2;
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::chiffrage_cle::CommandeAjouterCleDomaine;
@@ -21,6 +21,8 @@ use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl
 use millegrilles_common_rust::v3::{ConfigService, FormatService};
 use millegrilles_common_rust::{serde_json, tokio};
 use std::sync::Arc;
+use millegrilles_common_rust::bson::doc;
+use millegrilles_common_rust::mongodb::options::Hint;
 use crate::external::crypto::SymmetricEncryptionHandler;
 
 #[async_trait]
@@ -278,7 +280,7 @@ async fn process_requests(
         //                 REQUETE_CLES_NON_DECHIFFRABLES_V2 => requete_cles_non_dechiffrables_v2(middleware, message, &mut session).await,
         REQUETE_COMPTER_CLES_NON_DECHIFFRABLES => request_count_undecipherable_keys(outbound, mongo, wrapper).await,
         REQUETE_SYNCHRONISER_CLES => todo!(),
-        REQUETE_CLES_NON_DECHIFFRABLES_V2 => todo!(),
+        REQUETE_CLES_NON_DECHIFFRABLES_V2 => request_fetch_key_batch(outbound, mongo, wrapper).await,
         _ => {
             warn!("process_requests (CA) Unsupported action type: {}", action);
             Err(CommonError::Str("Bad message, unsupported action type"))
@@ -294,4 +296,51 @@ async fn request_count_undecipherable_keys(
     let value = count_ca_undecipherable_keys(mongo).await?;
     let response = UndecipherableKeyCountResponse { compte: value };
     outbound.respond(wrapper.delivery_info, serde_json::to_value(&response)?).await
+}
+
+async fn request_fetch_key_batch(
+    outbound: &MessageOutboundFacade,
+    mongo: &MongoDaoImpl,
+    wrapper: MessageValidated,
+) -> Result<(), CommonError> {
+    let request: RequeteClesNonDechiffrable = wrapper.message.deserialize()?;
+
+    let mut idx = request.skip.unwrap_or_else(||0);
+    let mut cursor = {
+        let collection = mongo.get_collection_typed::<RowCleCaRef>(NOM_COLLECTION_CA_CLES)?;
+        // Using the hint on MongoDB _id_ to iterate in order through the whole collection.
+        // If we skip any undecipherable keys, we can double-back at the end (we'll see the count)
+        collection
+            .find(doc!{})
+            .hint(Hint::Name("_id_".to_string()))
+            .skip(idx)
+            .await?
+    };
+
+    let limite_docs = request.limite.unwrap_or_else(|| 100) as usize;
+    let mut undecipherable_keys: Vec<RecupererCleCa> = Vec::new();
+    let mut date_creation = None;
+
+    while cursor.advance().await? {
+        idx += 1;  // Compter toutes les cles pour permettre d'aller chercher la suite dans la prochaine requete.
+        let current_key = cursor.deserialize_current()?;
+
+        // Cumulate undecipherable keys only (we iterate through the whole DB)
+        if Some(true) == current_key.non_dechiffrable {
+            date_creation = Some(current_key.date_creation.clone());
+            undecipherable_keys.push(current_key.try_into()?);
+            // Check if batch is complete
+            if undecipherable_keys.len() >= limite_docs {
+                break
+            }
+        }
+    }
+
+    let response = ReponseClesNonDechiffrables {
+        cles: undecipherable_keys,
+        date_creation_max: date_creation,
+        idx,
+    };
+
+    outbound.respond(wrapper.delivery_info, serde_json::to_value(response)?).await
 }
