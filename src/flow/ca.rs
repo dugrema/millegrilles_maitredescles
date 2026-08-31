@@ -22,6 +22,8 @@ use millegrilles_common_rust::v3::{ConfigService, FormatService};
 use millegrilles_common_rust::{serde_json, tokio};
 use std::sync::Arc;
 use millegrilles_common_rust::bson::doc;
+use millegrilles_common_rust::certificats::VerificateurPermissions;
+use millegrilles_common_rust::constantes::DELEGATION_GLOBALE_PROPRIETAIRE;
 use millegrilles_common_rust::mongodb::options::Hint;
 use crate::external::crypto::SymmetricEncryptionHandler;
 
@@ -164,7 +166,6 @@ impl MaitreDesClesCAServiceImpl {
                 Ok(message) => {
                     let delivery_info = message.delivery_info.clone();  // Clone for error response
                     if let Err(e) = process_requests(
-                        self.config.as_ref(),
                         self.outbound.as_ref(),
                         self.mongo.as_ref(),
                         message
@@ -255,7 +256,6 @@ async fn process_newkeys<M>(
 
 
 async fn process_requests(
-    config: &dyn ConfigService,
     outbound: &MessageOutboundFacade,
     mongo: &MongoDaoImpl,
     wrapper: MessageValidated
@@ -275,11 +275,7 @@ async fn process_requests(
     };
 
     match action.as_str() {
-        //                 REQUETE_COMPTER_CLES_NON_DECHIFFRABLES => requete_compter_cles_non_dechiffrables_ca(middleware, message).await,
-        //                 REQUETE_SYNCHRONISER_CLES => requete_synchronizer_cles(middleware, message, &mut session).await,
-        //                 REQUETE_CLES_NON_DECHIFFRABLES_V2 => requete_cles_non_dechiffrables_v2(middleware, message, &mut session).await,
         REQUETE_COMPTER_CLES_NON_DECHIFFRABLES => request_count_undecipherable_keys(outbound, mongo, wrapper).await,
-        REQUETE_SYNCHRONISER_CLES => todo!(),
         REQUETE_CLES_NON_DECHIFFRABLES_V2 => request_fetch_key_batch(outbound, mongo, wrapper).await,
         _ => {
             warn!("process_requests (CA) Unsupported action type: {}", action);
@@ -303,6 +299,10 @@ async fn request_fetch_key_batch(
     mongo: &MongoDaoImpl,
     wrapper: MessageValidated,
 ) -> Result<(), CommonError> {
+    if ! wrapper.certificate.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
+        return Err(CommonError::Str("Access denied, must be admin"))
+    }
+
     let request: RequeteClesNonDechiffrable = wrapper.message.deserialize()?;
 
     let mut idx = request.skip.unwrap_or_else(||0);
