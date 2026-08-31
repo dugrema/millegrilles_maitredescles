@@ -1,7 +1,7 @@
 use crate::constants::*;
 use crate::flow::transactions::KeyMasterTransactionService;
 use crate::maitredescles_commun::{DocumentCleRechiffrage, RowClePartition, TransactionCleV2};
-use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
+use crate::maitredescles_rechiffrage::{CleInterneChiffree, HandlerCleRechiffrage};
 use millegrilles_common_rust::bson::doc;
 use millegrilles_common_rust::chiffrage_cle::CommandeAjouterCleDomaine;
 use millegrilles_common_rust::chrono::{Duration, Utc};
@@ -12,12 +12,13 @@ use millegrilles_common_rust::error::{Error as CommonError, Error};
 use millegrilles_common_rust::generateur_messages::RoutageMessageAction;
 use millegrilles_common_rust::jwt_simple::prelude::Deserialize;
 use millegrilles_common_rust::millegrilles_cryptographie::heapless;
+use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::{SignatureDomaines, SignatureDomainesRef};
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageKind;
 use millegrilles_common_rust::millegrilles_cryptographie::x509::EnveloppePrivee;
 use millegrilles_common_rust::mongo_dao::{ChampIndex, IndexOptions, MongoDao, MongoDaoTyped, start_transaction_regular};
 use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::mongodb::options::Hint;
-use millegrilles_common_rust::serde_json;
+use millegrilles_common_rust::{bson, serde_json};
 use millegrilles_common_rust::serde_json::Value;
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::tracing::{debug, info, warn};
@@ -304,8 +305,30 @@ pub async fn load_symmetric_key<M>(
     Ok(())
 }
 
-pub async fn process_bulk_transactions(mongo: &dyn MongoDao, session: &mut ClientSession) -> Result<(), CommonError> {
-    //let mut models = Vec::new();
-    //models.push(mongodb::bulk_write:: WriteModel)
-    todo!()
+pub async fn save_symmetric_key(
+    mongo: &dyn MongoDao,
+    signature: SignatureDomaines,
+    key: CleInterneChiffree
+) -> Result<(), CommonError> {
+
+    let key_id = signature.get_cle_ref()?;
+    let new_key_row = RowClePartition {
+        cle_id: key_id.to_string(),
+        signature,
+        cle_symmetrique: Some(key.cle),
+        nonce_symmetrique: Some(key.nonce),
+        // Deprecated, not used for new keys
+        format: None,
+        iv: None,
+        tag: None,
+        header: None,
+
+        // Other flags
+        confirmation_ca: Some(false),
+    };
+
+    let collection = mongo.get_collection(NOM_COLLECTION_SYMMETRIQUE_CLES)?;
+    collection.insert_one(bson::serialize_to_document(&new_key_row)?).await?;
+
+    Ok(())
 }

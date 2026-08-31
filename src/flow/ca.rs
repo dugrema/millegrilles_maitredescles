@@ -207,5 +207,6 @@ async fn process_newkeys<M>(
         let value = serde_json::to_value(TransactionCleV2 { signature })?;
         transaction.process_value(DOMAINE_NOM, TRANSACTION_CLE_V2, value).await?;
     }
+
     outbound.respond(delivery_info, ErrorMessage::ok()).await
 }

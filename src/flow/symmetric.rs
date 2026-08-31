@@ -1,8 +1,8 @@
 use crate::constants::*;
-use crate::external::mongo::{create_index_mongodb_custom, create_index_mongodb_partition, get_symmetric_keys};
-use crate::external::mq::{QUEUE_SYMMETRIC_CERTIFICATES, QUEUE_SYMMETRIC_GETKEYS, emit_certificate, init_symmetric_queues};
+use crate::external::mongo::{check_key_exists, create_index_mongodb_custom, create_index_mongodb_partition, get_symmetric_keys, save_symmetric_key};
+use crate::external::mq::{emit_certificate, init_symmetric_queues, QUEUE_CA_NEWKEYS, QUEUE_SYMMETRIC_CERTIFICATES, QUEUE_SYMMETRIC_GETKEYS, QUEUE_SYMMETRIC_NEWKEYS};
 use crate::flow::maintenance::validate_ticker;
-use crate::maitredescles_commun::{ErreurPermissionRechiffrage, ErrorPermissionRefusee};
+use crate::maitredescles_commun::{ErreurPermissionRechiffrage, ErrorPermissionRefusee, TransactionCleV2};
 use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
 use crate::models::{ErrorMessage, KeyDecryptionRefused};
 use millegrilles_common_rust::async_trait::async_trait;
@@ -16,7 +16,7 @@ use millegrilles_common_rust::messages_generiques::MessageCedule;
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageKind;
 use millegrilles_common_rust::millegrilles_cryptographie::x509::EnveloppeCertificat;
 use millegrilles_common_rust::mongo_dao::{MongoDaoImpl, MongoDaoTyped};
-use millegrilles_common_rust::tokio;
+use millegrilles_common_rust::{serde_json, tokio};
 use millegrilles_common_rust::tokio::task::JoinSet;
 use millegrilles_common_rust::tracing::{debug, error, info, warn};
 use millegrilles_common_rust::v3::facades::message_inbound::{MessageInboundValidator, MessageValidated};
@@ -26,6 +26,9 @@ use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl
 use millegrilles_common_rust::v3::impls::rabbitmq_consumer::DeliveryInfo;
 use millegrilles_common_rust::v3::{ConfigService, PkiService};
 use std::sync::Arc;
+use millegrilles_common_rust::chiffrage_cle::CommandeAjouterCleDomaine;
+use millegrilles_common_rust::mongodb::ClientSession;
+use crate::flow::transactions::KeyMasterTransactionService;
 
 #[async_trait]
 pub trait MaitreDesClesSymmetricService {}
@@ -64,14 +67,22 @@ impl MaitreDesClesSymmetricServiceImpl {
         join_set.spawn(async move {self_clone.process_ticker_thread(incoming_clone).await});
 
         // Symmetric queues
+
+        // Get keys queue
         let self_clone = self.clone();
         let incoming_clone = incoming.clone();
         join_set.spawn(async move {self_clone.process_getkeys_thread(incoming_clone).await});
+
+        // Certificate reply queue
         let self_clone = self.clone();
         let incoming_clone = incoming.clone();
         join_set.spawn(async move {self_clone.process_certificate_thread(incoming_clone).await});
 
-        // todo!()
+        // Save new key queue
+        let self_clone = self.clone();
+        let incoming_clone = incoming.clone();
+        join_set.spawn(async move {self_clone.process_newkeys_thread(incoming_clone).await});
+
         Ok(())
     }
 
@@ -143,6 +154,32 @@ impl MaitreDesClesSymmetricServiceImpl {
                 }
             }
         }
+    }
+
+    async fn process_newkeys_thread(&self, incoming: Arc<MessageInboundValidator>) {
+        let streamer = incoming.consume_named_queue(
+            format!("{}/{}", DOMAINE_NOM, QUEUE_SYMMETRIC_NEWKEYS).as_str()
+        ).expect("Consumer streaming init failed");
+        tokio::pin!(streamer);
+        while let Some(result) = streamer.next().await {
+            match result {
+                Ok(message) => {
+                    if let Err(e) = process_newkeys(
+                        self.config.as_ref(),
+                        self.decryption.as_ref(),
+                        self.mongo.as_ref(),
+                        message
+                    ).await {
+                        error!("process_newkeys_thread (sym) Saving key failed: {}", e);
+                        // No reply - the CA is the authority to decide if the key is saved or not
+                    }
+                }
+                Err(e) => {
+                    error!("process_newkeys_thread (sym) message parsing failed: {}", e);
+                }
+            }
+        }
+        debug!("process_newkeys_thread (sym) Closed");
     }
 
 }
@@ -382,4 +419,26 @@ async fn process_certificate_message(outbound: &MessageOutboundFacade, message: 
         },
         _ => Err(CommonError::Str("Unsupported message type"))
     }
+}
+
+async fn process_newkeys<M>(
+    config: &dyn ConfigService,
+    handler_rechiffrage: &HandlerCleRechiffrage,
+    mongo: &M,
+    wrapper: MessageValidated
+) -> Result<(), CommonError> where M: MongoDaoTyped {
+
+    // Parse to validate and check for duplicates
+    let command: CommandeAjouterCleDomaine = wrapper.message.deserialize()?;
+
+    // Decrypt the key
+    let enveloppe_signature = config.get_configuration_pki().get_enveloppe_privee();
+    let cle_secrete = command.get_cle_secrete(enveloppe_signature.as_ref())?;
+    let cle_rechiffree = handler_rechiffrage.chiffrer_cle_secrete(&cle_secrete.0)?;
+
+    // Save the key (volatile data, the redo-log is handled by the CA)
+    save_symmetric_key(mongo, command.signature, cle_rechiffree).await?;
+
+    // Do not send response - the CA handles the reply (it is the authority for keys)
+    Ok(())
 }

@@ -264,11 +264,16 @@ pub struct RowClePartition {
     pub nonce_symmetrique: Option<String>,
 
     // Information de dechiffrage contenu (utilise avec signature version 0)
-    #[serde(default, with="optionformatchiffragestr")]
+    #[serde(default, with="optionformatchiffragestr", skip_serializing_if="Option::is_none")]
     pub format: Option<FormatChiffrage>,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub iv: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub tag: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub header: Option<String>,
+
+    pub confirmation_ca: Option<bool>,
 }
 
 impl RowClePartition {
