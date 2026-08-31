@@ -18,6 +18,8 @@ pub const QUEUE_CA_TICKER: &str = "ca/job_ticker";
 pub const QUEUE_SYMMETRIC_NEWKEYS: &str = "symmetric/newkeys";
 pub const QUEUE_SYMMETRIC_GETKEYS: &str = "symmetric/get_keys";
 pub const QUEUE_SYMMETRIC_CERTIFICATES: &str = "symmetric/certificates";
+pub const QUEUE_SYMMETRIC_JOB_TICKER: &str = "symmetric/job_ticker";
+pub const QUEUE_SYMMETRIC_COMMANDS: &str = "symmetric/commands";
 
 pub fn init_ca_queues(mq: &MessagingServiceImpl) -> Result<(), CommonError> {
 
@@ -130,12 +132,14 @@ pub fn init_ca_queues(mq: &MessagingServiceImpl) -> Result<(), CommonError> {
     Ok(())
 }
 
-pub fn init_symmetric_queues(mq: &MessagingServiceImpl) -> Result<(), CommonError> {
+pub fn init_symmetric_queues(config: &dyn ConfigService, mq: &MessagingServiceImpl) -> Result<(), CommonError> {
+
+    let fingerprint_pk = config.get_configuration_pki().get_enveloppe_privee().fingerprint()?;
 
     // Configure the queues and add to messaging service (will spawn consumer threads)
     mq.add_named_queue(
         ConfigQueue {
-            nom_queue: format!("{}/symmetric/job_ticker", DOMAINE_NOM),
+            nom_queue: format!("{}/{}", DOMAINE_NOM, QUEUE_SYMMETRIC_JOB_TICKER),
             routing_keys: vec![
                 ConfigRoutingExchange { routing_key: "evenement.ceduleur.ping".to_string(), exchange: Securite::L1Public }
             ],
@@ -156,24 +160,6 @@ pub fn init_symmetric_queues(mq: &MessagingServiceImpl) -> Result<(), CommonErro
     })?;
 
     mq.add_named_queue(ConfigQueue {
-        nom_queue: format!("{}/symmetric/requests", DOMAINE_NOM),
-        routing_keys: vec![
-        ],
-        ttl: Some(QUEUE_TTL_DEFAULT),
-        durable: true,
-        autodelete: false,
-    })?;
-
-    mq.add_named_queue(ConfigQueue {
-        nom_queue: format!("{}/symmetric/commands", DOMAINE_NOM),
-        routing_keys: vec![
-        ],
-        ttl: Some(QUEUE_TTL_DEFAULT),
-        durable: true,
-        autodelete: false,
-    })?;
-
-    mq.add_named_queue(ConfigQueue {
         nom_queue: format!("{}/{}", DOMAINE_NOM, QUEUE_SYMMETRIC_NEWKEYS),
         routing_keys: vec![
             ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_AJOUTER_CLE_DOMAINES), exchange: Securite::L1Public },
@@ -191,6 +177,16 @@ pub fn init_symmetric_queues(mq: &MessagingServiceImpl) -> Result<(), CommonErro
         ttl: Some(QUEUE_TTL_DEFAULT),
         durable: true,
         autodelete: false,
+    })?;
+
+    mq.add_named_queue(ConfigQueue {
+        nom_queue: format!("{}/{}/{}", DOMAINE_NOM, QUEUE_SYMMETRIC_COMMANDS, fingerprint_pk),
+        routing_keys: vec![
+            ConfigRoutingExchange { routing_key: format!("commande.{}.{}.{}", DOMAINE_NOM, fingerprint_pk, COMMANDE_CLE_SYMMETRIQUE), exchange: Securite::L3Protege },
+        ],
+        ttl: Some(QUEUE_TTL_DEFAULT),
+        durable: true,
+        autodelete: true,
     })?;
 
     mq.add_named_queue(ConfigQueue {

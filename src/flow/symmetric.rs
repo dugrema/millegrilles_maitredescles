@@ -1,10 +1,10 @@
 use crate::constants::*;
 use crate::errors::{ErreurPermissionRechiffrage, ErrorPermissionRefusee};
 use crate::external::crypto::SymmetricEncryptionHandler;
-use crate::external::mongo::{create_index_mongodb_custom, create_index_mongodb_partition, get_symmetric_ca_key, get_symmetric_keys, prepare_symmetric_key, save_symmetric_key};
-use crate::external::mq::{emit_certificate, emit_local_symmetric_key_decryption_request, init_symmetric_queues, QUEUE_SYMMETRIC_CERTIFICATES, QUEUE_SYMMETRIC_GETKEYS, QUEUE_SYMMETRIC_NEWKEYS};
+use crate::external::mongo::{create_index_mongodb_custom, create_index_mongodb_partition, get_symmetric_ca_key, get_symmetric_keys, prepare_symmetric_key, save_symmetric_key, save_symmetric_keys, KEY_LOCAL};
+use crate::external::mq::{emit_certificate, emit_local_symmetric_key_decryption_request, init_symmetric_queues, QUEUE_SYMMETRIC_CERTIFICATES, QUEUE_SYMMETRIC_GETKEYS, QUEUE_SYMMETRIC_NEWKEYS, QUEUE_SYMMETRIC_JOB_TICKER, QUEUE_SYMMETRIC_COMMANDS};
 use crate::flow::maintenance::validate_ticker;
-use crate::models::{ErrorMessage, KeyDecryptionRefused};
+use crate::models::{DocumentCleRechiffrage, ErrorMessage, KeyDecryptionRefused};
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::certificats::VerificateurPermissions;
 use millegrilles_common_rust::chiffrage_cle::CommandeAjouterCleDomaine;
@@ -27,6 +27,7 @@ use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl
 use millegrilles_common_rust::v3::impls::rabbitmq_consumer::DeliveryInfo;
 use millegrilles_common_rust::v3::{ConfigService, PkiService};
 use std::sync::Arc;
+use crate::maitredescles_commun::CommandeCleSymmetrique;
 
 #[async_trait]
 pub trait MaitreDesClesSymmetricService {}
@@ -51,7 +52,7 @@ impl MaitreDesClesSymmetricServiceImpl {
     }
 
     pub async fn configure(&self, mq: &MessagingServiceImpl, config: &ConfigServiceDbImpl) -> Result<(), CommonError> {
-        init_symmetric_queues(mq)?;
+        init_symmetric_queues(config, mq)?;
         create_index_mongodb_custom(self.mongo.as_ref(), config.config.as_ref(), NOM_COLLECTION_SYMMETRIQUE_CLES).await?;
         create_index_mongodb_partition(self.mongo.as_ref(), config.config.as_ref()).await?;
         Ok(())
@@ -81,12 +82,16 @@ impl MaitreDesClesSymmetricServiceImpl {
         let incoming_clone = incoming.clone();
         join_set.spawn(async move {self_clone.process_newkeys_thread(incoming_clone).await});
 
+        let self_clone = self.clone();
+        let incoming_clone = incoming.clone();
+        join_set.spawn(async move {self_clone.process_instance_commands_thread(incoming_clone).await});
+
         Ok(())
     }
 
     async fn process_ticker_thread(&self, incoming: Arc<MessageInboundValidator>) {
         let streamer = incoming.consume_named_queue(
-            format!("{}/symmetric/job_ticker", DOMAINE_NOM).as_str()
+            format!("{}/{}", DOMAINE_NOM, QUEUE_SYMMETRIC_JOB_TICKER).as_str()
         ).expect("Consumer streaming init failed");
         tokio::pin!(streamer);
         while let Some(result) = streamer.next().await {
@@ -171,6 +176,36 @@ impl MaitreDesClesSymmetricServiceImpl {
                         error!("process_newkeys_thread (sym) Saving key failed: {}", e);
                         // No reply - the CA is the authority to decide if the key is saved or not
                     }
+                }
+                Err(e) => {
+                    error!("process_newkeys_thread (sym) message parsing failed: {}", e);
+                }
+            }
+        }
+        debug!("process_newkeys_thread (sym) Closed");
+    }
+
+    async fn process_instance_commands_thread(&self, incoming: Arc<MessageInboundValidator>) {
+        let fingerprint = self.config.get_configuration_pki()
+            .get_enveloppe_privee()
+            .fingerprint()
+            .expect("fingerprint");
+        let streamer = incoming.consume_named_queue(
+            format!("{}/{}/{}", DOMAINE_NOM, QUEUE_SYMMETRIC_COMMANDS, fingerprint).as_str()
+        ).expect("Consumer streaming init failed");
+
+        tokio::pin!(streamer);
+
+        while let Some(result) = streamer.next().await {
+            match result {
+                Ok(message) => {
+                    process_instance_command(
+                        self.config.as_ref(),
+                        self.outbound.as_ref(),
+                        self.mongo.as_ref(),
+                        self.decryption.as_ref(),
+                        message
+                    ).await;
                 }
                 Err(e) => {
                     error!("process_newkeys_thread (sym) message parsing failed: {}", e);
@@ -482,4 +517,98 @@ async fn process_newkeys(
 
     // Do not send response - the CA handles the reply (it is the authority for keys)
     Ok(())
+}
+
+/// This uses a command from Coup D'Oeil to set the symmetric key from a CA re-encrypted version
+async fn repair_symmetric_key(
+    config: &dyn ConfigService,
+    outbound: &MessageOutboundFacade,
+    decryption: &SymmetricEncryptionHandler,
+    mongo: &dyn MongoDao,
+    wrapper: MessageValidated,
+) -> Result<(), CommonError> {
+    let private_key = config.get_configuration_pki().get_enveloppe_privee();
+    let local_fingerprint = private_key.fingerprint()?;
+    let instance_id = private_key.enveloppe_pub.get_common_name()?;
+
+    let command: CommandeCleSymmetrique = wrapper.message.deserialize()?;
+
+    if command.fingerprint != local_fingerprint {
+        warn!("repair_symmetric_key Fingerprint mismatch, key rejected");
+        outbound.respond(wrapper.delivery_info, ErrorMessage {
+            ok: false,
+            code: Some(1),
+            err: Some("Fingerprint mismatch, key rejected".to_string())
+        }).await?;
+        return Ok(());
+    }
+
+    // This will decrypt and set the key in memory - if it fails, the key is wrong
+    if let Err(e) = decryption.set_key(command.cle.as_str()) {
+        warn!("repair_symmetric_key Key rejected by decryption engine : {:?}", e);
+        outbound.respond(wrapper.delivery_info, ErrorMessage {
+            ok: false,
+            code: Some(2),
+            err: Some("key mismatch, rejected by decryption engine".to_string())
+        }).await?;
+        return Ok(())
+    }
+
+    // The key is good, save it.
+    let mut keys = Vec::new();
+    keys.push(DocumentCleRechiffrage {
+        type_: KEY_LOCAL.to_string(),
+        instance_id: instance_id.to_string(),
+        fingerprint: Some(local_fingerprint.clone()),
+        cle: command.cle,
+    });
+
+    if let Err(e) = save_symmetric_keys(mongo, None, keys).await {
+        error!("repair_symmetric_key Error saving key: {:?}", e);
+        outbound.respond(wrapper.delivery_info, ErrorMessage {
+            ok: false,
+            code: Some(500),
+            err: Some(format!("Generic error: {:?}", e))
+        }).await?;
+        return Ok(())
+    }
+
+    // Respond ok
+    outbound.respond(wrapper.delivery_info, ErrorMessage::ok()).await?;
+
+    Ok(())
+}
+
+async fn process_instance_command(
+    config: &dyn ConfigService,
+    outbound: &MessageOutboundFacade,
+    mongo: &MongoDaoImpl,
+    decryption: &SymmetricEncryptionHandler,
+    message: MessageValidated
+) {
+    let action = match message.message.routage.as_ref() {
+        Some(routage) => match routage.action.as_ref() {
+            Some(action) => action.clone(),
+            None => {
+                // Bad message, no action
+                return
+            }
+        },
+        None => {
+            // Bad message, no routing
+            return
+        }
+    };
+
+    let result = match action.as_str() {
+        COMMANDE_CLE_SYMMETRIQUE => repair_symmetric_key(config, outbound, decryption, mongo, message ).await,
+        _ => {
+            warn!("process_newkeys_thread Unsupported action type: {}", action);
+            return
+        }
+    };
+
+    if let Err(e) = result {
+        error!("process_newkeys_thread Error: {:?}", e);
+    }
 }

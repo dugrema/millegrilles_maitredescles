@@ -29,7 +29,7 @@ use millegrilles_common_rust::{bson, serde_json};
 // DB / Index creation
 
 const KEY_CA: &str = "CA";
-const KEY_LOCAL: &str = "local";
+pub const KEY_LOCAL: &str = "local";
 
 pub async fn create_index_mongodb_custom(db: &dyn MongoDao, config: &dyn ConfigMessages, key_collection_name: &str) -> Result<(), CommonError> {
     // Index cle_id
@@ -352,7 +352,7 @@ pub async fn prepare_symmetric_key<M>(
             // Save keys using a session
             let mut session = mongo.get_session().await?;
             session.start_transaction().await?;
-            match save_symmetric_keys(mongo, &mut session, keys).await {
+            match save_symmetric_keys(mongo, Some(&mut session), keys).await {
                 Ok(()) => session.commit_transaction().await?,
                 Err(e) => {
                     error!("prepare_symmetric_key Error saving keys: {:?}", e);
@@ -368,12 +368,16 @@ pub async fn prepare_symmetric_key<M>(
 /// Save a new symmetric key
 pub async fn save_symmetric_keys(
     mongo: &dyn MongoDao,
-    session: &mut ClientSession,
+    mut session: Option<&mut ClientSession>,
     keys: Vec<DocumentCleRechiffrage>,
 ) -> Result<(), CommonError> {
     let collection = mongo.get_collection(NOM_COLLECTION_CONFIGURATION)?;
     for key in keys {
-        collection.insert_one(bson::serialize_to_document(&key)?).session(&mut *session).await?;
+        let mut op = collection.insert_one(bson::serialize_to_document(&key)?);
+        if let Some(session) = session.as_mut() {
+            op = op.session(&mut **session);
+        }
+        op.await?;
     }
     Ok(())
 }
