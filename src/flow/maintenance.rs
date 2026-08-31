@@ -1,9 +1,9 @@
+use crate::constants::ROLE_TICKER;
 use millegrilles_common_rust::certificats::VerificateurPermissions;
 use millegrilles_common_rust::chrono::{Duration, Utc};
-use millegrilles_common_rust::tracing::debug;
 use millegrilles_common_rust::error::Error as CommonError;
+use millegrilles_common_rust::tracing::debug;
 use millegrilles_common_rust::v3::facades::message_inbound::MessageValidated;
-use crate::constants::ROLE_TICKER;
 
 pub async fn validate_ticker(trigger: &MessageValidated) -> Result<(), CommonError> {
     if let Ok(true) = trigger.certificate.verifier_roles_string(vec![ROLE_TICKER.to_string()]) {

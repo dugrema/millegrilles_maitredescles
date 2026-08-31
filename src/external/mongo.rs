@@ -1,9 +1,9 @@
-use std::collections::HashMap;
 use crate::constants::*;
 use crate::external::crypto::SymmetricEncryptionHandler;
 use crate::models::DocumentCleRechiffrage;
 use crate::models::{CleInterneChiffree, RowClePartition};
-use millegrilles_common_rust::bson::{doc, Document};
+use millegrilles_common_rust::bson;
+use millegrilles_common_rust::bson::{Document, doc};
 use millegrilles_common_rust::chrono::{Duration, Utc};
 use millegrilles_common_rust::common_messages::ResponseRequestDechiffrageV2Cle;
 use millegrilles_common_rust::configuration::ConfigMessages;
@@ -11,16 +11,13 @@ use millegrilles_common_rust::constantes::{CHAMP_CREATION, CHAMP_MODIFICATION, F
 use millegrilles_common_rust::error::{Error as CommonError, Error};
 use millegrilles_common_rust::jwt_simple::prelude::Deserialize;
 use millegrilles_common_rust::millegrilles_cryptographie::heapless;
-use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::{SignatureDomaines, SignatureDomainesVersion};
+use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::SignatureDomaines;
 use millegrilles_common_rust::millegrilles_cryptographie::x509::EnveloppePrivee;
 use millegrilles_common_rust::mongo_dao::{ChampIndex, IndexOptions, MongoDao, MongoDaoTyped, start_transaction_regular};
 use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::mongodb::options::{Hint, UpdateOneModel, WriteModel};
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::tracing::{debug, error, info, warn};
-use millegrilles_common_rust::bson;
-use millegrilles_common_rust::tokio_util::io::simplex::new;
-use crate::maitredescles_commun::CleSecreteRechiffrage;
 // DB / Index creation
 
 const KEY_CA: &str = "CA";
