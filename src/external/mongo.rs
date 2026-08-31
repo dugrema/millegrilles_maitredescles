@@ -430,3 +430,13 @@ pub async fn save_symmetric_key(
 
     Ok(())
 }
+
+pub async fn count_ca_undecipherable_keys(mongo: &dyn MongoDao) -> Result<usize, CommonError> {
+    let filtre = doc! { CHAMP_NON_DECHIFFRABLE: true };
+    let collection = mongo.get_collection(NOM_COLLECTION_CA_CLES)?;
+    let compte = collection
+        .count_documents(filtre)
+        .hint(Hint::Name(INDEX_NON_DECHIFFRABLES.into()))
+        .await?;
+    Ok(compte as usize)
+}

@@ -15,6 +15,7 @@ use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl
 pub const QUEUE_CA_NEWKEYS: &str = "ca/newkeys";
 pub const QUEUE_CA_BACKUP: &str = "ca/backup";
 pub const QUEUE_CA_TICKER: &str = "ca/job_ticker";
+pub const QUEUE_CA_REQUESTS: &str = "ca/requests";
 pub const QUEUE_SYMMETRIC_NEWKEYS: &str = "symmetric/newkeys";
 pub const QUEUE_SYMMETRIC_GETKEYS: &str = "symmetric/get_keys";
 pub const QUEUE_SYMMETRIC_CERTIFICATES: &str = "symmetric/certificates";
@@ -49,7 +50,7 @@ pub fn init_ca_queues(mq: &MessagingServiceImpl) -> Result<(), CommonError> {
 
 
     mq.add_named_queue(ConfigQueue {
-        nom_queue: format!("{}/ca/requests", DOMAINE_NOM),
+        nom_queue: format!("{}/{}", DOMAINE_NOM, QUEUE_CA_REQUESTS),
         routing_keys: vec![
             ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_CLES_NON_DECHIFFRABLES_V2), exchange: Securite::L3Protege },
             ConfigRoutingExchange { routing_key: format!("requete.{}.{}", DOMAINE_NOM, REQUETE_COMPTER_CLES_NON_DECHIFFRABLES), exchange: Securite::L3Protege },

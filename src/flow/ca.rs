@@ -1,9 +1,9 @@
 use crate::constants::*;
-use crate::external::mongo::{check_key_exists, create_index_mongodb_ca, create_index_mongodb_symmetric, marquer_cles_ca_timeout, process_ca_key_sync};
-use crate::external::mq::{QUEUE_CA_BACKUP, QUEUE_CA_NEWKEYS, QUEUE_CA_TICKER, init_ca_queues};
+use crate::external::mongo::{check_key_exists, count_ca_undecipherable_keys, create_index_mongodb_ca, create_index_mongodb_symmetric, marquer_cles_ca_timeout, process_ca_key_sync};
+use crate::external::mq::{init_ca_queues, QUEUE_CA_BACKUP, QUEUE_CA_NEWKEYS, QUEUE_CA_REQUESTS, QUEUE_CA_TICKER};
 use crate::flow::maintenance::validate_ticker;
 use crate::flow::transactions::KeyMasterTransactionService;
-use crate::models::ErrorMessage;
+use crate::models::{ErrorMessage, UndecipherableKeyCountResponse};
 use crate::models::TransactionCleV2;
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::chiffrage_cle::CommandeAjouterCleDomaine;
@@ -11,7 +11,7 @@ use millegrilles_common_rust::chrono::Timelike;
 use millegrilles_common_rust::error::Error as CommonError;
 use millegrilles_common_rust::futures::StreamExt;
 use millegrilles_common_rust::messages_generiques::MessageCedule;
-use millegrilles_common_rust::mongo_dao::{MongoDaoImpl, MongoDaoTyped};
+use millegrilles_common_rust::mongo_dao::{MongoDao, MongoDaoImpl, MongoDaoTyped};
 use millegrilles_common_rust::tokio::task::JoinSet;
 use millegrilles_common_rust::tracing::{debug, error, warn};
 use millegrilles_common_rust::v3::facades::message_inbound::{MessageInboundValidator, MessageValidated};
@@ -21,6 +21,7 @@ use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl
 use millegrilles_common_rust::v3::{ConfigService, FormatService};
 use millegrilles_common_rust::{serde_json, tokio};
 use std::sync::Arc;
+use crate::external::crypto::SymmetricEncryptionHandler;
 
 #[async_trait]
 pub trait MaitreDesClesCAService {}
@@ -69,6 +70,10 @@ impl MaitreDesClesCAServiceImpl {
         let self_clone = self.clone();
         let incoming_clone = incoming.clone();
         join_set.spawn(async move {self_clone.process_newkeys_thread(incoming_clone).await});
+
+        let self_clone = self.clone();
+        let incoming_clone = incoming.clone();
+        join_set.spawn(async move {self_clone.process_requests_thread(incoming_clone).await});
 
         //todo!()
         Ok(())
@@ -146,6 +151,41 @@ impl MaitreDesClesCAServiceImpl {
         }
         debug!("process_backup_thread Closed");
     }
+
+    async fn process_requests_thread(&self, incoming: Arc<MessageInboundValidator>) {
+        let streamer = incoming.consume_named_queue(
+            format!("{}/{}", DOMAINE_NOM, QUEUE_CA_REQUESTS).as_str()
+        ).expect("Consumer streaming init failed");
+        tokio::pin!(streamer);
+        while let Some(result) = streamer.next().await {
+            match result {
+                Ok(message) => {
+                    let delivery_info = message.delivery_info.clone();  // Clone for error response
+                    if let Err(e) = process_requests(
+                        self.config.as_ref(),
+                        self.outbound.as_ref(),
+                        self.mongo.as_ref(),
+                        message
+                    ).await {
+                        error!("process_newkeys_thread Saving key failed: {}", e);
+                        // Attempt to reply with an error message
+                        self.outbound.respond(
+                            delivery_info,
+                            ErrorMessage {
+                                ok: false,
+                                code: Some(1),
+                                err: Some("Error processing request".to_string()),
+                            }
+                        ).await.ok();
+                    }
+                }
+                Err(e) => {
+                    error!("Backup job ca message parsing failed: {}", e);
+                }
+            }
+        }
+        debug!("process_backup_thread Closed");
+    }
 }
 
 impl MaitreDesClesCAService for MaitreDesClesCAServiceImpl {
@@ -209,4 +249,49 @@ async fn process_newkeys<M>(
     }
 
     outbound.respond(delivery_info, ErrorMessage::ok()).await
+}
+
+
+async fn process_requests(
+    config: &dyn ConfigService,
+    outbound: &MessageOutboundFacade,
+    mongo: &MongoDaoImpl,
+    wrapper: MessageValidated
+) -> Result<(), CommonError> {
+    let action = match wrapper.message.routage.as_ref() {
+        Some(routage) => match routage.action.as_ref() {
+            Some(action) => action.clone(),
+            None => {
+                // Bad message, no action
+                return Err(CommonError::Str("Bad message, no action was found"))
+            }
+        },
+        None => {
+            // Bad message, no routing
+            return Err(CommonError::Str("Bad message, no routing information was found"))
+        }
+    };
+
+    match action.as_str() {
+        //                 REQUETE_COMPTER_CLES_NON_DECHIFFRABLES => requete_compter_cles_non_dechiffrables_ca(middleware, message).await,
+        //                 REQUETE_SYNCHRONISER_CLES => requete_synchronizer_cles(middleware, message, &mut session).await,
+        //                 REQUETE_CLES_NON_DECHIFFRABLES_V2 => requete_cles_non_dechiffrables_v2(middleware, message, &mut session).await,
+        REQUETE_COMPTER_CLES_NON_DECHIFFRABLES => request_count_undecipherable_keys(outbound, mongo, wrapper).await,
+        REQUETE_SYNCHRONISER_CLES => todo!(),
+        REQUETE_CLES_NON_DECHIFFRABLES_V2 => todo!(),
+        _ => {
+            warn!("process_requests (CA) Unsupported action type: {}", action);
+            Err(CommonError::Str("Bad message, unsupported action type"))
+        }
+    }
+}
+
+async fn request_count_undecipherable_keys(
+    outbound: &MessageOutboundFacade,
+    mongo: &dyn MongoDao,
+    wrapper: MessageValidated,
+) -> Result<(), CommonError> {
+    let value = count_ca_undecipherable_keys(mongo).await?;
+    let response = UndecipherableKeyCountResponse { compte: value };
+    outbound.respond(wrapper.delivery_info, serde_json::to_value(&response)?).await
 }

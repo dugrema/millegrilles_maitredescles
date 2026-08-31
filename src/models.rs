@@ -204,3 +204,8 @@ pub struct DocumentCleRechiffrage {
 pub struct SymmetricKeyDecryptionRequest {
     pub cle_symmetrique_ca: String,
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UndecipherableKeyCountResponse {
+    pub compte: usize,
+}
