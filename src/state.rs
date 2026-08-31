@@ -24,7 +24,6 @@ pub struct AppContext {
     pub join_set: JoinSet<()>,
     pub config: Arc<dyn ConfigService>,
     pub config_db: Arc<dyn ConfigDb>,
-    // pub redis: Arc<RedisService>,
     pub pki: Arc<dyn PkiService>,
     pub messaging: Arc<dyn MessagingService>,
     pub format: Arc<dyn FormatService>,
@@ -46,7 +45,6 @@ impl AppContext {
 
         // Basic services
         let config = Arc::new(init_config().await?);
-        // let redis = Arc::new(init_redis(config.as_ref()).await?);
         let security = Arc::new(init_security(config.as_ref()).await?);
         let messaging = Arc::new(MessagingServiceImpl::new(config.clone(), security.clone()));
         let format = Arc::new(FormatServiceImpl::new(config.clone()));
@@ -91,7 +89,6 @@ impl AppContext {
             &mut join_set,
             security.clone(),
             messaging.as_ref(),
-            // redis.clone(),
             inbound.clone(),
             ca_service.clone(),
             symmetric_service.clone(),
@@ -124,17 +121,6 @@ async fn init_config() -> Result<ConfigServiceDbImpl, CommonError> {
     Ok(ConfigServiceDbImpl::new(Arc::new(config), Arc::new(mongo)))
 }
 
-// async fn init_redis(config: &dyn ConfigService) -> Result<RedisService, CommonError> {
-//     let redis = RedisDao::new(config.get_configuration_instance().clone()).expect("connexion redis");
-//     let redis_service = RedisService::new(redis).await?;
-//
-//     // Test the connection
-//     let mut connection = redis_service.get_connection()?;
-//     connection.ping().await.map_err(|e| e.to_string())?;
-//
-//     Ok(redis_service)
-// }
-
 async fn init_security(config: &dyn ConfigService) -> Result<SecurityServiceImpl, CommonError> {
     let validator = build_store_path_v2(&config.get_configuration_pki().ca_certfile).map_err(|e| e.to_string())?;
     let security_impl = SecurityServiceImpl::new(
@@ -149,7 +135,6 @@ async fn start_threads(
     join_set: &mut JoinSet<()>,
     security: Arc<SecurityServiceImpl>,
     messaging: &MessagingServiceImpl,
-    // redis: Arc<RedisService>,
     incoming: Arc<MessageInboundValidator>,
     ca_service: Arc<MaitreDesClesCAServiceImpl>,
     symmetric_service: Arc<MaitreDesClesSymmetricServiceImpl>,
@@ -164,7 +149,6 @@ async fn start_threads(
     // Spawn other service maintenance threads
     let shutdown_token_clone = shutdown_token.clone();
     join_set.spawn(async move { security.run(shutdown_token_clone).await });
-    // tokio::task::spawn(async move { redis.run().await });
 
     // Spawn consumer threads
     ca_service.start(join_set, incoming.clone())?;

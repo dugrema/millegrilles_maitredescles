@@ -1,7 +1,7 @@
 use crate::constants::*;
 use crate::external::crypto::SymmetricEncryptionHandler;
-use crate::models::DocumentCleRechiffrage;
 use crate::models::{CleInterneChiffree, RowClePartition};
+use crate::models::{DocumentCleRechiffrage, RecupererCleCa, ReponseClesNonDechiffrables, RequeteClesNonDechiffrable, RowCleCaRef};
 use millegrilles_common_rust::bson;
 use millegrilles_common_rust::bson::{Document, doc};
 use millegrilles_common_rust::common_messages::ResponseRequestDechiffrageV2Cle;
@@ -11,7 +11,7 @@ use millegrilles_common_rust::error::{Error as CommonError, Error};
 use millegrilles_common_rust::millegrilles_cryptographie::heapless;
 use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::SignatureDomaines;
 use millegrilles_common_rust::millegrilles_cryptographie::x509::EnveloppePrivee;
-use millegrilles_common_rust::mongo_dao::{ChampIndex, IndexOptions, MongoDao, MongoDaoTyped};
+use millegrilles_common_rust::mongo_dao::{ChampIndex, IndexOptions, MongoDao, MongoDaoImpl, MongoDaoTyped};
 use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::mongodb::options::{Hint, UpdateOneModel, WriteModel};
 use millegrilles_common_rust::tokio_stream::StreamExt;
@@ -464,4 +464,45 @@ pub async fn set_ca_batch_decipherable(mongo: &dyn MongoDao, keys: Vec<String>) 
     let ops = doc!{"$set": {CHAMP_NON_DECHIFFRABLE: false}};
     collection_ca.update_many(filter, ops).await?;
     Ok(())
+}
+
+pub async fn fetch_key_batch_db(mongo: &MongoDaoImpl, request: RequeteClesNonDechiffrable) -> Result<ReponseClesNonDechiffrables, Error> {
+    let mut idx = request.skip.unwrap_or_else(|| 0);
+
+    let mut cursor = {
+        let collection = mongo.get_collection_typed::<RowCleCaRef>(NOM_COLLECTION_CA_CLES)?;
+        // Using the hint on MongoDB _id_ to iterate in order through the whole collection.
+        // If we skip any undecipherable keys, we can double-back at the end (we'll see the count)
+        collection
+            .find(doc! {})
+            .hint(Hint::Name("_id_".to_string()))
+            .skip(idx)
+            .await?
+    };
+
+    let limite_docs = request.limite.unwrap_or_else(|| 100) as usize;
+    let mut undecipherable_keys: Vec<RecupererCleCa> = Vec::new();
+    let mut date_creation = None;
+
+    while cursor.advance().await? {
+        idx += 1;  // Compter toutes les cles pour permettre d'aller chercher la suite dans la prochaine requete.
+        let current_key = cursor.deserialize_current()?;
+
+        // Cumulate undecipherable keys only (we iterate through the whole DB)
+        if Some(true) == current_key.non_dechiffrable {
+            date_creation = Some(current_key.date_creation.clone());
+            undecipherable_keys.push(current_key.try_into()?);
+            // Check if batch is complete
+            if undecipherable_keys.len() >= limite_docs {
+                break
+            }
+        }
+    }
+
+    let response = ReponseClesNonDechiffrables {
+        cles: undecipherable_keys,
+        date_creation_max: date_creation,
+        idx,
+    };
+    Ok(response)
 }
