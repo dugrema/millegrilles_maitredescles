@@ -1,6 +1,6 @@
 use crate::external::crypto::SymmetricEncryptionHandler;
-use crate::flow::ca::{MaitreDesClesCAService, MaitreDesClesCAServiceImpl};
-use crate::flow::symmetric::{MaitreDesClesSymmetricService, MaitreDesClesSymmetricServiceImpl};
+use crate::flow::ca::MaitreDesClesCAServiceImpl;
+use crate::flow::symmetric::MaitreDesClesSymmetricServiceImpl;
 use crate::flow::transactions::KeyMasterTransactionService;
 use millegrilles_common_rust::certificats::build_store_path_v2;
 use millegrilles_common_rust::chiffrage_cle::CleChiffrageHandlerImpl;
@@ -16,24 +16,24 @@ use millegrilles_common_rust::v3::impls::config_service::ConfigServiceDbImpl;
 use millegrilles_common_rust::v3::impls::format_service::FormatServiceImpl;
 use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl;
 use millegrilles_common_rust::v3::impls::security_service::SecurityServiceImpl;
-use millegrilles_common_rust::v3::{ConfigService, FormatService, MessagingService, PkiService};
+use millegrilles_common_rust::v3::ConfigService;
 use std::sync::Arc;
 
 /// Composition object with services from common library
 pub struct AppContext {
     pub join_set: JoinSet<()>,
     pub config: Arc<dyn ConfigService>,
-    pub config_db: Arc<dyn ConfigDb>,
-    pub pki: Arc<dyn PkiService>,
-    pub messaging: Arc<dyn MessagingService>,
-    pub format: Arc<dyn FormatService>,
+    // pub config_db: Arc<dyn ConfigDb>,
+    // pub pki: Arc<dyn PkiService>,
+    // pub messaging: Arc<dyn MessagingService>,
+    // pub format: Arc<dyn FormatService>,
     pub mongo: Arc<MongoDaoImpl>,
     pub outbound: Arc<MessageOutboundFacade>,
-    pub inbound: Arc<MessageInboundValidator>,
-    pub ca_service: Arc<dyn MaitreDesClesCAService>,
-    pub symmetric_service: Arc<dyn MaitreDesClesSymmetricService>,
+    // pub inbound: Arc<MessageInboundValidator>,
+    // pub ca_service: Arc<dyn MaitreDesClesCAService>,
+    // pub symmetric_service: Arc<dyn MaitreDesClesSymmetricService>,
     pub decryption: Arc<SymmetricEncryptionHandler>,
-    pub transaction: Arc<KeyMasterTransactionService>,
+    // pub transaction: Arc<KeyMasterTransactionService>,
     pub shutdown_token: CancellationToken,
 }
 
@@ -67,7 +67,13 @@ impl AppContext {
 
         // Flow services (business logic)
         let ca_service = Arc::new(
-            MaitreDesClesCAServiceImpl::new(config.clone(), outbound.clone(), transaction.clone(), mongo.clone(), format.clone())
+            MaitreDesClesCAServiceImpl::new(
+                // config.clone(),
+                outbound.clone(),
+                transaction.clone(),
+                mongo.clone(),
+                // format.clone(),
+            )
         );
         let symmetric_service = Arc::new(
             MaitreDesClesSymmetricServiceImpl::new(
@@ -98,18 +104,18 @@ impl AppContext {
         Ok(AppContext {
             join_set,
             config: config.clone(),
-            config_db: config,
+            // config_db: config,
             // redis,
-            pki: security,
-            messaging,
-            format,
+            // pki: security,
+            // messaging,
+            // format,
             mongo,
             outbound,
-            inbound,
-            ca_service,
-            symmetric_service,
+            // inbound,
+            // ca_service,
+            // symmetric_service,
             decryption,
-            transaction,
+            // transaction,
             shutdown_token,
         })
     }

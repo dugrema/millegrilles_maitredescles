@@ -5,7 +5,6 @@ use crate::flow::maintenance::validate_ticker;
 use crate::flow::transactions::KeyMasterTransactionService;
 use crate::models::TransactionCleV2;
 use crate::models::{ErrorMessage, RequeteClesNonDechiffrable, UndecipherableKeyCountResponse};
-use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::certificats::VerificateurPermissions;
 use millegrilles_common_rust::chiffrage_cle::CommandeAjouterCleDomaine;
 use millegrilles_common_rust::chrono::Timelike;
@@ -20,30 +19,35 @@ use millegrilles_common_rust::v3::facades::message_inbound::{MessageInboundValid
 use millegrilles_common_rust::v3::facades::message_outbound::MessageOutboundFacade;
 use millegrilles_common_rust::v3::impls::config_service::ConfigServiceDbImpl;
 use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl;
-use millegrilles_common_rust::v3::{ConfigService, FormatService};
 use millegrilles_common_rust::{serde_json, tokio};
 use std::sync::Arc;
 
-#[async_trait]
-pub trait MaitreDesClesCAService {}
+// #[async_trait]
+// pub trait MaitreDesClesCAService {}
 
 pub struct MaitreDesClesCAServiceImpl {
-    config: Arc<dyn ConfigService>,
+    // config: Arc<dyn ConfigService>,
     outbound: Arc<MessageOutboundFacade>,
     transaction: Arc<KeyMasterTransactionService>,
     mongo: Arc<MongoDaoImpl>,
-    format: Arc<dyn FormatService>,
+    // format: Arc<dyn FormatService>,
 }
 
 impl MaitreDesClesCAServiceImpl {
     pub fn new(
-        config: Arc<dyn ConfigService>,
+        // config: Arc<dyn ConfigService>,
         outbound: Arc<MessageOutboundFacade>,
         transaction: Arc<KeyMasterTransactionService>,
         mongo: Arc<MongoDaoImpl>,
-        format: Arc<dyn FormatService>
+        // format: Arc<dyn FormatService>
     ) -> Self {
-        Self { config, outbound, transaction, mongo, format, }
+        Self {
+            // config,
+            outbound,
+            transaction,
+            mongo,
+            // format,
+        }
     }
 
     pub async fn configure(&self, mq: &MessagingServiceImpl, config: &ConfigServiceDbImpl) -> Result<(), CommonError> {
@@ -107,7 +111,7 @@ impl MaitreDesClesCAServiceImpl {
         tokio::pin!(streamer);
         while let Some(result) = streamer.next().await {
             match result {
-                Ok(message) => {
+                Ok(_message) => {
                     error!("TODO - process backup message");
                 }
                 Err(e) => {
@@ -188,8 +192,8 @@ impl MaitreDesClesCAServiceImpl {
     }
 }
 
-impl MaitreDesClesCAService for MaitreDesClesCAServiceImpl {
-}
+// impl MaitreDesClesCAService for MaitreDesClesCAServiceImpl {
+// }
 
 async fn ticker_job_ca<M>(mongo: &M, trigger: MessageValidated) -> Result<(), CommonError>
     where M: MongoDaoTyped

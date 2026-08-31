@@ -1,15 +1,19 @@
 use crate::external::crypto::SymmetricEncryptionHandler;
-use crate::maitredescles_commun::RowClePartitionRef;
-use millegrilles_common_rust::{bson, chrono};
+use bson::serde_helpers::datetime::FromChrono04DateTime;
+use millegrilles_common_rust::base64::Engine;
+use millegrilles_common_rust::base64::engine::general_purpose::STANDARD_NO_PAD as base64_nopad;
 use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::error::Error;
-use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::{FormatChiffrage, optionformatchiffragestr};
+use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::{CleSecrete, FormatChiffrage, optionformatchiffragestr};
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_cles::CleSecreteSerialisee;
+use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_docs::EncryptedDocument;
 use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::{SignatureDomaines, SignatureDomainesRef, SignatureDomainesVersion};
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::optionepochseconds;
+use millegrilles_common_rust::millegrilles_cryptographie::x25519::CleSecreteX25519;
+use millegrilles_common_rust::{bson, chrono};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fmt::Debug;
-use bson::serde_helpers::datetime::FromChrono04DateTime;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RequeteClesNonDechiffrable {
@@ -216,4 +220,81 @@ pub struct ReponseClesNonDechiffrables {
     #[serde(default, skip_serializing_if="Option::is_none", with="optionepochseconds")]
     pub date_creation_max: Option<DateTime<Utc>>,
     pub idx: u64,
+}
+
+#[derive(Clone, Deserialize)]
+pub struct RowClePartitionRef<'a> {
+    // Identite
+    pub cle_id: &'a str,
+    pub signature: SignatureDomainesRef<'a>,
+
+    // Cle chiffree
+    //pub cle_symmetrique: Option<&'a str>,
+    //pub nonce_symmetrique: Option<&'a str>,
+
+    // Information de dechiffrage contenu (utilise avec signature version 0)
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "optionformatchiffragestr")]
+    pub format: Option<FormatChiffrage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iv: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tag: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub header: Option<&'a str>,
+
+    #[serde(rename(deserialize="_mg-creation"),
+    serialize_with="epochseconds::serialize")] //,
+    // deserialize_with="bson::serde_helpers::chrono_datetime_as_bson_datetime::deserialize")]
+    #[allow(unused)]
+    pub date_creation: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CommandeCleSymmetrique {
+    pub cle: String,
+    pub fingerprint: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CommandeRechiffrerBatchChiffree {
+    pub cles: EncryptedDocument
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CommandeRechiffrerBatchDechiffree {
+    pub cles: HashMap<String, CleSecreteRechiffrage>
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CleSecreteRechiffrage {
+    pub signature: SignatureDomaines,
+    pub cle_secrete: String,
+    pub format: Option<String>,
+    pub header: Option<String>,
+}
+
+impl CleSecreteRechiffrage {
+
+    pub fn get_cle_secrete(&self) -> Result<CleSecreteX25519, Error> {
+        let cle_secrete: Vec<u8> = base64_nopad.decode(&self.cle_secrete)?;
+        let mut cle_secrete_dechiffree = CleSecrete([0u8; 32]);
+        cle_secrete_dechiffree.0.copy_from_slice(&cle_secrete[..]);
+        Ok(cle_secrete_dechiffree)
+    }
+
+    /// Rechiffre la cle secrete dechiffree.
+    pub fn rechiffrer_cle(&self, handler_rechiffrage: &SymmetricEncryptionHandler) -> Result<(String, CleInterneChiffree), Error> {
+        let cle_secrete = self.get_cle_secrete()?;
+
+        // Verifier la signature de la cle. Lance une exception si invalide
+        self.signature.verifier_derivee(&cle_secrete.0)?;
+
+        // Recuperer l'identificateur unique de cle.
+        let cle_id = self.signature.get_cle_ref()?.to_string();
+
+        // Rechiffrer cle
+        let cle_rechiffree = handler_rechiffrage.encrypt(&cle_secrete.0[..])?;
+        Ok((cle_id, cle_rechiffree))
+    }
+
 }

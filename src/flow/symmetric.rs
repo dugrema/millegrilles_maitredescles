@@ -4,9 +4,8 @@ use crate::external::crypto::SymmetricEncryptionHandler;
 use crate::external::mongo::*;
 use crate::external::mq::*;
 use crate::flow::maintenance::validate_ticker;
-use crate::maitredescles_commun::{CommandeCleSymmetrique, CommandeRechiffrerBatchChiffree, CommandeRechiffrerBatchDechiffree};
-use crate::models::{DocumentCleRechiffrage, ErrorMessage, KeyDecryptionRefused, RowClePartition};
-use millegrilles_common_rust::async_trait::async_trait;
+use crate::models::CommandeRechiffrerBatchDechiffree;
+use crate::models::{CommandeCleSymmetrique, CommandeRechiffrerBatchChiffree, DocumentCleRechiffrage, ErrorMessage, KeyDecryptionRefused, RowClePartition};
 use millegrilles_common_rust::certificats::VerificateurPermissions;
 use millegrilles_common_rust::chiffrage_cle::CommandeAjouterCleDomaine;
 use millegrilles_common_rust::chrono::Timelike;
@@ -31,8 +30,8 @@ use millegrilles_common_rust::v3::{ChiffrageService, ConfigService, PkiService};
 use millegrilles_common_rust::{serde_json, tokio};
 use std::sync::Arc;
 
-#[async_trait]
-pub trait MaitreDesClesSymmetricService {}
+// #[async_trait]
+// pub trait MaitreDesClesSymmetricService {}
 
 pub struct MaitreDesClesSymmetricServiceImpl {
     config: Arc<dyn ConfigService>,
@@ -221,7 +220,7 @@ impl MaitreDesClesSymmetricServiceImpl {
 
 }
 
-impl MaitreDesClesSymmetricService for MaitreDesClesSymmetricServiceImpl {}
+// impl MaitreDesClesSymmetricService for MaitreDesClesSymmetricServiceImpl {}
 
 async fn ticker_job_symmetric(
     config: &dyn ConfigService,

@@ -36,9 +36,9 @@ impl KeyMasterTransactionService {
         }
     }
 
-    pub async fn process_transaction(&self, wrapper: TransactionWrapper) -> Result<(), CommonError> {
-        self.ca.process_transaction(wrapper).await
-    }
+    // pub async fn process_transaction(&self, wrapper: TransactionWrapper) -> Result<(), CommonError> {
+    //     self.ca.process_transaction(wrapper).await
+    // }
 
     pub async fn process_value(&self, domain: &str, action: &str, value: Value) -> Result<(), Error> {
         self.ca.process_value(domain, action, value).await

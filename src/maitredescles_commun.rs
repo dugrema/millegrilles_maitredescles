@@ -179,51 +179,6 @@ pub struct ReponseConfirmerClesSurCa {
     // pub cles_manquantes: Vec<String>
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CleSecreteRechiffrage {
-    pub signature: SignatureDomaines,
-    pub cle_secrete: String,
-    pub format: Option<String>,
-    pub header: Option<String>,
-}
-
-impl CleSecreteRechiffrage {
-
-    pub fn get_cle_secrete(&self) -> Result<CleSecreteX25519, Error> {
-        let cle_secrete: Vec<u8> = base64_nopad.decode(&self.cle_secrete)?;
-        let mut cle_secrete_dechiffree = CleSecrete([0u8; 32]);
-        cle_secrete_dechiffree.0.copy_from_slice(&cle_secrete[..]);
-        Ok(cle_secrete_dechiffree)
-    }
-
-    /// Rechiffre la cle secrete dechiffree.
-    pub fn rechiffrer_cle(&self, handler_rechiffrage: &SymmetricEncryptionHandler) -> Result<(String, CleInterneChiffree), Error> {
-        let cle_secrete = self.get_cle_secrete()?;
-
-        // Verifier la signature de la cle. Lance une exception si invalide
-        self.signature.verifier_derivee(&cle_secrete.0)?;
-
-        // Recuperer l'identificateur unique de cle.
-        let cle_id = self.signature.get_cle_ref()?.to_string();
-
-        // Rechiffrer cle
-        let cle_rechiffree = handler_rechiffrage.encrypt(&cle_secrete.0[..])?;
-        Ok((cle_id, cle_rechiffree))
-    }
-
-}
-
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CommandeRechiffrerBatchChiffree {
-    pub cles: EncryptedDocument
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CommandeRechiffrerBatchDechiffree {
-    pub cles: HashMap<String, CleSecreteRechiffrage>
-}
-
 /// Transaction orignale de sauvegarde de cle CA.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionCle {
@@ -250,33 +205,6 @@ pub struct TransactionCle {
     pub partition: Option<String>,
 }
 
-#[derive(Clone, Deserialize)]
-pub struct RowClePartitionRef<'a> {
-    // Identite
-    pub cle_id: &'a str,
-    pub signature: SignatureDomainesRef<'a>,
-
-    // Cle chiffree
-    //pub cle_symmetrique: Option<&'a str>,
-    //pub nonce_symmetrique: Option<&'a str>,
-
-    // Information de dechiffrage contenu (utilise avec signature version 0)
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "optionformatchiffragestr")]
-    pub format: Option<FormatChiffrage>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub iv: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tag: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub header: Option<&'a str>,
-
-    #[serde(rename(deserialize="_mg-creation"),
-    serialize_with="epochseconds::serialize")] //,
-    // deserialize_with="bson::serde_helpers::chrono_datetime_as_bson_datetime::deserialize")]
-    #[allow(unused)]
-    pub date_creation: DateTime<Utc>,
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EvenementClesRechiffrage {
     pub cle_ca: String,
@@ -286,12 +214,6 @@ pub struct EvenementClesRechiffrage {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CommandeRotationCertificat {
     pub certificat: Vec<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CommandeCleSymmetrique {
-    pub cle: String,
-    pub fingerprint: String,
 }
 
 /// Emettre une demande de rechiffrage de cle symmetrique par un tiers
