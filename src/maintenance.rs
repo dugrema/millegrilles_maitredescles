@@ -53,7 +53,6 @@ where M: Middleware
 
     let handler_rechiffrage = match &manager.symmetric {
         MaitreDesClesSymmetricManager::MongoDb(inner) => Some(&inner.handler_rechiffrage),
-        MaitreDesClesSymmetricManager::SQLite(inner) => Some(&inner.handler_rechiffrage),
         MaitreDesClesSymmetricManager::None => None
     };
 

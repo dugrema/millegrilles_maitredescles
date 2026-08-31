@@ -17,13 +17,11 @@ use crate::ca_manager::{MaitreDesClesCaManager, preparer_index_mongodb_ca};
 use crate::external::crypto::SymmetricEncryptionHandler;
 use crate::maintenance::thread_entretien;
 use crate::mongodb_manager::{MaitreDesClesMongoDbManager, preparer_index_mongodb, thread_entretien_manager_mongodb};
-use crate::sqlite_manager::MaitreDesClesSqliteManager;
 use crate::state::AppContext;
 
 /// Enum pour distinguer les types de gestionnaires.
 pub enum MaitreDesClesSymmetricManager {
     MongoDb(MaitreDesClesMongoDbManager),
-    SQLite(MaitreDesClesSqliteManager),
     None
 }
 
@@ -35,12 +33,6 @@ pub struct MaitreDesClesManager {
 static DOMAIN_MANAGER: StaticCell<MaitreDesClesManager> = StaticCell::new();
 
 pub async fn run() {
-    let context = Arc::new(AppContext::new().await.expect("Error getting AppContext"));
-
-
-}
-
-pub async fn old_run() {
 
     let (middleware, futures_middleware) = preparer_middleware()
         .expect("preparer middleware");
@@ -107,9 +99,6 @@ where M: Middleware + IsConfigNoeud
             preparer_index_mongodb(middleware).await.expect("index mongodb ca");
             futures.push(spawn(thread_entretien_manager_mongodb(manager, middleware)));
         },
-        MaitreDesClesSymmetricManager::SQLite(manager) => {
-            futures.extend(manager.initialiser(middleware).await.expect("initialize sqlite"));
-        },
         MaitreDesClesSymmetricManager::None => ()
     }
 
@@ -150,9 +139,6 @@ fn charger_gestionnaire() -> MaitreDesClesSymmetricManager {
             match val.as_str() {
                 "partition" | "CA_partition" | "mongodb" | "CA_mongodb" => {
                     MaitreDesClesSymmetricManager::MongoDb(MaitreDesClesMongoDbManager::new(handler_rechiffrage))
-                },
-                "sqlite" => {
-                    MaitreDesClesSymmetricManager::SQLite(MaitreDesClesSqliteManager::new(handler_rechiffrage))
                 },
                 _ => MaitreDesClesSymmetricManager::None
             }
