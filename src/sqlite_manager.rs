@@ -1,5 +1,5 @@
 use crate::constants::*;
-use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
+use crate::external::crypto::SymmetricEncryptionHandler;
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::backup::BackupStarter;
 use millegrilles_common_rust::certificats::ValidateurX509;
@@ -17,13 +17,13 @@ use millegrilles_common_rust::rabbitmq_dao::QueueType;
 use millegrilles_common_rust::recepteur_messages::MessageValide;
 
 pub struct MaitreDesClesSqliteManager {
-    pub handler_rechiffrage: HandlerCleRechiffrage,
+    pub handler_rechiffrage: SymmetricEncryptionHandler,
     // connexion_read_only: Mutex<Option<Connection>>,
     // connexion_sauvegarder_cle: Mutex<Option<Connection>>,
 }
 
 impl MaitreDesClesSqliteManager {
-    pub fn new(handler_rechiffrage: HandlerCleRechiffrage) -> MaitreDesClesSqliteManager {
+    pub fn new(handler_rechiffrage: SymmetricEncryptionHandler) -> MaitreDesClesSqliteManager {
         MaitreDesClesSqliteManager {
             handler_rechiffrage,
             // connexion_read_only: Mutex::new(None),

@@ -1,13 +1,13 @@
 use crate::constants::*;
-use millegrilles_common_rust::constantes::{Securite, COMMANDE_TRANSFERT_CLE_CA, COMMANDE_TRANSFERT_CLE, COMMANDE_AJOUTER_CLE_DOMAINES, MAITREDESCLES_REQUETE_DECHIFFRAGE_V2, MAITREDESCLES_REQUETE_DECHIFFRAGE_MESSAGE, REQUETE_CERT_MAITREDESCLES, COMMANDE_CERT_MAITREDESCLES};
+use crate::external::crypto::SymmetricEncryptionHandler;
+use crate::models::ErrorMessage;
+use millegrilles_common_rust::constantes::{COMMANDE_AJOUTER_CLE_DOMAINES, COMMANDE_CERT_MAITREDESCLES, COMMANDE_TRANSFERT_CLE, COMMANDE_TRANSFERT_CLE_CA, MAITREDESCLES_REQUETE_DECHIFFRAGE_MESSAGE, MAITREDESCLES_REQUETE_DECHIFFRAGE_V2, REQUETE_CERT_MAITREDESCLES, Securite};
 use millegrilles_common_rust::error::Error as CommonError;
 use millegrilles_common_rust::generateur_messages::RoutageMessageAction;
 use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange};
 use millegrilles_common_rust::tracing::debug;
 use millegrilles_common_rust::v3::facades::message_outbound::MessageOutboundFacade;
 use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl;
-use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
-use crate::models::ErrorMessage;
 
 pub const QUEUE_CA_NEWKEYS: &str = "ca/newkeys";
 pub const QUEUE_CA_BACKUP: &str = "ca/backup";
@@ -327,7 +327,7 @@ pub fn init_symmetric_queues(mq: &MessagingServiceImpl) -> Result<(), CommonErro
     Ok(())
 }
 
-pub async fn emit_certificate(outbound: &MessageOutboundFacade, decryption: &HandlerCleRechiffrage) -> Result<(), CommonError> {
+pub async fn emit_certificate(outbound: &MessageOutboundFacade, decryption: &SymmetricEncryptionHandler) -> Result<(), CommonError> {
     if ! decryption.is_ready() {
         debug!("Not emitting certificate - not ready to encrypt/decrypt");
         return Ok(())

@@ -1,8 +1,8 @@
+use crate::external::crypto::SymmetricEncryptionHandler;
 use crate::external::mongo::load_symmetric_key;
 use crate::flow::ca::{MaitreDesClesCAService, MaitreDesClesCAServiceImpl};
 use crate::flow::symmetric::{MaitreDesClesSymmetricService, MaitreDesClesSymmetricServiceImpl};
 use crate::flow::transactions::KeyMasterTransactionService;
-use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
 use millegrilles_common_rust::certificats::build_store_path_v2;
 use millegrilles_common_rust::chiffrage_cle::CleChiffrageHandlerImpl;
 use millegrilles_common_rust::configuration::{ConfigDb, ConfigMessages, charger_configuration, charger_configuration_mongo};
@@ -34,7 +34,7 @@ pub struct AppContext {
     pub inbound: Arc<MessageInboundValidator>,
     pub ca_service: Arc<dyn MaitreDesClesCAService>,
     pub symmetric_service: Arc<dyn MaitreDesClesSymmetricService>,
-    pub decryption: Arc<HandlerCleRechiffrage>,
+    pub decryption: Arc<SymmetricEncryptionHandler>,
     pub transaction: Arc<KeyMasterTransactionService>,
     pub shutdown_token: CancellationToken,
 }
@@ -51,7 +51,7 @@ impl AppContext {
         let security = Arc::new(init_security(config.as_ref()).await?);
         let messaging = Arc::new(MessagingServiceImpl::new(config.clone(), security.clone()));
         let format = Arc::new(FormatServiceImpl::new(config.clone()));
-        let decryption = Arc::new(HandlerCleRechiffrage::with_certificat(
+        let decryption = Arc::new(SymmetricEncryptionHandler::with_certificat(
             config.get_configuration_pki().get_enveloppe_privee()
         ));
 

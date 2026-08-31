@@ -1,9 +1,9 @@
 use crate::constants::*;
+use crate::external::crypto::SymmetricEncryptionHandler;
 use crate::external::mongo::{create_index_mongodb_custom, create_index_mongodb_partition, get_symmetric_keys, save_symmetric_key};
 use crate::external::mq::{QUEUE_SYMMETRIC_CERTIFICATES, QUEUE_SYMMETRIC_GETKEYS, QUEUE_SYMMETRIC_NEWKEYS, emit_certificate, init_symmetric_queues};
 use crate::flow::maintenance::validate_ticker;
 use crate::maitredescles_commun::{ErreurPermissionRechiffrage, ErrorPermissionRefusee};
-use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
 use crate::models::{ErrorMessage, KeyDecryptionRefused};
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::certificats::VerificateurPermissions;
@@ -17,6 +17,7 @@ use millegrilles_common_rust::messages_generiques::MessageCedule;
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageKind;
 use millegrilles_common_rust::millegrilles_cryptographie::x509::EnveloppeCertificat;
 use millegrilles_common_rust::mongo_dao::{MongoDao, MongoDaoImpl, MongoDaoTyped};
+use millegrilles_common_rust::tokio;
 use millegrilles_common_rust::tokio::task::JoinSet;
 use millegrilles_common_rust::tracing::{debug, error, info, warn};
 use millegrilles_common_rust::v3::facades::message_inbound::{MessageInboundValidator, MessageValidated};
@@ -25,7 +26,6 @@ use millegrilles_common_rust::v3::impls::config_service::ConfigServiceDbImpl;
 use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl;
 use millegrilles_common_rust::v3::impls::rabbitmq_consumer::DeliveryInfo;
 use millegrilles_common_rust::v3::{ConfigService, PkiService};
-use millegrilles_common_rust::tokio;
 use std::sync::Arc;
 
 #[async_trait]
@@ -36,7 +36,7 @@ pub struct MaitreDesClesSymmetricServiceImpl {
     outbound: Arc<MessageOutboundFacade>,
     pki: Arc<dyn PkiService>,
     mongo: Arc<MongoDaoImpl>,
-    decryption: Arc<HandlerCleRechiffrage>,
+    decryption: Arc<SymmetricEncryptionHandler>,
 }
 
 impl MaitreDesClesSymmetricServiceImpl {
@@ -45,7 +45,7 @@ impl MaitreDesClesSymmetricServiceImpl {
         outbound: Arc<MessageOutboundFacade>,
         pki: Arc<dyn PkiService>,
         mongo: Arc<MongoDaoImpl>,
-        decryption: Arc<HandlerCleRechiffrage>,
+        decryption: Arc<SymmetricEncryptionHandler>,
     ) -> Self {
         Self { config: config, outbound, pki, mongo, decryption }
     }
@@ -188,7 +188,7 @@ async fn ticker_job_symmetric<M>(
     outbound: &MessageOutboundFacade,
     config: &dyn ConfigService,
     mongo: &M,
-    decryption: &HandlerCleRechiffrage,
+    decryption: &SymmetricEncryptionHandler,
     trigger: MessageValidated,
 ) -> Result<(), CommonError>
 where M: MongoDaoTyped
@@ -218,7 +218,7 @@ where M: MongoDaoTyped
 async fn get_keys<M>(
     pki: &dyn PkiService,
     outbound: &MessageOutboundFacade,
-    decryption: &HandlerCleRechiffrage,
+    decryption: &SymmetricEncryptionHandler,
     mongo: &M,
     message: MessageValidated
 ) -> Result<(), CommonError> where M: MongoDaoTyped {
@@ -270,7 +270,7 @@ async fn decrypt_keys_v2<M>(
     pki: &dyn PkiService,
     outbound: &MessageOutboundFacade,
     mongo: &M,
-    decryption: &HandlerCleRechiffrage,
+    decryption: &SymmetricEncryptionHandler,
     requete: RequeteDechiffrage,
     delivery_info: DeliveryInfo,
     certificate: Arc<EnveloppeCertificat>
@@ -367,7 +367,7 @@ async fn check_key_decryption_request(
 }
 
 /// Tasks to run once on initialisation
-pub async fn symmetric_init_tasks(outbound: &MessageOutboundFacade, decryption: &HandlerCleRechiffrage) {
+pub async fn symmetric_init_tasks(outbound: &MessageOutboundFacade, decryption: &SymmetricEncryptionHandler) {
     if let Err(e) = emit_certificate(&outbound, &decryption).await {
         error!("Error on initial emission of certificate : {:?}", e);
     }
@@ -422,7 +422,7 @@ async fn process_certificate_message(outbound: &MessageOutboundFacade, message: 
 
 async fn process_newkeys(
     config: &dyn ConfigService,
-    handler_rechiffrage: &HandlerCleRechiffrage,
+    handler_rechiffrage: &SymmetricEncryptionHandler,
     mongo: &dyn MongoDao,
     wrapper: MessageValidated
 ) -> Result<(), CommonError> {

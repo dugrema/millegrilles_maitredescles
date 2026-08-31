@@ -1,7 +1,5 @@
-use std::sync::Arc;
-use millegrilles_common_rust::tracing::{debug, info, warn};
-use millegrilles_common_rust::certificats::{calculer_fingerprint, ValidateurX509, VerificateurPermissions};
-use millegrilles_common_rust::configuration::{charger_configuration, ConfigMessages, IsConfigNoeud};
+use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions, calculer_fingerprint};
+use millegrilles_common_rust::configuration::{ConfigMessages, IsConfigNoeud, charger_configuration};
 use millegrilles_common_rust::constantes::RolesCertificats;
 use millegrilles_common_rust::domaines_v2::GestionnaireDomaineSimple;
 use millegrilles_common_rust::error::{Error as CommonError, Error};
@@ -12,11 +10,13 @@ use millegrilles_common_rust::static_cell::StaticCell;
 use millegrilles_common_rust::tokio::spawn;
 use millegrilles_common_rust::tokio::task::JoinHandle;
 use millegrilles_common_rust::tokio_stream::StreamExt;
+use millegrilles_common_rust::tracing::{debug, info, warn};
+use std::sync::Arc;
 
-use crate::ca_manager::{preparer_index_mongodb_ca, MaitreDesClesCaManager};
+use crate::ca_manager::{MaitreDesClesCaManager, preparer_index_mongodb_ca};
+use crate::external::crypto::SymmetricEncryptionHandler;
 use crate::maintenance::thread_entretien;
-use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
-use crate::mongodb_manager::{preparer_index_mongodb, thread_entretien_manager_mongodb, MaitreDesClesMongoDbManager};
+use crate::mongodb_manager::{MaitreDesClesMongoDbManager, preparer_index_mongodb, thread_entretien_manager_mongodb};
 use crate::sqlite_manager::MaitreDesClesSqliteManager;
 use crate::state::AppContext;
 
@@ -161,7 +161,7 @@ fn charger_gestionnaire() -> MaitreDesClesSymmetricManager {
     }
 }
 
-fn preprarer_handler_rechiffrage() -> Result<HandlerCleRechiffrage, Error> {
+fn preprarer_handler_rechiffrage() -> Result<SymmetricEncryptionHandler, Error> {
     // Charger une version simplifiee de la configuration - on veut le certificat associe a l'enveloppe privee
     let config = charger_configuration().expect("config");
     let enveloppe_privee = config.get_configuration_pki().get_enveloppe_privee();
@@ -169,7 +169,7 @@ fn preprarer_handler_rechiffrage() -> Result<HandlerCleRechiffrage, Error> {
 
     if certificat.verifier_roles(vec![RolesCertificats::MaitreDesCles])? {
         // On a un certificat MaitreDesCles, utiliser directement
-        Ok(HandlerCleRechiffrage::with_certificat(enveloppe_privee))
+        Ok(SymmetricEncryptionHandler::with_certificat(enveloppe_privee))
     } else if certificat.verifier_roles(vec![RolesCertificats::MaitreDesClesConnexion])? {
         // HandlerCleRechiffrage::new_volatil_memoire().expect("HandlerCleRechiffrageCle")
         panic!("Mode volatil obsolete");

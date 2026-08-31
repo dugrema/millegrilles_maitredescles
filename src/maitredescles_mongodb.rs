@@ -1,16 +1,15 @@
 use crate::constants::*;
-use crate::maitredescles_commun::{effectuer_requete_cles_manquantes, emettre_demande_cle_symmetrique, preparer_rechiffreur, verifier_permission_rechiffrage, CleSecreteRechiffrage, CleSynchronisation, CleTransfert, CommandeCleSymmetrique, CommandeRechiffrerBatchChiffree, CommandeRechiffrerBatchDechiffree, CommandeRotationCertificat, CommandeTransfertClesCaV2, CommandeTransfertClesV2, DocumentCleRechiffrage, ErreurPermissionRechiffrage, EvenementClesRechiffrage, ReponseConfirmerClesSurCa, ReponseSynchroniserCles, RequeteSynchroniserCles, RequeteTransfert, RowCleCaRef, RowClePartition, TransactionCle, TransactionCleV2};
-use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
+use crate::external::crypto::SymmetricEncryptionHandler;
+use crate::maitredescles_commun::{CleSecreteRechiffrage, CleSynchronisation, CleTransfert, CommandeCleSymmetrique, CommandeRechiffrerBatchChiffree, CommandeRechiffrerBatchDechiffree, CommandeRotationCertificat, CommandeTransfertClesCaV2, CommandeTransfertClesV2, DocumentCleRechiffrage, ErreurPermissionRechiffrage, EvenementClesRechiffrage, ReponseConfirmerClesSurCa, ReponseSynchroniserCles, RequeteSynchroniserCles, RequeteTransfert, RowCleCaRef, RowClePartition, TransactionCle, TransactionCleV2, effectuer_requete_cles_manquantes, emettre_demande_cle_symmetrique, preparer_rechiffreur, verifier_permission_rechiffrage};
 use crate::models::{RecupererCleCa, RequeteClesNonDechiffrable};
-use millegrilles_common_rust::tracing::{debug, error, info, warn};
-use millegrilles_common_rust::base64::{engine::general_purpose::STANDARD_NO_PAD as base64_nopad, Engine as _};
+use millegrilles_common_rust::base64::{Engine as _, engine::general_purpose::STANDARD_NO_PAD as base64_nopad};
 use millegrilles_common_rust::bson::doc;
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chiffrage_cle::CommandeAjouterCleDomaine;
 use millegrilles_common_rust::chrono::{DateTime, Duration, Utc};
 use millegrilles_common_rust::common_messages::{ReponseRequeteDechiffrageV2, RequeteDechiffrage, ResponseRequestDechiffrageV2Cle};
 use millegrilles_common_rust::configuration::ConfigMessages;
-use millegrilles_common_rust::constantes::{RolesCertificats, Securite, CHAMP_CREATION, CHAMP_MODIFICATION, COMMANDE_TRANSFERT_CLE};
+use millegrilles_common_rust::constantes::{CHAMP_CREATION, CHAMP_MODIFICATION, COMMANDE_TRANSFERT_CLE, RolesCertificats, Securite};
 use millegrilles_common_rust::db_structs::TransactionValide;
 use millegrilles_common_rust::dechiffrage::decrypt_document;
 use millegrilles_common_rust::domaines_traits::{AiguillageTransactions, GestionnaireDomaineV2};
@@ -19,18 +18,19 @@ use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageM
 use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction_serializable_v2;
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_cles::CleChiffrageHandler;
 use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::{SignatureDomaines, SignatureDomainesVersion};
-use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::optionepochseconds;
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
-use millegrilles_common_rust::millegrilles_cryptographie::x25519::{dechiffrer_asymmetrique_ed25519, CleSecreteX25519};
+use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::optionepochseconds;
+use millegrilles_common_rust::millegrilles_cryptographie::x25519::{CleSecreteX25519, dechiffrer_asymmetrique_ed25519};
 use millegrilles_common_rust::millegrilles_cryptographie::{deser_message_buffer, heapless};
-use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, start_transaction_regular, ChampIndex, IndexOptions, MongoDao, MongoDaoTyped};
-use millegrilles_common_rust::mongodb::options::{AggregateOptions, CountOptions, FindOneOptions, FindOptions, Hint, UpdateOptions};
+use millegrilles_common_rust::mongo_dao::{ChampIndex, IndexOptions, MongoDao, MongoDaoTyped, convertir_bson_deserializable, convertir_to_bson, start_transaction_regular};
 use millegrilles_common_rust::mongodb::ClientSession;
+use millegrilles_common_rust::mongodb::options::{AggregateOptions, CountOptions, FindOneOptions, FindOptions, Hint, UpdateOptions};
 use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
 use millegrilles_common_rust::recepteur_messages::{MessageValide, TypeMessage};
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::json;
 use millegrilles_common_rust::tokio_stream::StreamExt;
+use millegrilles_common_rust::tracing::{debug, error, info, warn};
 use millegrilles_common_rust::{millegrilles_cryptographie, multibase, serde_json};
 use std::collections::HashSet;
 use std::str::from_utf8;
@@ -113,7 +113,7 @@ where M: MongoDao + ConfigMessages
     Ok(())
 }
 
-pub async fn preparer_rechiffreur_mongo<M>(middleware: &M, handler_rechiffrage: &HandlerCleRechiffrage)
+pub async fn preparer_rechiffreur_mongo<M>(middleware: &M, handler_rechiffrage: &SymmetricEncryptionHandler)
     -> Result<(), Error>
     where M: GenerateurMessages + ValidateurX509 + MongoDao
 {
@@ -132,8 +132,8 @@ pub async fn preparer_rechiffreur_mongo<M>(middleware: &M, handler_rechiffrage: 
     }
 }
 
-async fn preparer_rechiffreur_mongo_session<M>(middleware: &M, handler_rechiffrage: &HandlerCleRechiffrage, session: &mut ClientSession)
-    -> Result<(), Error>
+async fn preparer_rechiffreur_mongo_session<M>(middleware: &M, handler_rechiffrage: &SymmetricEncryptionHandler, session: &mut ClientSession)
+                                               -> Result<(), Error>
     where M: GenerateurMessages + ValidateurX509 + MongoDao
 {
 
@@ -201,7 +201,7 @@ async fn preparer_rechiffreur_mongo_session<M>(middleware: &M, handler_rechiffra
 }
 
 pub async fn sauvegarder_cle_transfert<M>(
-    middleware: &M, handler_rechiffrage: &HandlerCleRechiffrage, cle: &CleTransfert, session: &mut ClientSession)
+    middleware: &M, handler_rechiffrage: &SymmetricEncryptionHandler, cle: &CleTransfert, session: &mut ClientSession)
     -> Result<(), Error>
 where M: MongoDao
 {
@@ -249,10 +249,10 @@ where M: MongoDao
 }
 
 pub async fn sauvegarder_cle_rechiffrage<M>(middleware: &M,
-                                        handler_rechiffrage: &HandlerCleRechiffrage,
-                                        nom_collection_cles: &str,
-                                        cle: &CleSecreteRechiffrage, session: &mut ClientSession, insert_operation: bool)
-                                        -> Result<String, Error>
+                                            handler_rechiffrage: &SymmetricEncryptionHandler,
+                                            nom_collection_cles: &str,
+                                            cle: &CleSecreteRechiffrage, session: &mut ClientSession, insert_operation: bool)
+                                            -> Result<String, Error>
 where M: MongoDao
 {
     let collection = middleware.get_collection(nom_collection_cles)?;
@@ -299,7 +299,7 @@ where M: MongoDao
 }
 
 pub async fn sauvegarder_cle_secrete<M>(
-    middleware: &M, handler_rechiffrage: &HandlerCleRechiffrage,
+    middleware: &M, handler_rechiffrage: &SymmetricEncryptionHandler,
     signature: SignatureDomaines, cle_secrete: &CleSecreteX25519, session: &mut ClientSession
 )
     -> Result<(), Error>
@@ -1036,8 +1036,8 @@ where M: GenerateurMessages + MongoDao
     Ok(None)
 }
 
-pub async fn requete_dechiffrage_v2<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage, session: &mut ClientSession)
-    -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
+pub async fn requete_dechiffrage_v2<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &SymmetricEncryptionHandler, session: &mut ClientSession)
+                                       -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages + MongoDaoTyped + ValidateurX509 + CleChiffrageHandler
 {
     debug!("requete_dechiffrage_v2 Consommer requete : {:?}", & m.type_message);
@@ -1200,8 +1200,8 @@ pub async fn requete_dechiffrage_v2<M>(middleware: &M, m: MessageValide, handler
 /// Methode qui repond a un maitre des cles avec la liste complete des cles demandees. Si la liste
 /// ne peut etre completee, une commande de transfert de cles emets la liste partielle chiffrees
 /// pour tous les maitre des cles.
-pub async fn requete_transfert_cles<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage, session: &mut ClientSession)
-    -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
+pub async fn requete_transfert_cles<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &SymmetricEncryptionHandler, session: &mut ClientSession)
+                                       -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages + MongoDaoTyped + ValidateurX509 + CleChiffrageHandler
 {
     debug!("requete_transfert_cles Consommer requete : {:?}", & m.type_message);
@@ -1304,7 +1304,7 @@ pub async fn requete_transfert_cles<M>(middleware: &M, m: MessageValide, handler
 }
 
 async fn sauvegarder_cle_domaine<M>(
-    middleware: &M, handler_rechiffrage: &HandlerCleRechiffrage,
+    middleware: &M, handler_rechiffrage: &SymmetricEncryptionHandler,
     commande: CommandeAjouterCleDomaine, session: &mut ClientSession
 )
     -> Result<(), Error>
@@ -1320,7 +1320,7 @@ where M: GenerateurMessages + MongoDao
     Ok(())
 }
 
-pub async fn commande_ajouter_cle_domaines<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage, session: &mut ClientSession)
+pub async fn commande_ajouter_cle_domaines<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &SymmetricEncryptionHandler, session: &mut ClientSession)
                                               -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
 where M: GenerateurMessages + MongoDao + CleChiffrageHandler
 {
@@ -1356,8 +1356,8 @@ where M: GenerateurMessages + MongoDao + CleChiffrageHandler
 
 /// Commande recue d'un client (e.g. Coup D'Oeil) avec une batch de cles secretes dechiffrees.
 /// La commande est chiffree pour tous les MaitreDesComptes (kind:8)
-pub async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage, session: &mut ClientSession)
-    -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
+pub async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &SymmetricEncryptionHandler, session: &mut ClientSession)
+                                          -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages + MongoDao + CleChiffrageHandler
 {
     debug!("commande_rechiffrer_batch Message {:?}\n{}", m.type_message, from_utf8(m.message.buffer.as_slice())?);
@@ -1399,8 +1399,8 @@ pub async fn commande_rechiffrer_batch<M>(middleware: &M, m: MessageValide, hand
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-pub async fn commande_cle_symmetrique<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage, session: &mut ClientSession)
-    -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
+pub async fn commande_cle_symmetrique<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &SymmetricEncryptionHandler, session: &mut ClientSession)
+                                         -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
     let commande: CommandeCleSymmetrique = deser_message_buffer!(m.message);
@@ -1433,8 +1433,8 @@ pub async fn commande_cle_symmetrique<M>(middleware: &M, m: MessageValide, handl
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-pub async fn commande_transfert_cle<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage, session: &mut ClientSession)
-    -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
+pub async fn commande_transfert_cle<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &SymmetricEncryptionHandler, session: &mut ClientSession)
+                                       -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages + MongoDao + CleChiffrageHandler + ValidateurX509
 {
     debug!("commande_transfert_cle Consommer commande : {:?}", &m.type_message);
@@ -1493,8 +1493,8 @@ pub async fn commande_transfert_cle<M>(middleware: &M, m: MessageValide, handler
     Ok(None)
 }
 
-pub async fn commande_rotation_certificat<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage, session: &mut ClientSession)
-    -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
+pub async fn commande_rotation_certificat<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &SymmetricEncryptionHandler, session: &mut ClientSession)
+                                             -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
     debug!("commande_rotation_certificat Consommer commande : {:?}", & m.message);
@@ -1533,8 +1533,8 @@ pub async fn commande_rotation_certificat<M>(middleware: &M, m: MessageValide, h
     }
 }
 
-pub async fn evenement_cle_rechiffrage<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage, session: &mut ClientSession)
-    -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
+pub async fn evenement_cle_rechiffrage<M>(middleware: &M, m: MessageValide, handler_rechiffrage: &SymmetricEncryptionHandler, session: &mut ClientSession)
+                                          -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: ValidateurX509 + GenerateurMessages + MongoDao + CleChiffrageHandler + ConfigMessages
 {
     debug!("evenement_cle_rechiffrage Conserver cles de rechiffrage {:?}", &m.type_message);
@@ -1763,7 +1763,7 @@ pub async fn marquer_cles_ca_timeout<M>(middleware: &M) -> Result<(), Error>
     }
 }
 
-pub async fn query_repair_symmetric_key<M>(middleware: &M, _m: MessageValide, handler_rechiffrage: &HandlerCleRechiffrage, session: &mut ClientSession)
+pub async fn query_repair_symmetric_key<M>(middleware: &M, _m: MessageValide, handler_rechiffrage: &SymmetricEncryptionHandler, session: &mut ClientSession)
                                            -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
 where M: GenerateurMessages + MongoDaoTyped + ValidateurX509 + CleChiffrageHandler
 {
@@ -1792,8 +1792,8 @@ where M: GenerateurMessages + MongoDaoTyped + ValidateurX509 + CleChiffrageHandl
     Ok(None)
 }
 
-pub async fn request_keys_for_ca<M>(middleware: &M, m: MessageValide, _handler_rechiffrage: &HandlerCleRechiffrage, session: &mut ClientSession)
-    -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
+pub async fn request_keys_for_ca<M>(middleware: &M, m: MessageValide, _handler_rechiffrage: &SymmetricEncryptionHandler, session: &mut ClientSession)
+                                    -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
     where M: GenerateurMessages + MongoDaoTyped + ValidateurX509 + CleChiffrageHandler
 {
     let request: RequestMissingCaKeys = deser_message_buffer!(m.message);

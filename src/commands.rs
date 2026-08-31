@@ -1,22 +1,22 @@
-use millegrilles_common_rust::tracing::{debug, warn};
+use crate::external::crypto::SymmetricEncryptionHandler;
+use crate::maitredescles_mongodb::preparer_rechiffreur_mongo;
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::constantes::Securite;
-use millegrilles_common_rust::generateur_messages::GenerateurMessages;
-use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
-use millegrilles_common_rust::mongo_dao::MongoDao;
-use millegrilles_common_rust::recepteur_messages::MessageValide;
-use crate::maitredescles_mongodb::preparer_rechiffreur_mongo;
-use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
 use millegrilles_common_rust::error::Error;
+use millegrilles_common_rust::generateur_messages::GenerateurMessages;
 use millegrilles_common_rust::messages_generiques::{CommandeCleRechiffree, CommandeDechiffrerCle};
 use millegrilles_common_rust::millegrilles_cryptographie::deser_message_buffer;
+use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
 use millegrilles_common_rust::millegrilles_cryptographie::x25519::{chiffrer_asymmetrique_ed25519, dechiffrer_asymmetrique_ed25519};
+use millegrilles_common_rust::mongo_dao::MongoDao;
 use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::multibase;
 use millegrilles_common_rust::multibase::Base;
+use millegrilles_common_rust::recepteur_messages::MessageValide;
+use millegrilles_common_rust::tracing::{debug, warn};
 // use crate::maitredescles_partition::GestionnaireMaitreDesClesPartition;
 
-pub async fn commande_verifier_cle_symmetrique<M>(middleware: &M, handler_rechiffrage: &HandlerCleRechiffrage, _session: &mut ClientSession)
+pub async fn commande_verifier_cle_symmetrique<M>(middleware: &M, handler_rechiffrage: &SymmetricEncryptionHandler, _session: &mut ClientSession)
                                                   -> Result<Option<MessageMilleGrillesBufferDefault>, Error>
 where M: ValidateurX509 + GenerateurMessages + MongoDao
 {

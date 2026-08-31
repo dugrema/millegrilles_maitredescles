@@ -5,17 +5,18 @@ use std::sync::Arc;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::constants::{DOMAINE_NOM, EVENEMENT_DEMANDE_CLE_SYMMETRIQUE, REQUETE_TRANSFERT_CLES};
-use crate::maitredescles_rechiffrage::{CleInterneChiffree, HandlerCleRechiffrage};
-use millegrilles_common_rust::base64::{engine::general_purpose::STANDARD_NO_PAD as base64_nopad, Engine as _};
+use crate::external::crypto::SymmetricEncryptionHandler;
+use crate::models::CleInterneChiffree;
+use millegrilles_common_rust::base64::{Engine as _, engine::general_purpose::STANDARD_NO_PAD as base64_nopad};
 use millegrilles_common_rust::bson;
-use millegrilles_common_rust::bson::{bson, doc, Bson};
+use millegrilles_common_rust::bson::{Bson, bson, doc};
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::common_messages::RequeteDechiffrage;
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::error::Error;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
-use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::{optionformatchiffragestr, CleSecrete, FormatChiffrage};
+use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::{CleSecrete, FormatChiffrage, optionformatchiffragestr};
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_cles::{CleChiffrageHandler, CleSecreteSerialisee};
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_docs::EncryptedDocument;
 use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::{SignatureDomaines, SignatureDomainesRef, SignatureDomainesVersion};
@@ -70,7 +71,7 @@ pub async fn emettre_certificat_maitredescles<M>(middleware: &M, m: Option<Messa
 }
 
 /// Emettre les cles de l'instance locale pour s'assurer que tous les maitre des cles en ont une copie
-pub async fn emettre_cles_symmetriques<M>(middleware: &M, rechiffreur: &HandlerCleRechiffrage)
+pub async fn emettre_cles_symmetriques<M>(middleware: &M, rechiffreur: &SymmetricEncryptionHandler)
     -> Result<(), Error>
     where M: GenerateurMessages + CleChiffrageHandler
 {
@@ -106,7 +107,7 @@ pub async fn emettre_cles_symmetriques<M>(middleware: &M, rechiffreur: &HandlerC
     Ok(())
 }
 
-pub async fn preparer_rechiffreur<M>(_middleware: &M, handler_rechiffrage: &HandlerCleRechiffrage)
+pub async fn preparer_rechiffreur<M>(_middleware: &M, handler_rechiffrage: &SymmetricEncryptionHandler)
     -> Result<(), Error>
     where M: GenerateurMessages + ValidateurX509
 {
@@ -195,7 +196,7 @@ impl CleSecreteRechiffrage {
     }
 
     /// Rechiffre la cle secrete dechiffree.
-    pub fn rechiffrer_cle(&self, handler_rechiffrage: &HandlerCleRechiffrage) -> Result<(String, CleInterneChiffree), Error> {
+    pub fn rechiffrer_cle(&self, handler_rechiffrage: &SymmetricEncryptionHandler) -> Result<(String, CleInterneChiffree), Error> {
         let cle_secrete = self.get_cle_secrete()?;
 
         // Verifier la signature de la cle. Lance une exception si invalide
@@ -278,7 +279,7 @@ pub struct RowClePartition {
 
 impl RowClePartition {
 
-    pub fn to_cle_secrete_serialisee(self, rechiffrage_handler: &HandlerCleRechiffrage)
+    pub fn to_cle_secrete_serialisee(self, rechiffrage_handler: &SymmetricEncryptionHandler)
                                      -> Result<CleSecreteSerialisee, Error>
     {
         let cle_interne = match self.cle_symmetrique.as_ref() {

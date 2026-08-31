@@ -1,7 +1,8 @@
 use crate::constants::*;
+use crate::external::crypto::SymmetricEncryptionHandler;
 use crate::flow::transactions::KeyMasterTransactionService;
 use crate::maitredescles_commun::{DocumentCleRechiffrage, RowClePartition, TransactionCleV2};
-use crate::maitredescles_rechiffrage::{CleInterneChiffree, HandlerCleRechiffrage};
+use crate::models::CleInterneChiffree;
 use millegrilles_common_rust::bson::doc;
 use millegrilles_common_rust::chiffrage_cle::CommandeAjouterCleDomaine;
 use millegrilles_common_rust::chrono::{Duration, Utc};
@@ -18,13 +19,13 @@ use millegrilles_common_rust::millegrilles_cryptographie::x509::EnveloppePrivee;
 use millegrilles_common_rust::mongo_dao::{ChampIndex, IndexOptions, MongoDao, MongoDaoTyped, start_transaction_regular};
 use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::mongodb::options::Hint;
-use millegrilles_common_rust::{bson, serde_json};
 use millegrilles_common_rust::serde_json::Value;
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::tracing::{debug, info, warn};
 use millegrilles_common_rust::v3::facades::message_inbound::MessageValidated;
 use millegrilles_common_rust::v3::models::TransactionWrapper;
 use millegrilles_common_rust::v3::{ConfigService, FormatService};
+use millegrilles_common_rust::{bson, serde_json};
 // DB / Index creation
 
 pub async fn create_index_mongodb_custom(db: &dyn MongoDao, config: &dyn ConfigMessages, key_collection_name: &str) -> Result<(), CommonError> {
@@ -223,7 +224,7 @@ pub async fn check_key_exists(mongo: &dyn MongoDao, key_id: &str) ->Result<bool,
 
 pub async fn get_symmetric_keys<M>(
     mongo: &M,
-    decryption: &HandlerCleRechiffrage,
+    decryption: &SymmetricEncryptionHandler,
     cle_ids: &Vec<String>,
     domain: &str,
     include_signature: bool,
@@ -276,7 +277,7 @@ pub async fn get_symmetric_keys<M>(
 pub async fn load_symmetric_key<M>(
     mongo: &M,
     private_key: &EnveloppePrivee,
-    decryption: &HandlerCleRechiffrage
+    decryption: &SymmetricEncryptionHandler
 ) -> Result<(), CommonError> where M: MongoDaoTyped {
     let instance_id = private_key.enveloppe_pub.get_common_name()?;
 

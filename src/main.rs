@@ -1,5 +1,4 @@
 mod maitredescles_commun;
-mod maitredescles_rechiffrage;
 mod models;
 mod constants;
 mod maitredescles_mongodb;
@@ -15,13 +14,13 @@ pub mod state;
 pub mod external;
 pub mod flow;
 
-use crate::state::AppContext;
-use millegrilles_common_rust::{rustls, tokio as tokio};
-use millegrilles_common_rust::tracing::{info, warn};
-use millegrilles_common_rust::{tracing_subscriber, tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt}};
-use millegrilles_common_rust::v3::facades::message_outbound::MessageOutboundFacade;
 use crate::flow::symmetric::symmetric_init_tasks;
-use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
+use crate::state::AppContext;
+use external::crypto::SymmetricEncryptionHandler;
+use millegrilles_common_rust::tracing::{info, warn};
+use millegrilles_common_rust::v3::facades::message_outbound::MessageOutboundFacade;
+use millegrilles_common_rust::{rustls, tokio as tokio};
+use millegrilles_common_rust::{tracing_subscriber, tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt}};
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {
@@ -33,7 +32,7 @@ async fn main() {
     let shutdown_token = context.shutdown_token.clone();
 
     let shutdown_signal = async {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
         let mut sigint = signal(SignalKind::interrupt()).expect("failed to install sigint handler");
         let mut sigterm = signal(SignalKind::terminate()).expect("failed to install sigterm handler");
 
@@ -74,7 +73,7 @@ fn init_resources() {
 }
 
 /// This runs once on startup after all the wiring is done and threads are started
-async fn init_tasks(outbound: &MessageOutboundFacade, decryption: &HandlerCleRechiffrage) {
+async fn init_tasks(outbound: &MessageOutboundFacade, decryption: &SymmetricEncryptionHandler) {
     // Initial tasks to run once for the symmetric keymaster
     symmetric_init_tasks(outbound, decryption).await;
 }

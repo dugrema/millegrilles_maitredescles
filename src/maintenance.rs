@@ -1,8 +1,7 @@
 use crate::builder::{MaitreDesClesManager, MaitreDesClesSymmetricManager};
+use crate::external::crypto::SymmetricEncryptionHandler;
 use crate::maitredescles_commun::{emettre_certificat_maitredescles, emettre_cles_symmetriques};
 use crate::maitredescles_mongodb::{confirmer_cles_ca, marquer_cles_ca_timeout, process_ca_key_sync};
-use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
-use millegrilles_common_rust::tracing::{debug, error, info, warn};
 use millegrilles_common_rust::certificats::ValidateurX509;
 use millegrilles_common_rust::chrono;
 use millegrilles_common_rust::chrono::Timelike;
@@ -11,7 +10,8 @@ use millegrilles_common_rust::error::Error;
 use millegrilles_common_rust::messages_generiques::MessageCedule;
 use millegrilles_common_rust::middleware::{Middleware, MiddlewareMessages};
 use millegrilles_common_rust::mongo_dao::{MongoDao, MongoDaoTyped};
-use millegrilles_common_rust::tokio::time::{sleep, Duration as DurationTokio};
+use millegrilles_common_rust::tokio::time::{Duration as DurationTokio, sleep};
+use millegrilles_common_rust::tracing::{debug, error, info, warn};
 
 const DUREE_ATTENTE: u64 = 20000;
 
@@ -111,7 +111,7 @@ where
     Ok(())
 }
 
-pub async fn maintenance_mongodb<M>(middleware: &M, trigger: &MessageCedule, handler_rechiffrage: &HandlerCleRechiffrage) -> Result<(), Error>
+pub async fn maintenance_mongodb<M>(middleware: &M, trigger: &MessageCedule, handler_rechiffrage: &SymmetricEncryptionHandler) -> Result<(), Error>
 where
     M: MiddlewareMessages + MongoDao
 {

@@ -1,10 +1,16 @@
-use millegrilles_common_rust::tracing::{debug, error, info};
+use crate::commands::{commande_dechiffrer_cle, commande_verifier_cle_symmetrique};
+use crate::constants::*;
+use crate::external::crypto::SymmetricEncryptionHandler;
+use crate::maintenance::maintenance_mongodb;
+use crate::maitredescles_commun::emettre_certificat_maitredescles;
+use crate::maitredescles_mongodb::{commande_ajouter_cle_domaines, commande_cle_symmetrique, commande_rechiffrer_batch, commande_rotation_certificat, commande_transfert_cle, evenement_cle_manquante, evenement_cle_rechiffrage, preparer_index_mongodb_custom, preparer_index_mongodb_partition, preparer_rechiffreur_mongo, query_repair_symmetric_key, request_keys_for_ca, requete_dechiffrage_v2, requete_transfert_cles};
+use crate::requests::{requete_certificat_maitredescles, requete_dechiffrage_message};
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::backup::BackupStarter;
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chiffrage_cle::CleChiffrageCache;
 use millegrilles_common_rust::configuration::ConfigMessages;
-use millegrilles_common_rust::constantes::{RolesCertificats, Securite, COMMANDE_AJOUTER_CLE_DOMAINES, COMMANDE_CERT_MAITREDESCLES, COMMANDE_ROTATION_CERTIFICAT, COMMANDE_SAUVEGARDER_CLE, COMMANDE_TRANSFERT_CLE, DEFAULT_Q_TTL, DELEGATION_GLOBALE_PROPRIETAIRE, EVENEMENT_CLES_RECHIFFRAGE, MAITREDESCLES_REQUETE_DECHIFFRAGE_MESSAGE, MAITREDESCLES_REQUETE_DECHIFFRAGE_V2, COMMANDE_DECHIFFRER_CLE};
+use millegrilles_common_rust::constantes::{COMMANDE_AJOUTER_CLE_DOMAINES, COMMANDE_CERT_MAITREDESCLES, COMMANDE_DECHIFFRER_CLE, COMMANDE_ROTATION_CERTIFICAT, COMMANDE_SAUVEGARDER_CLE, COMMANDE_TRANSFERT_CLE, DEFAULT_Q_TTL, DELEGATION_GLOBALE_PROPRIETAIRE, EVENEMENT_CLES_RECHIFFRAGE, MAITREDESCLES_REQUETE_DECHIFFRAGE_MESSAGE, MAITREDESCLES_REQUETE_DECHIFFRAGE_V2, RolesCertificats, Securite};
 use millegrilles_common_rust::db_structs::TransactionValide;
 use millegrilles_common_rust::domaines_traits::{AiguillageTransactions, ConsommateurMessagesBus, GestionnaireBusMillegrilles, GestionnaireDomaineV2};
 use millegrilles_common_rust::domaines_v2::GestionnaireDomaineSimple;
@@ -16,28 +22,22 @@ use millegrilles_common_rust::messages_generiques::MessageCedule;
 use millegrilles_common_rust::middleware::{Middleware, MiddlewareMessages};
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_cles::CleChiffrageHandler;
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
-use millegrilles_common_rust::mongo_dao::{start_transaction_regular, MongoDao, MongoDaoTyped};
+use millegrilles_common_rust::mongo_dao::{MongoDao, MongoDaoTyped, start_transaction_regular};
 use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange, NamedQueue, QueueType, TypeMessageOut};
 use millegrilles_common_rust::recepteur_messages::{MessageValide, TypeMessage};
 use millegrilles_common_rust::tokio::spawn;
 use millegrilles_common_rust::tokio::sync::mpsc;
-use millegrilles_common_rust::tokio::time::{sleep, Duration as DurationTokio};
-use crate::commands::{commande_dechiffrer_cle, commande_verifier_cle_symmetrique};
-use crate::constants::*;
-use crate::maintenance::maintenance_mongodb;
-use crate::maitredescles_commun::emettre_certificat_maitredescles;
-use crate::maitredescles_mongodb::{commande_ajouter_cle_domaines, commande_cle_symmetrique, commande_rechiffrer_batch, commande_rotation_certificat, commande_transfert_cle, evenement_cle_manquante, evenement_cle_rechiffrage, preparer_index_mongodb_custom, preparer_index_mongodb_partition, preparer_rechiffreur_mongo, query_repair_symmetric_key, request_keys_for_ca, requete_dechiffrage_v2, requete_transfert_cles};
-use crate::maitredescles_rechiffrage::HandlerCleRechiffrage;
-use crate::requests::{requete_certificat_maitredescles, requete_dechiffrage_message};
+use millegrilles_common_rust::tokio::time::{Duration as DurationTokio, sleep};
+use millegrilles_common_rust::tracing::{debug, error, info};
 
 pub struct MaitreDesClesMongoDbManager {
-    pub handler_rechiffrage: HandlerCleRechiffrage,
+    pub handler_rechiffrage: SymmetricEncryptionHandler,
     // pub ressources: Mutex<Option<GestionnaireRessources>>,
 }
 
 impl MaitreDesClesMongoDbManager {
-    pub fn new(handler_rechiffrage: HandlerCleRechiffrage) -> MaitreDesClesMongoDbManager {
+    pub fn new(handler_rechiffrage: SymmetricEncryptionHandler) -> MaitreDesClesMongoDbManager {
         MaitreDesClesMongoDbManager {
             handler_rechiffrage,
             // ressources: Mutex::new(None)
