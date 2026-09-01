@@ -722,5 +722,7 @@ async fn certificate_rotation(
         return Ok(())
     }
 
+    outbound.respond(wrapper.delivery_info, ErrorMessage::ok()).await?;
+
     Ok(())
 }
