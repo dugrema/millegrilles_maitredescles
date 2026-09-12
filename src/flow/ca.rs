@@ -14,14 +14,14 @@ use millegrilles_common_rust::futures::StreamExt;
 use millegrilles_common_rust::messages_generiques::MessageCedule;
 use millegrilles_common_rust::mongo_dao::{MongoDao, MongoDaoImpl, MongoDaoTyped};
 use millegrilles_common_rust::tokio::task::JoinSet;
-use millegrilles_common_rust::tracing::{debug, error, warn};
+use millegrilles_common_rust::tracing::{debug, error, info, warn};
 use millegrilles_common_rust::v3::facades::message_inbound::{MessageInboundValidator, MessageValidated};
 use millegrilles_common_rust::v3::facades::message_outbound::MessageOutboundFacade;
 use millegrilles_common_rust::v3::impls::config_service::ConfigServiceDbImpl;
 use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl;
 use millegrilles_common_rust::{serde_json, tokio};
 use std::sync::Arc;
-
+use millegrilles_common_rust::v3::BackupService;
 // #[async_trait]
 // pub trait MaitreDesClesCAService {}
 
@@ -31,6 +31,7 @@ pub struct MaitreDesClesCAServiceImpl {
     transaction: Arc<KeyMasterTransactionService>,
     mongo: Arc<MongoDaoImpl>,
     // format: Arc<dyn FormatService>,
+    backup: Arc<dyn BackupService>,
 }
 
 impl MaitreDesClesCAServiceImpl {
@@ -40,6 +41,7 @@ impl MaitreDesClesCAServiceImpl {
         transaction: Arc<KeyMasterTransactionService>,
         mongo: Arc<MongoDaoImpl>,
         // format: Arc<dyn FormatService>
+        backup: Arc<dyn BackupService>,
     ) -> Self {
         Self {
             // config,
@@ -47,6 +49,7 @@ impl MaitreDesClesCAServiceImpl {
             transaction,
             mongo,
             // format,
+            backup,
         }
     }
 
@@ -92,7 +95,7 @@ impl MaitreDesClesCAServiceImpl {
         while let Some(result) = streamer.next().await {
             match result {
                 Ok(message) => {
-                    if let Err(e) = ticker_job_ca(self.mongo.as_ref(), message).await {
+                    if let Err(e) = ticker_job_ca(self.mongo.as_ref(), self.backup.as_ref(), message).await {
                         error!("Ticker job ca failed: {}", e);
                     }
                 }
@@ -195,7 +198,7 @@ impl MaitreDesClesCAServiceImpl {
 // impl MaitreDesClesCAService for MaitreDesClesCAServiceImpl {
 // }
 
-async fn ticker_job_ca<M>(mongo: &M, trigger: MessageValidated) -> Result<(), CommonError>
+async fn ticker_job_ca<M>(mongo: &M, backup: &dyn BackupService, trigger: MessageValidated) -> Result<(), CommonError>
     where M: MongoDaoTyped
 {
     // Ensure this is an authorized module
@@ -214,6 +217,20 @@ async fn ticker_job_ca<M>(mongo: &M, trigger: MessageValidated) -> Result<(), Co
     if hour % 3 == 0 && minute == 39 {
         if let Err(e) = check_ca_keys_undecipherable_flag(mongo).await {
             error!("Error processing check_ca_keys_undecipherable_flag: {}", e);
+        }
+    }
+
+    // if minute % 30 == 4 {
+    {
+        let incremental = true;
+        if let Err(e) = backup.backup_domain(
+            DOMAINE_NOM,
+            NOM_COLLECTION_TRANSACTIONS_CA,
+            incremental
+        ).await {
+            error!("Error backing up domain: {}", e);
+        } else {
+            info!("Backup completed");
         }
     }
 

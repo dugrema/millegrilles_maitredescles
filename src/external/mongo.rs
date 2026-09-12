@@ -6,7 +6,7 @@ use millegrilles_common_rust::bson;
 use millegrilles_common_rust::bson::{Document, doc};
 use millegrilles_common_rust::common_messages::ResponseRequestDechiffrageV2Cle;
 use millegrilles_common_rust::configuration::ConfigMessages;
-use millegrilles_common_rust::constantes::{CHAMP_CREATION, FIELD_BID, FIELD_DATE_PROCESSED, INDEX_BID, INDEX_DATE_PROCESSED, TRANSACTION_CHAMP_ID};
+use millegrilles_common_rust::constantes::{CHAMP_CREATION, FIELD_BID, FIELD_DATE_PROCESSED, FIELD_PROCESSED, INDEX_BID, INDEX_DATE_PROCESSED, TRANSACTION_CHAMP_ID};
 use millegrilles_common_rust::error::{Error as CommonError, Error};
 use millegrilles_common_rust::millegrilles_cryptographie::heapless;
 use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::SignatureDomaines;
@@ -32,6 +32,18 @@ pub async fn create_index_mongodb_ca(db: &dyn MongoDao, config: &dyn ConfigMessa
         Some(IndexOptions {
             nom_index: Some(String::from(INDEX_REDO_LOG_ID)),
             unique: true,
+        }),
+    ).await?;
+
+    db.create_index(
+        config,
+        NOM_COLLECTION_TRANSACTIONS_CA,
+        vec!(
+            ChampIndex { nom_champ: String::from(FIELD_PROCESSED), direction: 1 },
+        ),
+        Some(IndexOptions {
+            nom_index: Some(String::from(INDEX_DATE_PROCESSED)),
+            unique: false,
         }),
     ).await?;
 

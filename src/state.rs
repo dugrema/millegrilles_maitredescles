@@ -16,8 +16,9 @@ use millegrilles_common_rust::v3::impls::config_service::ConfigServiceDbImpl;
 use millegrilles_common_rust::v3::impls::format_service::FormatServiceImpl;
 use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl;
 use millegrilles_common_rust::v3::impls::security_service::SecurityServiceImpl;
-use millegrilles_common_rust::v3::ConfigService;
+use millegrilles_common_rust::v3::{ChiffrageService, ConfigService};
 use std::sync::Arc;
+use millegrilles_common_rust::v3::impls::backup_service::DomainBackupServiceImpl;
 
 /// Composition object with services from common library
 pub struct AppContext {
@@ -63,6 +64,8 @@ impl AppContext {
             MessageInboundValidator::new(config.clone(), messaging.clone(), security.clone(), shutdown_token.clone())
         );
 
+        let backup = Arc::new(DomainBackupServiceImpl::new(config.clone(), outbound.clone(), security.clone(), mongo.clone()));
+
         let transaction = Arc::new(KeyMasterTransactionService::new(config.clone(), format.clone(), mongo.clone()));
 
         // Flow services (business logic)
@@ -73,6 +76,7 @@ impl AppContext {
                 transaction.clone(),
                 mongo.clone(),
                 // format.clone(),
+                backup.clone(),
             )
         );
         let symmetric_service = Arc::new(
@@ -129,11 +133,18 @@ async fn init_config() -> Result<ConfigServiceDbImpl, CommonError> {
 
 async fn init_security(config: &dyn ConfigService) -> Result<SecurityServiceImpl, CommonError> {
     let validator = build_store_path_v2(&config.get_configuration_pki().ca_certfile).map_err(|e| e.to_string())?;
+    let private_key = config.get_configuration_pki().get_enveloppe_privee();
+    let encryption_key = private_key.enveloppe_pub.clone();
+
     let security_impl = SecurityServiceImpl::new(
-        config.get_configuration_pki().get_enveloppe_privee(),
+        private_key,
         Arc::new(validator),
         Arc::new(CleChiffrageHandlerImpl::new()),
     );
+
+    // Trick for KeyMaster - use own key for encryption. DO NOT DO THIS WITH OTHER DOMAINS.
+    security_impl.add_encryption_publickey(encryption_key)?;
+
     Ok(security_impl)
 }
 
