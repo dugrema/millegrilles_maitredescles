@@ -516,7 +516,7 @@ async fn process_newkeys(
     let cle_rechiffree = handler_rechiffrage.encrypt(&cle_secrete.0)?;
 
     // Save the key (volatile data, the redo-log is handled by the CA)
-    save_symmetric_key(mongo, command.signature, cle_rechiffree).await?;
+    save_symmetric_key(mongo, command.signature.into_owned(), cle_rechiffree).await?;
 
     // Do not send response - the CA handles the reply (it is the authority for keys)
     Ok(())

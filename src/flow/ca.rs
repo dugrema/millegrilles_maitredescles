@@ -239,7 +239,7 @@ async fn process_newkeys<M>(
         debug!("save_new_ca_key Saving new key with id {}", key_id);
 
         // Generate a new transaction document
-        let value = serde_json::to_value(TransactionCleV2 { signature })?;
+        let value = serde_json::to_value(TransactionCleV2 { signature: signature.into_owned() })?;
         transaction.process_value(DOMAINE_NOM, TRANSACTION_CLE_V2, value).await?;
     }
 

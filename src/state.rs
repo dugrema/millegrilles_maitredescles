@@ -58,7 +58,7 @@ impl AppContext {
 
         // Facades
         let outbound = Arc::new(
-            MessageOutboundFacade::new(messaging.clone(), format.clone()),);
+            MessageOutboundFacade::new(config.clone(), messaging.clone(), format.clone()));
         let inbound = Arc::new(
             MessageInboundValidator::new(config.clone(), messaging.clone(), security.clone(), shutdown_token.clone())
         );
@@ -132,7 +132,7 @@ async fn init_security(config: &dyn ConfigService) -> Result<SecurityServiceImpl
     let security_impl = SecurityServiceImpl::new(
         config.get_configuration_pki().get_enveloppe_privee(),
         Arc::new(validator),
-        CleChiffrageHandlerImpl::new(),
+        Arc::new(CleChiffrageHandlerImpl::new()),
     );
     Ok(security_impl)
 }
