@@ -7,7 +7,7 @@ use crate::models::TransactionCleV2;
 use crate::models::{ErrorMessage, RequeteClesNonDechiffrable, UndecipherableKeyCountResponse};
 use millegrilles_common_rust::certificats::VerificateurPermissions;
 use millegrilles_common_rust::chiffrage_cle::CommandeAjouterCleDomaine;
-use millegrilles_common_rust::chrono::Timelike;
+use millegrilles_common_rust::chrono::{Datelike, Timelike, Weekday};
 use millegrilles_common_rust::constantes::DELEGATION_GLOBALE_PROPRIETAIRE;
 use millegrilles_common_rust::error::Error as CommonError;
 use millegrilles_common_rust::futures::StreamExt;
@@ -22,8 +22,6 @@ use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl
 use millegrilles_common_rust::{serde_json, tokio};
 use std::sync::Arc;
 use millegrilles_common_rust::v3::BackupService;
-// #[async_trait]
-// pub trait MaitreDesClesCAService {}
 
 pub struct MaitreDesClesCAServiceImpl {
     // config: Arc<dyn ConfigService>,
@@ -195,9 +193,6 @@ impl MaitreDesClesCAServiceImpl {
     }
 }
 
-// impl MaitreDesClesCAService for MaitreDesClesCAServiceImpl {
-// }
-
 async fn ticker_job_ca<M>(mongo: &M, backup: &dyn BackupService, trigger: MessageValidated) -> Result<(), CommonError>
     where M: MongoDaoTyped
 {
@@ -211,6 +206,7 @@ async fn ticker_job_ca<M>(mongo: &M, backup: &dyn BackupService, trigger: Messag
 
     let hour = trigger_value.get_date().hour();
     let minute = trigger_value.get_date().minute();
+    let day = trigger_value.get_date().weekday();
 
     debug!("ticker_job_ca for h:{} m:{}",hour,minute);
 
@@ -220,17 +216,20 @@ async fn ticker_job_ca<M>(mongo: &M, backup: &dyn BackupService, trigger: Messag
         }
     }
 
-    // if minute % 30 == 4 {
-    {
-        let incremental = true;
+    if minute % 30 == 4 {
+    // {
+        // Run complete backup once a week on Sunday at 7:04 UTC.
+        // This concatenates all incremental files and rotates backup files. May produce final file.
+        let complete = minute == 4 && hour == 7 && day == Weekday::Sun;
+
         if let Err(e) = backup.backup_domain(
             DOMAINE_NOM,
             NOM_COLLECTION_TRANSACTIONS_CA,
-            incremental
+            ! complete,  // Invert, the bool is for incremental backups (true == incremental)
         ).await {
             error!("Error backing up domain: {}", e);
         } else {
-            info!("Backup completed");
+            info!("Backup task completed");
         }
     }
 
