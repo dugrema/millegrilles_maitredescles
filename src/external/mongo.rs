@@ -2,7 +2,7 @@ use crate::constants::*;
 use crate::external::crypto::SymmetricEncryptionHandler;
 use crate::models::{CleInterneChiffree, RowClePartition};
 use crate::models::{DocumentCleRechiffrage, RecupererCleCa, ReponseClesNonDechiffrables, RequeteClesNonDechiffrable, RowCleCaRef};
-use millegrilles_common_rust::bson;
+use millegrilles_common_rust::{bson, multibase};
 use millegrilles_common_rust::bson::{Document, doc};
 use millegrilles_common_rust::common_messages::ResponseRequestDechiffrageV2Cle;
 use millegrilles_common_rust::configuration::ConfigMessages;
@@ -10,12 +10,16 @@ use millegrilles_common_rust::constantes::{CHAMP_CREATION, FIELD_BID, FIELD_DATE
 use millegrilles_common_rust::error::{Error as CommonError, Error};
 use millegrilles_common_rust::millegrilles_cryptographie::heapless;
 use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::SignatureDomaines;
+use millegrilles_common_rust::millegrilles_cryptographie::x25519::{chiffrer_asymmetrique_ed25519, dechiffrer_asymmetrique_ed25519};
 use millegrilles_common_rust::millegrilles_cryptographie::x509::EnveloppePrivee;
 use millegrilles_common_rust::mongo_dao::{ChampIndex, IndexOptions, MongoDao, MongoDaoImpl, MongoDaoTyped};
 use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::mongodb::options::{Hint, UpdateOneModel, WriteModel};
+use millegrilles_common_rust::openssl::pkey::{PKey, Private};
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::tracing::{debug, error, info, warn};
+use millegrilles_common_rust::base64::{engine::general_purpose::STANDARD_NO_PAD as base64_nopad, Engine as _};
+use millegrilles_common_rust::multibase::Base;
 // DB / Index creation
 
 const KEY_CA: &str = "CA";
@@ -426,6 +430,15 @@ pub async fn save_symmetric_batch(mongo: &dyn MongoDao, keys: Vec<RowClePartitio
 //     confirmation_ca: true
 // }
 
+pub async fn reset_ca_undecipherable_flag(mongo: &dyn MongoDao) -> Result<(), CommonError> {
+    let collection_ca = mongo.get_collection(NOM_COLLECTION_CA_CLES)?;
+    collection_ca.update_many(
+        doc!{},
+        doc!{"$set": {CHAMP_NON_DECHIFFRABLE: true}}
+    ).await?;
+    Ok(())
+}
+
 /// Checks the symmetric table to set the "non_dechiffrable" flag to true when applicable.
 pub async fn check_ca_keys_undecipherable_flag(mongo: &dyn MongoDao) -> Result<(), CommonError> {
     let pipeline = vec![
@@ -517,4 +530,33 @@ pub async fn fetch_key_batch_db(mongo: &MongoDaoImpl, request: RequeteClesNonDec
         idx,
     };
     Ok(response)
+}
+
+pub async fn repair_symmetric_with_master_key(
+    mongo: &dyn MongoDao,
+    decryption: &SymmetricEncryptionHandler,
+    master_key: &PKey<Private>
+) -> Result<(), CommonError> {
+    let config_collection = mongo.get_collection(NOM_COLLECTION_CONFIGURATION)?;
+    let ca_row = config_collection.find_one(doc!{"type": "CA"}).await?;
+    let ca_info = match ca_row {
+        Some(inner) => inner,
+        None => {
+            return Err(CommonError::Str("No CA row found, the SymmetricEncryptionHandler should have created a new key (invalid state)"))
+        }
+    };
+
+    let ca_config_record: DocumentCleRechiffrage = bson::deserialize_from_document(ca_info)?;
+    debug!("Decrypting symmetric decryption key with master key");
+
+    // Decrypt symmetric key
+    let multibase_key = ca_config_record.cle.as_str();
+    let ca_key_bytes = base64_nopad.decode(&multibase_key[1..])?;
+    let decrypted_key = dechiffrer_asymmetrique_ed25519(&ca_key_bytes, master_key)?;
+    decryption.set_secret_key(decrypted_key)?;
+    let re_encrypted_symmetric_key = decryption.get_self_encrypted_key()?;
+    save_symmetric_decryption_keys(mongo, None, vec![re_encrypted_symmetric_key]).await?;
+    info!("Saved new symmetric decryption key");
+
+    Ok(())
 }

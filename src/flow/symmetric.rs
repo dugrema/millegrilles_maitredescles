@@ -223,7 +223,7 @@ impl MaitreDesClesSymmetricServiceImpl {
 
     pub async fn repair_with_master_key(&self, master_key: &PKey<Private>) -> Result<(), CommonError> {
         if ! self.decryption.is_ready() {
-            todo!("Repair symmetric decryption key")
+            repair_symmetric_with_master_key(self.mongo.as_ref(), self.decryption.as_ref(), master_key).await?;
         }
 
         // Since this may be a complete CA restoration, check all known symmetric keys and mark

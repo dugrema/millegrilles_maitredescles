@@ -1,4 +1,4 @@
-use crate::models::CleInterneChiffree;
+use crate::models::{CleInterneChiffree, DocumentCleRechiffrage};
 use millegrilles_common_rust::certificats::VerificateurPermissions;
 use millegrilles_common_rust::chacha20poly1305::aead::{Aead, OsRng};
 use millegrilles_common_rust::chacha20poly1305::{AeadCore, KeyInit, XChaCha20Poly1305};
@@ -12,6 +12,7 @@ use millegrilles_common_rust::multibase::Base;
 use millegrilles_common_rust::openssl::pkey::{PKey, Public};
 use std::fmt::{Debug, Formatter};
 use std::sync::{Arc, Mutex};
+use crate::external::mongo::KEY_LOCAL;
 
 pub struct SymmetricEncryptionHandler {
     /// Enveloppe de la cle prive locale.
@@ -90,6 +91,21 @@ impl SymmetricEncryptionHandler {
         }
     }
 
+    pub fn get_self_encrypted_key(&self) -> Result<DocumentCleRechiffrage, CommonError> {
+        let public_certificate = self.enveloppe_privee.enveloppe_pub.as_ref();
+        let instance_id = public_certificate.get_common_name()?;
+        let local_fingerprint = public_certificate.fingerprint()?;
+        let pubkey = public_certificate.certificat.public_key()?;
+        let key = self.get_encrypted_key(&pubkey)?;
+
+        Ok(DocumentCleRechiffrage {
+            type_: KEY_LOCAL.to_string(),
+            instance_id: instance_id.to_string(),
+            fingerprint: Some(local_fingerprint.clone()),
+            cle: key,
+        })
+    }
+
     pub fn set_key<S>(&self, cle: S) -> Result<(), CommonError>
         where S: AsRef<str>
     {
@@ -100,6 +116,13 @@ impl SymmetricEncryptionHandler {
         let mut guard = self.cle_symmetrique.lock().expect("lock");
         *guard = Some(cle_secrete);
 
+        Ok(())
+    }
+
+    /// Sets the secret key directly
+    pub fn set_secret_key(&self, key: CleSecreteX25519) -> Result<(), CommonError> {
+        let mut guard = self.cle_symmetrique.lock().expect("lock");
+        *guard = Some(key);
         Ok(())
     }
 

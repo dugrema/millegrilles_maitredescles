@@ -1,5 +1,5 @@
 use crate::constants::*;
-use crate::external::mongo::{check_ca_keys_undecipherable_flag, check_key_exists, count_ca_undecipherable_keys, create_index_mongodb_ca, fetch_key_batch_db};
+use crate::external::mongo::{check_ca_keys_undecipherable_flag, check_key_exists, count_ca_undecipherable_keys, create_index_mongodb_ca, fetch_key_batch_db, reset_ca_undecipherable_flag};
 use crate::external::mq::{QUEUE_CA_BACKUP, QUEUE_CA_NEWKEYS, QUEUE_CA_REQUESTS, QUEUE_CA_TICKER, init_ca_queues};
 use crate::flow::maintenance::validate_ticker;
 use crate::flow::transactions::KeyMasterTransactionService;
@@ -214,6 +214,11 @@ impl MaitreDesClesCAServiceImpl {
             master_key,
         ).await
     }
+
+    pub async fn reset_ca_undecipherable_flag(&self) -> Result<(), CommonError> {
+        reset_ca_undecipherable_flag(self.mongo.as_ref()).await
+    }
+
 }
 
 async fn ticker_job_ca<M>(mongo: &M, backup: &dyn BackupService, trigger: MessageValidated) -> Result<(), CommonError>

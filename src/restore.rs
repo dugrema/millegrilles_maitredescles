@@ -7,6 +7,7 @@ use millegrilles_common_rust::tokio::time::sleep;
 use millegrilles_common_rust::tokio_util::sync::CancellationToken;
 use millegrilles_common_rust::tracing::{error, info};
 use std::sync::Arc;
+use crate::external::mongo::reset_ca_undecipherable_flag;
 
 pub async fn restore_from_backup(
     ca_service: Arc<MaitreDesClesCAServiceImpl>,
@@ -52,7 +53,7 @@ async fn restore(
     let duration = end_time - start_time;
     let duration_formatted = duration.num_seconds();
     info!(
-        "Processed {} transactions ({} resumed after skipped {}) in {} seconds",
+        "Transactions processed {} transactions ({} resumed after skipped {}) in {} seconds",
         result.transaction_count,
         result.transaction_count - result.initially_skipped,
         result.initially_skipped,
@@ -60,6 +61,7 @@ async fn restore(
     );
 
     // Repair keys
+    ca_service.reset_ca_undecipherable_flag().await?;
     symmetric_service.repair_with_master_key(&master_key).await?;
 
     Ok(())
