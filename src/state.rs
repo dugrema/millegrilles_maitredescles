@@ -78,6 +78,7 @@ impl AppContext {
         ];
         let backup = Arc::new(DomainBackupServiceImpl::new(
             config.clone(),
+            security.clone(),
             outbound.clone(),
             security.clone(),
             mongo.clone(),
