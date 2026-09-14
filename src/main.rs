@@ -4,24 +4,34 @@ mod state;
 mod external;
 mod flow;
 mod errors;
+pub mod restore;
 
+use std::path::Path;
+use clap::Parser;
+use clap_derive::Parser;
 use crate::flow::symmetric::symmetric_init_tasks;
 use crate::state::AppContext;
 use external::crypto::SymmetricEncryptionHandler;
 use millegrilles_common_rust::mongo_dao::MongoDaoImpl;
-use millegrilles_common_rust::tracing::{info, warn};
+use millegrilles_common_rust::tracing::{debug, info, warn};
 use millegrilles_common_rust::v3::ConfigService;
 use millegrilles_common_rust::v3::facades::message_outbound::MessageOutboundFacade;
 use millegrilles_common_rust::{rustls, tokio as tokio};
 use millegrilles_common_rust::{tracing_subscriber, tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt}};
+use millegrilles_common_rust::millegrilles_cryptographie::x509::parse_encrypted_private_key;
+use millegrilles_common_rust::openssl::pkey::{PKey, Private};
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {
     init_resources();
+
+    let cli = Cli::parse();
+    let master_key = parse_ca_password(&cli);
+
     info!("Starting MaitreDesCles");
 
     // Start the application by creating the context. This starts all threads and connections.
-    let mut context = AppContext::new().await.expect("AppContext::new");
+    let mut context = AppContext::new(&cli, master_key).await.expect("AppContext::new");
     let shutdown_token = context.shutdown_token.clone();
 
     let shutdown_signal = async {
@@ -35,7 +45,12 @@ async fn main() {
         }
     };
 
-    init_tasks(context.config.as_ref(), context.mongo.as_ref(), context.outbound.as_ref(), context.decryption.as_ref()).await;
+    init_tasks(
+        context.config.as_ref(),
+        context.mongo.as_ref(),
+        context.outbound.as_ref(),
+        context.decryption.as_ref(),
+    ).await;
 
     tokio::select! {
         _ = shutdown_signal => {
@@ -69,6 +84,53 @@ fn init_resources() {
 async fn init_tasks(config: &dyn ConfigService, mongo: &MongoDaoImpl, outbound: &MessageOutboundFacade, decryption: &SymmetricEncryptionHandler) {
     // Initial tasks to run once for the symmetric keymaster
     symmetric_init_tasks(config, mongo, outbound, decryption).await;
+}
+
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Cli {
+    /// Enable restoration mode
+    #[arg(long)]
+    restore: bool,
+
+    /// Path to the master key file
+    #[arg(short, long)]
+    capath: Option<String>,
+}
+
+/// Handle the master key and password prompt
+fn parse_ca_password (cli: &Cli) -> Option<PKey<Private>> {
+    if ! cli.restore {
+        // No need to look at key path if not restoring
+        return None
+    }
+
+    // We return an Option containing the path and the password
+    if let Some(path) = cli.capath.as_ref() {
+        debug!("Master key path provided: {}", path);
+
+        // rpassword::prompt_password will hide the input as the user types
+        let password = match rpassword::prompt_password("Enter master key password: ") {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("Failed to read password: {}", e);
+                std::process::exit(1);
+            }
+        };
+
+        let private_key = match parse_encrypted_private_key(Path::new(&path), &password) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("Error loading private key: {}", e);
+                std::process::exit(1);
+            }
+        };
+
+        Some(private_key)
+    } else {
+        eprintln!("Restoring keymaster requires the CA key (param --capath)");
+        std::process::exit(1);
+    }
 }
 
 #[cfg(test)]

@@ -21,7 +21,9 @@ use millegrilles_common_rust::v3::impls::config_service::ConfigServiceDbImpl;
 use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl;
 use millegrilles_common_rust::{serde_json, tokio};
 use std::sync::Arc;
+use millegrilles_common_rust::openssl::pkey::{PKey, Private};
 use millegrilles_common_rust::v3::BackupService;
+use millegrilles_common_rust::v3::impls::backup_restorer::RestorationState;
 
 pub struct MaitreDesClesCAServiceImpl {
     // config: Arc<dyn ConfigService>,
@@ -190,6 +192,18 @@ impl MaitreDesClesCAServiceImpl {
             }
         }
         debug!("process_backup_thread Closed");
+    }
+
+    /// Restore transactions in database
+    pub async fn restore(&self, master_key: Option<PKey<Private>>, resume: bool, version: Option<String>) -> Result<RestorationState, CommonError> {
+        self.backup.restore_domain(
+            DOMAINE_NOM,
+            NOM_COLLECTION_TRANSACTIONS_CA,
+            NOM_COLLECTION_TRACKING_CA,
+            resume,
+            version,
+            master_key,
+        ).await
     }
 }
 

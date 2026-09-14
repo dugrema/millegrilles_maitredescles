@@ -12,4 +12,8 @@ edition = "2024"
 millegrilles_common_rust = { path = "/home/mathieu/RustroverProjects/millegrilles_common_rust" }
 
 serde = { version = "1.0.228", features = ["derive"] }
-zeroize = "1.8.2"
+
+# CLI parsing for restore
+clap = "4.6.6"
+clap_derive = "4.6.4"
+rpassword = "7.5.4"

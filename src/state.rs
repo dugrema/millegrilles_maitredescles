@@ -18,8 +18,11 @@ use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl
 use millegrilles_common_rust::v3::impls::security_service::SecurityServiceImpl;
 use millegrilles_common_rust::v3::{ChiffrageService, ConfigService};
 use std::sync::Arc;
+use millegrilles_common_rust::openssl::pkey::{PKey, Private};
 use millegrilles_common_rust::v3::impls::backup_service::DomainBackupServiceImpl;
+use crate::Cli;
 use crate::constants::{NOM_COLLECTION_CA_CLES, NOM_COLLECTION_CONFIGURATION, NOM_COLLECTION_SYMMETRIQUE_CLES};
+use crate::restore::restore_from_backup;
 
 /// Composition object with services from common library
 pub struct AppContext {
@@ -40,7 +43,7 @@ pub struct AppContext {
 }
 
 impl AppContext {
-    pub async fn new() -> Result<Self, CommonError> {
+    pub async fn new(cli: &Cli, master_key: Option<PKey<Private>>) -> Result<Self, CommonError> {
         // Shutdown/cancel semantics
         let shutdown_token = CancellationToken::new();
         let mut join_set = JoinSet::new();
@@ -70,8 +73,8 @@ impl AppContext {
         // List data tables (exclusing redolog and tracking). They get truncated on restore (when not resuming).
         let data_tables = vec![
             NOM_COLLECTION_CA_CLES.to_string(),
-            NOM_COLLECTION_SYMMETRIQUE_CLES.to_string(),
-            NOM_COLLECTION_CONFIGURATION.to_string(),
+            // NOM_COLLECTION_SYMMETRIQUE_CLES.to_string(),
+            // NOM_COLLECTION_CONFIGURATION.to_string(),
         ];
         let backup = Arc::new(DomainBackupServiceImpl::new(
             config.clone(),
@@ -115,6 +118,8 @@ impl AppContext {
             ca_service.clone(),
             symmetric_service.clone(),
             shutdown_token.clone(),
+            cli.restore,
+            master_key,
         ).await?;
 
         Ok(AppContext {
@@ -159,6 +164,8 @@ async fn start_threads(
     ca_service: Arc<MaitreDesClesCAServiceImpl>,
     symmetric_service: Arc<MaitreDesClesSymmetricServiceImpl>,
     shutdown_token: CancellationToken,
+    is_restoring: bool,
+    master_key: Option<PKey<Private>>,
 ) -> Result<(), CommonError> {
 
     // Connect to RabbitMQ (throws error on failure).
@@ -170,9 +177,21 @@ async fn start_threads(
     let shutdown_token_clone = shutdown_token.clone();
     join_set.spawn(async move { security.run(shutdown_token_clone).await });
 
-    // Spawn consumer threads
-    ca_service.start(join_set, incoming.clone())?;
-    symmetric_service.start(join_set, incoming.clone())?;
+    if ! is_restoring {
+        // Spawn consumer threads
+        ca_service.start(join_set, incoming.clone())?;
+        symmetric_service.start(join_set, incoming.clone())?;
+    } else {
+        let master_key = match master_key {
+            Some(key) => key,
+            None => panic!("Master key not provided for restoring, aborting")
+        };
+        info!("Not starting consumer threads - restoring from backup");
+        let shutdown_token_clone = shutdown_token.clone();
+        join_set.spawn(async move {
+            restore_from_backup(ca_service, master_key, shutdown_token_clone).await
+        });
+    }
 
     Ok(())
 }
