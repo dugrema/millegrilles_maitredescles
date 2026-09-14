@@ -7,7 +7,6 @@ use millegrilles_common_rust::tokio::time::sleep;
 use millegrilles_common_rust::tokio_util::sync::CancellationToken;
 use millegrilles_common_rust::tracing::{error, info};
 use std::sync::Arc;
-use millegrilles_common_rust::serde_helpers::SerializeYaml;
 
 pub async fn restore_from_backup(
     ca_service: Arc<MaitreDesClesCAServiceImpl>,
@@ -15,7 +14,7 @@ pub async fn restore_from_backup(
     master_key: &PKey<Private>,
     shutdown_token: CancellationToken
 ) {
-    let return_code = match restore(ca_service.as_ref(), symmetric_service.as_ref(), master_key, false).await {
+    let return_code = match restore(ca_service.as_ref(), symmetric_service.as_ref(), master_key, true).await {
         Ok(()) => {
             info!("Restoration process complete - shutting down");
             0
@@ -52,7 +51,13 @@ async fn restore(
     // Produce final restoration report
     let duration = end_time - start_time;
     let duration_formatted = duration.num_seconds();
-    info!("Restored {} transactions in {} seconds", result.transaction_count, duration_formatted);
+    info!(
+        "Processed {} transactions ({} resumed after skipped {}) in {} seconds",
+        result.transaction_count,
+        result.transaction_count - result.initially_skipped,
+        result.initially_skipped,
+        duration_formatted
+    );
 
     // Repair keys
     symmetric_service.repair_with_master_key(&master_key).await?;
