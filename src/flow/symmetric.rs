@@ -4,15 +4,15 @@ use crate::external::crypto::SymmetricEncryptionHandler;
 use crate::external::mongo::*;
 use crate::external::mq::*;
 use crate::flow::maintenance::validate_ticker;
-use crate::models::{CommandCertificateRotation, CommandeRechiffrerBatchDechiffree};
+use crate::models::{CommandCertificateRotation, CommandeRechiffrerBatchDechiffree, RowCleCaRef};
 use crate::models::{CommandeCleSymmetrique, CommandeRechiffrerBatchChiffree, DocumentCleRechiffrage, ErrorMessage, KeyDecryptionRefused, RowClePartition};
+use millegrilles_common_rust::base64::{engine::general_purpose::STANDARD_NO_PAD as base64_nopad, Engine as _};
 use millegrilles_common_rust::certificats::VerificateurPermissions;
 use millegrilles_common_rust::chiffrage_cle::CommandeAjouterCleDomaine;
-use millegrilles_common_rust::chrono::Timelike;
+use millegrilles_common_rust::chrono::{Timelike, Utc};
 use millegrilles_common_rust::common_messages::{ReponseRequeteDechiffrageV2, RequeteDechiffrage, ResponseRequestDechiffrageV2Cle};
 use millegrilles_common_rust::constantes::{DELEGATION_GLOBALE_PROPRIETAIRE, REQUETE_CERT_MAITREDESCLES, Securite};
 use millegrilles_common_rust::error::Error as CommonError;
-use millegrilles_common_rust::futures::StreamExt;
 use millegrilles_common_rust::messages_generiques::MessageCedule;
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::FormatChiffrage;
 use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::SignatureDomainesVersion;
@@ -27,9 +27,12 @@ use millegrilles_common_rust::v3::impls::config_service::ConfigServiceDbImpl;
 use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl;
 use millegrilles_common_rust::v3::impls::rabbitmq_consumer::DeliveryInfo;
 use millegrilles_common_rust::v3::{ChiffrageService, ConfigService, PkiService};
-use millegrilles_common_rust::{serde_json, tokio};
+use millegrilles_common_rust::{bson, serde_json, tokio};
 use std::sync::Arc;
-
+use millegrilles_common_rust::bson::{doc, Document};
+use millegrilles_common_rust::millegrilles_cryptographie::x25519::dechiffrer_asymmetrique_ed25519;
+use millegrilles_common_rust::openssl::pkey::{PKey, Private};
+use millegrilles_common_rust::tokio_stream::StreamExt;
 // #[async_trait]
 // pub trait MaitreDesClesSymmetricService {}
 
@@ -218,6 +221,20 @@ impl MaitreDesClesSymmetricServiceImpl {
         debug!("process_newkeys_thread (sym) Closed");
     }
 
+    pub async fn repair_with_master_key(&self, master_key: &PKey<Private>) -> Result<(), CommonError> {
+        if ! self.decryption.is_ready() {
+            todo!("Repair symmetric decryption key")
+        }
+
+        // Since this may be a complete CA restoration, check all known symmetric keys and mark
+        // them as OK against the CA table.
+        check_ca_keys_undecipherable_flag(self.mongo.as_ref()).await?;
+
+        // Re-encrypt remaining undecipherable keys
+        decrypt_symmetric_keys_from_ca(self.mongo.as_ref(), self.decryption.as_ref(), master_key).await?;
+
+        Ok(())
+    }
 }
 
 // impl MaitreDesClesSymmetricService for MaitreDesClesSymmetricServiceImpl {}
@@ -603,7 +620,7 @@ async fn repair_symmetric_key(
         cle: command.cle,
     });
 
-    if let Err(e) = save_symmetric_keys(mongo, None, keys).await {
+    if let Err(e) = save_symmetric_decryption_keys(mongo, None, keys).await {
         error!("repair_symmetric_key Error saving key: {:?}", e);
         outbound.respond(wrapper.delivery_info, ErrorMessage {
             ok: false,
@@ -712,7 +729,7 @@ async fn certificate_rotation(
     });
 
     // Save key for new certificate
-    if let Err(e) = save_symmetric_keys(mongo, None, keys).await {
+    if let Err(e) = save_symmetric_decryption_keys(mongo, None, keys).await {
         error!("certificate_rotation Error saving key: {:?}", e);
         outbound.respond(wrapper.delivery_info, ErrorMessage {
             ok: false,
@@ -723,6 +740,80 @@ async fn certificate_rotation(
     }
 
     outbound.respond(wrapper.delivery_info, ErrorMessage::ok()).await?;
+
+    Ok(())
+}
+
+/// Go through all keys known to the CA and marked as non-decipherable.
+async fn decrypt_symmetric_keys_from_ca(
+    mongo: &MongoDaoImpl,
+    encryption_handler: &SymmetricEncryptionHandler,
+    master_key: &PKey<Private>
+) -> Result<(), CommonError> {
+    let start = Utc::now();
+    let mut total_count: usize = 0;
+
+    let collection_ca = mongo.get_collection_typed::<RowCleCaRef>(NOM_COLLECTION_CA_CLES)?;
+    let collection_keys = mongo.get_collection(NOM_COLLECTION_SYMMETRIQUE_CLES)?;
+    let mut cursor = collection_ca
+        .find(doc!{CHAMP_NON_DECHIFFRABLE: true})
+        .await?;
+
+    const BATCH_SIZE: usize = 50;
+    let mut keys: Vec<Document> = Vec::with_capacity(BATCH_SIZE);
+    let mut key_ids = Vec::with_capacity(BATCH_SIZE);
+    while cursor.advance().await? {
+        let key = cursor.deserialize_current()?;
+
+        // Decrypt key with master key
+        let decrypted_key = match key.signature.ca {
+            Some(ca_key_str) => {
+                let ca_key_bytes = base64_nopad.decode(ca_key_str)?;
+                dechiffrer_asymmetrique_ed25519(&ca_key_bytes, master_key)?
+            },
+            None => {
+                warn!("No CA key information present for key_id {}, skipping", key.cle_id);
+                continue
+            }
+        };
+
+        // Re-encrypt for symmetric manager
+        let re_encrypted_key = encryption_handler.encrypt(&decrypted_key.0)?;
+
+        let new_key_row = RowClePartition {
+            cle_id: key.cle_id.to_string(),
+            signature: key.signature.try_into()?,
+            cle_symmetrique: Some(re_encrypted_key.cle),
+            nonce_symmetrique: Some(re_encrypted_key.nonce),
+            format: key.format,
+            iv: match key.iv { Some(val) => Some(val.to_string()), None => None },
+            tag: match key.tag { Some(val) => Some(val.to_string()), None => None },
+            header: match key.header { Some(val) => Some(val.to_string()), None => None },
+        };
+        let new_key_doc = bson::serialize_to_document(&new_key_row)?;
+        keys.push(new_key_doc);
+        key_ids.push(key.cle_id.to_string());
+        total_count += 1;
+
+        if keys.len() % 200 == 0 {
+            // Save the keys
+            collection_keys.insert_many(&keys).await?;
+            keys.clear();
+
+            // Set the CA key flags to decipherable.
+            set_ca_batch_decipherable(mongo, key_ids).await?;
+            key_ids = Vec::with_capacity(BATCH_SIZE);
+        }
+    }
+
+    // Process the last batch
+    if ! keys.is_empty() {
+        set_ca_batch_decipherable(mongo, key_ids).await?;
+        collection_keys.insert_many(&keys).await?;
+    }
+
+    let duration = Utc::now().signed_duration_since(start);
+    info!("Re-encrypted {} keys in {} seconds", total_count, duration.num_seconds());
 
     Ok(())
 }

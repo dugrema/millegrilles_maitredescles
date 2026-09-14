@@ -268,7 +268,7 @@ pub async fn prepare_symmetric_key<M>(
             // Save keys using a session
             let mut session = mongo.get_session().await?;
             session.start_transaction().await?;
-            match save_symmetric_keys(mongo, Some(&mut session), keys).await {
+            match save_symmetric_decryption_keys(mongo, Some(&mut session), keys).await {
                 Ok(()) => session.commit_transaction().await?,
                 Err(e) => {
                     error!("prepare_symmetric_key Error saving keys: {:?}", e);
@@ -282,7 +282,7 @@ pub async fn prepare_symmetric_key<M>(
 }
 
 /// Save a new symmetric key
-pub async fn save_symmetric_keys(
+pub async fn save_symmetric_decryption_keys(
     mongo: &dyn MongoDao,
     mut session: Option<&mut ClientSession>,
     keys: Vec<DocumentCleRechiffrage>,

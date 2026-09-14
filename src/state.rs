@@ -189,7 +189,7 @@ async fn start_threads(
         info!("Not starting consumer threads - restoring from backup");
         let shutdown_token_clone = shutdown_token.clone();
         join_set.spawn(async move {
-            restore_from_backup(ca_service, master_key, shutdown_token_clone).await
+            restore_from_backup(ca_service, symmetric_service, &master_key, shutdown_token_clone).await
         });
     }
 

@@ -1,26 +1,61 @@
-use std::sync::Arc;
-use millegrilles_common_rust::openssl::pkey::{PKey, Private};
-use millegrilles_common_rust::tokio_util::sync::CancellationToken;
 use crate::flow::ca::MaitreDesClesCAServiceImpl;
+use crate::flow::symmetric::MaitreDesClesSymmetricServiceImpl;
+use millegrilles_common_rust::chrono::Utc;
+use millegrilles_common_rust::error::Error as CommonError;
+use millegrilles_common_rust::openssl::pkey::{PKey, Private};
 use millegrilles_common_rust::tokio::time::sleep;
+use millegrilles_common_rust::tokio_util::sync::CancellationToken;
+use millegrilles_common_rust::tracing::{error, info};
+use std::sync::Arc;
+use millegrilles_common_rust::serde_helpers::SerializeYaml;
 
-pub async fn restore_from_backup(ca_service: Arc<MaitreDesClesCAServiceImpl>, master_key: PKey<Private>, shutdown_token: CancellationToken) {
-    eprintln!("Beginning database restoration");
-    let result = match ca_service.restore(Some(master_key), false, None).await {
-        Ok(inner) => inner,
+pub async fn restore_from_backup(
+    ca_service: Arc<MaitreDesClesCAServiceImpl>,
+    symmetric_service: Arc<MaitreDesClesSymmetricServiceImpl>,
+    master_key: &PKey<Private>,
+    shutdown_token: CancellationToken
+) {
+    let return_code = match restore(ca_service.as_ref(), symmetric_service.as_ref(), master_key, false).await {
+        Ok(()) => {
+            info!("Restoration process complete - shutting down");
+            0
+        },
         Err(e) => {
-            eprintln!("Error during restoration: {:?}", e);
-            std::process::exit(2);
+            error!("Error during restoration: {:?}", e);
+            shutdown_token.cancel();
+            2
         }
     };
 
-    // Produce final restoration report
-    eprintln!("Restored {} transactions", result.transaction_count);
-
-    eprintln!("Restoration process complete - shutting down");
     // Stop all processes - restoration complete
     shutdown_token.cancel();
 
     sleep(std::time::Duration::from_secs(2)).await;
-    std::process::exit(0);
+    std::process::exit(return_code);
+}
+
+async fn restore(
+    ca_service: &MaitreDesClesCAServiceImpl,
+    symmetric_service: &MaitreDesClesSymmetricServiceImpl,
+    master_key: &PKey<Private>,
+    resume: bool
+) -> Result<(), CommonError> {
+    info!("Beginning database restoration");
+    let start_time = Utc::now();
+    let result = ca_service.restore(
+        Some(&master_key),
+        resume,
+        None,
+    ).await?;
+    let end_time = Utc::now();
+
+    // Produce final restoration report
+    let duration = end_time - start_time;
+    let duration_formatted = duration.num_seconds();
+    info!("Restored {} transactions in {} seconds", result.transaction_count, duration_formatted);
+
+    // Repair keys
+    symmetric_service.repair_with_master_key(&master_key).await?;
+
+    Ok(())
 }
