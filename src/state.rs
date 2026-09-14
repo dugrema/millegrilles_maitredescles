@@ -19,6 +19,7 @@ use millegrilles_common_rust::v3::impls::security_service::SecurityServiceImpl;
 use millegrilles_common_rust::v3::{ChiffrageService, ConfigService};
 use std::sync::Arc;
 use millegrilles_common_rust::v3::impls::backup_service::DomainBackupServiceImpl;
+use crate::constants::{NOM_COLLECTION_CA_CLES, NOM_COLLECTION_CONFIGURATION, NOM_COLLECTION_SYMMETRIQUE_CLES};
 
 /// Composition object with services from common library
 pub struct AppContext {
@@ -64,18 +65,29 @@ impl AppContext {
             MessageInboundValidator::new(config.clone(), messaging.clone(), security.clone(), shutdown_token.clone())
         );
 
-        let backup = Arc::new(DomainBackupServiceImpl::new(config.clone(), outbound.clone(), security.clone(), mongo.clone()));
-
         let transaction = Arc::new(KeyMasterTransactionService::new(config.clone(), format.clone(), mongo.clone()));
+
+        // List data tables (exclusing redolog and tracking). They get truncated on restore (when not resuming).
+        let data_tables = vec![
+            NOM_COLLECTION_CA_CLES.to_string(),
+            NOM_COLLECTION_SYMMETRIQUE_CLES.to_string(),
+            NOM_COLLECTION_CONFIGURATION.to_string(),
+        ];
+        let backup = Arc::new(DomainBackupServiceImpl::new(
+            config.clone(),
+            outbound.clone(),
+            security.clone(),
+            mongo.clone(),
+            transaction.ca.clone(), // Transaction is a wrapper for the CA service
+            data_tables
+        ));
 
         // Flow services (business logic)
         let ca_service = Arc::new(
             MaitreDesClesCAServiceImpl::new(
-                // config.clone(),
                 outbound.clone(),
                 transaction.clone(),
                 mongo.clone(),
-                // format.clone(),
                 backup.clone(),
             )
         );
@@ -108,18 +120,9 @@ impl AppContext {
         Ok(AppContext {
             join_set,
             config: config.clone(),
-            // config_db: config,
-            // redis,
-            // pki: security,
-            // messaging,
-            // format,
             mongo,
             outbound,
-            // inbound,
-            // ca_service,
-            // symmetric_service,
             decryption,
-            // transaction,
             shutdown_token,
         })
     }

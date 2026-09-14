@@ -12,7 +12,7 @@ use millegrilles_common_rust::v3::{ConfigService, FormatService, TransactionRout
 use std::sync::Arc;
 
 pub struct KeyMasterTransactionService {
-    ca: Box<dyn TransactionService>,
+    pub ca: Arc<dyn TransactionService>,
 }
 
 impl KeyMasterTransactionService {
@@ -32,7 +32,7 @@ impl KeyMasterTransactionService {
         );
 
         Self {
-            ca: Box::new(ca_service),
+            ca: Arc::new(ca_service),
         }
     }
 
