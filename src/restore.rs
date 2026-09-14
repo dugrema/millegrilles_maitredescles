@@ -7,7 +7,6 @@ use millegrilles_common_rust::tokio::time::sleep;
 use millegrilles_common_rust::tokio_util::sync::CancellationToken;
 use millegrilles_common_rust::tracing::{error, info};
 use std::sync::Arc;
-use crate::external::mongo::reset_ca_undecipherable_flag;
 
 pub async fn restore_from_backup(
     ca_service: Arc<MaitreDesClesCAServiceImpl>,

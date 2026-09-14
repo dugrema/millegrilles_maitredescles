@@ -2,7 +2,7 @@ use crate::constants::*;
 use crate::external::crypto::SymmetricEncryptionHandler;
 use crate::models::{CleInterneChiffree, RowClePartition};
 use crate::models::{DocumentCleRechiffrage, RecupererCleCa, ReponseClesNonDechiffrables, RequeteClesNonDechiffrable, RowCleCaRef};
-use millegrilles_common_rust::{bson, multibase};
+use millegrilles_common_rust::base64::{Engine as _, engine::general_purpose::STANDARD_NO_PAD as base64_nopad};
 use millegrilles_common_rust::bson::{Document, doc};
 use millegrilles_common_rust::common_messages::ResponseRequestDechiffrageV2Cle;
 use millegrilles_common_rust::configuration::ConfigMessages;
@@ -10,7 +10,7 @@ use millegrilles_common_rust::constantes::{CHAMP_CREATION, FIELD_BID, FIELD_DATE
 use millegrilles_common_rust::error::{Error as CommonError, Error};
 use millegrilles_common_rust::millegrilles_cryptographie::heapless;
 use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::SignatureDomaines;
-use millegrilles_common_rust::millegrilles_cryptographie::x25519::{chiffrer_asymmetrique_ed25519, dechiffrer_asymmetrique_ed25519};
+use millegrilles_common_rust::millegrilles_cryptographie::x25519::dechiffrer_asymmetrique_ed25519;
 use millegrilles_common_rust::millegrilles_cryptographie::x509::EnveloppePrivee;
 use millegrilles_common_rust::mongo_dao::{ChampIndex, IndexOptions, MongoDao, MongoDaoImpl, MongoDaoTyped};
 use millegrilles_common_rust::mongodb::ClientSession;
@@ -18,8 +18,7 @@ use millegrilles_common_rust::mongodb::options::{Hint, UpdateOneModel, WriteMode
 use millegrilles_common_rust::openssl::pkey::{PKey, Private};
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::tracing::{debug, error, info, warn};
-use millegrilles_common_rust::base64::{engine::general_purpose::STANDARD_NO_PAD as base64_nopad, Engine as _};
-use millegrilles_common_rust::multibase::Base;
+use millegrilles_common_rust::bson;
 // DB / Index creation
 
 const KEY_CA: &str = "CA";
