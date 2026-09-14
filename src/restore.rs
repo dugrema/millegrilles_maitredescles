@@ -1,6 +1,5 @@
 use crate::flow::ca::MaitreDesClesCAServiceImpl;
 use crate::flow::symmetric::MaitreDesClesSymmetricServiceImpl;
-use millegrilles_common_rust::chrono::Utc;
 use millegrilles_common_rust::error::Error as CommonError;
 use millegrilles_common_rust::openssl::pkey::{PKey, Private};
 use millegrilles_common_rust::tokio::time::sleep;
@@ -40,23 +39,18 @@ async fn restore(
     resume: bool
 ) -> Result<(), CommonError> {
     info!("Beginning database restoration");
-    let start_time = Utc::now();
     let result = ca_service.restore(
         Some(&master_key),
         resume,
         None,
     ).await?;
-    let end_time = Utc::now();
 
     // Produce final restoration report
-    let duration = end_time - start_time;
-    let duration_formatted = duration.num_seconds();
     info!(
-        "Transactions processed {} transactions ({} resumed after skipped {}) in {} seconds",
+        "Transactions processed {} transactions ({} skipped then {} resumed)",
         result.transaction_count,
-        result.transaction_count - result.initially_skipped,
         result.initially_skipped,
-        duration_formatted
+        result.transaction_count - result.initially_skipped,
     );
 
     // Repair keys

@@ -7,7 +7,7 @@ use crate::models::TransactionCleV2;
 use crate::models::{ErrorMessage, RequeteClesNonDechiffrable, UndecipherableKeyCountResponse};
 use millegrilles_common_rust::certificats::VerificateurPermissions;
 use millegrilles_common_rust::chiffrage_cle::CommandeAjouterCleDomaine;
-use millegrilles_common_rust::chrono::{Datelike, Timelike, Weekday};
+use millegrilles_common_rust::chrono::{Datelike, Timelike, Utc, Weekday};
 use millegrilles_common_rust::constantes::DELEGATION_GLOBALE_PROPRIETAIRE;
 use millegrilles_common_rust::error::Error as CommonError;
 use millegrilles_common_rust::futures::StreamExt;
@@ -204,14 +204,19 @@ impl MaitreDesClesCAServiceImpl {
         // Wait for reply q (certificate queries)
         self.outbound.wait_ready(Some(20_000)).await?;
 
-        self.backup.restore_domain(
+        let start_time = Utc::now();
+        let result = self.backup.restore_domain(
             DOMAINE_NOM,
             NOM_COLLECTION_TRANSACTIONS_CA,
             NOM_COLLECTION_TRACKING_CA,
             resume,
             version,
             master_key,
-        ).await
+        ).await?;
+        let duration = Utc::now() - start_time;
+        info!("restore_domain duration: {} ms", duration.num_milliseconds());
+
+        Ok(result)
     }
 
     pub async fn reset_ca_undecipherable_flag(&self) -> Result<(), CommonError> {
