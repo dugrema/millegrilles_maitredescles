@@ -262,6 +262,18 @@ async fn ticker_job_ca<M>(mongo: &M, backup: &dyn BackupService, trigger: Messag
             error!("Error backing up domain: {}", e);
         } else {
             info!("Backup task completed");
+            match backup.transfer_backup_files_to_filehost(DOMAINE_NOM).await {
+                Ok(()) => info!("Backup files uploaded to filehost"),
+                Err(e) => error!("Error uploading backup files to filehost: {}", e)
+            }
+        }
+    }
+
+    // Additional file upload task in case backups keep failing.
+    if minute == 13 && hour % 8 == 1 {
+    // {
+        if let Err(e) = backup.transfer_backup_files_to_filehost(DOMAINE_NOM).await {
+            error!("Error uploading backup files to filehost: {}", e);
         }
     }
 

@@ -23,6 +23,7 @@ use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl
 use millegrilles_common_rust::v3::impls::security_service::SecurityServiceImpl;
 use millegrilles_common_rust::v3::{ChiffrageService, ConfigService};
 use std::sync::Arc;
+use millegrilles_common_rust::v3::impls::filehost_service::FilehostServiceImpl;
 
 /// Composition object with services from common library
 pub struct AppContext {
@@ -75,6 +76,8 @@ impl AppContext {
             cli.restore,
         ));
 
+        let filehost = Arc::new(FilehostServiceImpl::new(config.clone(), format.clone(), outbound.clone()));
+
         // List data tables (exclusing redolog and tracking). They get truncated on restore (when not resuming).
         let data_tables = vec![
             NOM_COLLECTION_CA_CLES.to_string(),
@@ -88,6 +91,7 @@ impl AppContext {
             security.clone(),
             mongo.clone(),
             transaction.ca.clone(), // Transaction is a wrapper for the CA service
+            filehost.clone(),
             data_tables
         ));
 
