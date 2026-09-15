@@ -68,7 +68,12 @@ impl AppContext {
             MessageInboundValidator::new(config.clone(), messaging.clone(), security.clone(), shutdown_token.clone())
         );
 
-        let transaction = Arc::new(KeyMasterTransactionService::new(config.clone(), format.clone(), mongo.clone()));
+        let transaction = Arc::new(KeyMasterTransactionService::new(
+            config.clone(),
+            format.clone(),
+            mongo.clone(),
+            cli.restore,
+        ));
 
         // List data tables (exclusing redolog and tracking). They get truncated on restore (when not resuming).
         let data_tables = vec![

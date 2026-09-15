@@ -5,6 +5,7 @@ mod external;
 mod flow;
 mod errors;
 pub mod restore;
+pub mod legacy;
 
 use std::path::Path;
 use clap::Parser;

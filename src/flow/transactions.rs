@@ -1,4 +1,5 @@
 use crate::constants::{NOM_COLLECTION_CA_CLES, NOM_COLLECTION_TRACKING_CA, NOM_COLLECTION_TRANSACTIONS_CA, TRANSACTION_CLE, TRANSACTION_CLE_V2};
+use crate::legacy::legacy_transaction_cle;
 use crate::models::RowCleCaRef;
 use crate::models::TransactionCleV2;
 use millegrilles_common_rust::async_trait::async_trait;
@@ -10,6 +11,8 @@ use millegrilles_common_rust::v3::impls::transaction_service::TransactionService
 use millegrilles_common_rust::v3::models::{BatchInsertions, TransactionOperationAggregator, TransactionWrapper};
 use millegrilles_common_rust::v3::{ConfigService, FormatService, TransactionRouter, TransactionService};
 use std::sync::Arc;
+use millegrilles_common_rust::bson::doc;
+use millegrilles_common_rust::mongodb::options::{UpdateOneModel, WriteModel};
 
 pub struct KeyMasterTransactionService {
     pub ca: Arc<dyn TransactionService>,
@@ -19,9 +22,10 @@ impl KeyMasterTransactionService {
     pub fn new(
         config: Arc<dyn ConfigService>,
         format: Arc<dyn FormatService>,
-        mongo: Arc<dyn MongoDao>
+        mongo: Arc<dyn MongoDao>,
+        restoring: bool,
     ) -> Self {
-        let ca_router = CaTransactionRouter {};
+        let ca_router = CaTransactionRouter { mongo: mongo.clone(), ignore_duplicates: restoring };
         let ca_service =  TransactionServiceImpl::new(
             config,
             format,
@@ -45,7 +49,10 @@ impl KeyMasterTransactionService {
     }
 }
 
-struct CaTransactionRouter {}
+struct CaTransactionRouter {
+    mongo: Arc<dyn MongoDao>,
+    ignore_duplicates: bool,
+}
 
 #[async_trait]
 impl TransactionRouter for CaTransactionRouter {
@@ -55,15 +62,17 @@ impl TransactionRouter for CaTransactionRouter {
         wrapper: TransactionWrapper
     ) -> Result<TransactionOperationAggregator, CommonError> {
         match action.as_str() {
-            TRANSACTION_CLE => todo!(),  // transaction_cle(middleware, transaction, session).await,
-            TRANSACTION_CLE_V2 => save_new_key(wrapper).await,
+            TRANSACTION_CLE => legacy_transaction_cle(self.mongo.as_ref(), wrapper).await,
+            TRANSACTION_CLE_V2 => save_new_key(self.mongo.as_ref(), wrapper, self.ignore_duplicates).await,
             _ => Err(CommonError::Str("Unknown transaction action"))
         }
     }
 }
 
 async fn save_new_key(
-    wrapper: TransactionWrapper
+    mongo: &dyn MongoDao,
+    wrapper: TransactionWrapper,
+    ignore_duplicates: bool,
 ) -> Result<TransactionOperationAggregator, CommonError> {
     let mut aggregator = TransactionOperationAggregator::new();
     let transaction: TransactionCleV2 = wrapper.message.deserialize()?;
@@ -83,11 +92,29 @@ async fn save_new_key(
         header: None,
     };
 
-    let batch_insertions = BatchInsertions::new(
-        NOM_COLLECTION_CA_CLES,
-        vec![bson::serialize_to_document(&insert_doc)?],
-    );
-    aggregator.batch_insertion(batch_insertions)?;
+    if ignore_duplicates {
+        // Slow workaround for restoration - some duplicates made it to the backups.
+        let collection = mongo.get_collection(NOM_COLLECTION_CA_CLES)?;
+        let ops = doc! {
+            "$setOnInsert": bson::serialize_to_document(&insert_doc)?,
+        };
+        let update_model = WriteModel::UpdateOne(
+            UpdateOneModel::builder()
+                .upsert(true)
+                .namespace(collection.namespace())
+                .filter(doc! {"cle_id": &cle_id})
+                .update(ops)
+                .build()
+        );
+        aggregator.unordered = Some(vec![update_model]);
+    } else {
+        // Fast method for normal transaction procesing
+        let batch_insertions = BatchInsertions::new(
+            NOM_COLLECTION_CA_CLES,
+            vec![bson::serialize_to_document(&insert_doc)?],
+        );
+        aggregator.batch_insertion(batch_insertions)?;
+    }
 
     Ok(aggregator)
 }
