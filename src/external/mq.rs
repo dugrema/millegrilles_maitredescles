@@ -40,7 +40,7 @@ pub fn init_ca_queues(mq: &MessagingServiceImpl) -> Result<(), CommonError> {
         routing_keys: vec![
             ConfigRoutingExchange { routing_key: format!("requete.{}.getNombreTransactions", DOMAINE_NOM), exchange: Securite::L2Prive },
             ConfigRoutingExchange { routing_key: format!("commande.{}.declencherBackup", DOMAINE_NOM), exchange: Securite::L3Protege },
-            ConfigRoutingExchange { routing_key: format!("commande.{}.regenerer", DOMAINE_NOM), exchange: Securite::L3Protege },
+            // ConfigRoutingExchange { routing_key: format!("commande.{}.regenerer", DOMAINE_NOM), exchange: Securite::L3Protege },
         ],
         ttl: Some(QUEUE_TTL_DEFAULT),
         durable: true,

@@ -24,6 +24,9 @@ use millegrilles_common_rust::v3::impls::config_service::ConfigServiceDbImpl;
 use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl;
 use millegrilles_common_rust::{serde_json, tokio};
 use std::sync::Arc;
+use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageKind;
+use millegrilles_common_rust::constantes::*;
+
 
 pub struct MaitreDesClesCAServiceImpl {
     // config: Arc<dyn ConfigService>,
@@ -114,9 +117,11 @@ impl MaitreDesClesCAServiceImpl {
         tokio::pin!(streamer);
         while let Some(result) = streamer.next().await {
             match result {
-                Ok(_message) => {
-                    error!("TODO - process backup message");
-                }
+                Ok(message) => {
+                    if let Err(e) = process_backup_messages(self.outbound.as_ref(), self.backup.as_ref(), message).await {
+                        error!("Error processing backup message: {}", e);
+                    }
+                },
                 Err(e) => {
                     error!("Backup job ca message parsing failed: {}", e);
                 }
@@ -362,4 +367,61 @@ async fn request_fetch_key_batch(
     let request: RequeteClesNonDechiffrable = wrapper.message.deserialize()?;
     let response = fetch_key_batch_db(mongo, request).await?;
     outbound.respond(wrapper.delivery_info, serde_json::to_value(response)?).await
+}
+
+async fn process_backup_messages(
+    outbound: &MessageOutboundFacade,
+    backup: &dyn BackupService,
+    wrapper: MessageValidated
+) -> Result<(), CommonError> {
+    let action = match wrapper.message.routage.as_ref() {
+        Some(routage) => match routage.action.as_ref() {
+            Some(action) => action.clone(),
+            None => {
+                // Bad message, no action
+                return Err(CommonError::Str("Bad message, no action was found"))
+            }
+        },
+        None => {
+            // Bad message, no routing
+            return Err(CommonError::Str("Bad message, no routing information was found"))
+        }
+    };
+
+    match wrapper.message.kind {
+        MessageKind::Commande => {
+            match action.as_str() {
+                COMMANDE_DECLENCHER_BACKUP => trigger_complete_backup(outbound, backup, wrapper).await,
+                _ => {
+                    warn!("process_backup_messages (CA) Unsupported action type: {}", action);
+                    Err(CommonError::Str("Bad message, unsupported action type"))
+                }
+            }
+        },
+        _ => Err(CommonError::Str("Bad message, unsupported message kind"))
+    }
+}
+
+async fn trigger_complete_backup(
+    outbound: &MessageOutboundFacade,
+    backup: &dyn BackupService,
+    wrapper: MessageValidated
+) -> Result<(), CommonError> {
+    match backup.backup_domain(DOMAINE_NOM, NOM_COLLECTION_TRANSACTIONS_CA, false).await {
+        Ok(_) => {
+            outbound.respond(wrapper.delivery_info, ErrorMessage::ok()).await.ok();
+
+            // Try to sync files
+            if let Err(e) = backup.transfer_backup_files_to_filehost(DOMAINE_NOM).await {
+                error!("Error uploading backup files to filehost after manual backup: {}", e);
+            }
+
+            Ok(())
+        },
+        Err(e) => {
+            let response = ErrorMessage { ok: false, code: Some(500), err: Some(e.to_string()) };
+            outbound.respond(wrapper.delivery_info, response).await.ok();
+            Err(e)
+        }
+    }
 }
