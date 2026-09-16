@@ -55,7 +55,9 @@ async fn restore(
 
     // Repair keys
     ca_service.reset_ca_undecipherable_flag().await?;
+    info!("Repairing all undecipherable keys");
     symmetric_service.repair_with_master_key(&master_key).await?;
+    info!("All keys have been restored and are ready");
 
     Ok(())
 }
