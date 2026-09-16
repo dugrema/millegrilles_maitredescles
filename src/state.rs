@@ -64,7 +64,7 @@ impl AppContext {
 
         // Facades
         let outbound = Arc::new(
-            MessageOutboundFacade::new(config.clone(), messaging.clone(), format.clone()));
+            MessageOutboundFacade::new(config.clone(), messaging.clone(), format.clone(), security.clone()));
         let inbound = Arc::new(
             MessageInboundValidator::new(config.clone(), messaging.clone(), security.clone(), shutdown_token.clone())
         );
