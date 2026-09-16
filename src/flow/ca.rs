@@ -9,23 +9,23 @@ use millegrilles_common_rust::certificats::VerificateurPermissions;
 use millegrilles_common_rust::chiffrage_cle::CommandeAjouterCleDomaine;
 use millegrilles_common_rust::chrono::{Datelike, Timelike, Utc, Weekday};
 use millegrilles_common_rust::constantes::DELEGATION_GLOBALE_PROPRIETAIRE;
+use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::error::Error as CommonError;
 use millegrilles_common_rust::futures::StreamExt;
 use millegrilles_common_rust::messages_generiques::MessageCedule;
+use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageKind;
 use millegrilles_common_rust::mongo_dao::{MongoDao, MongoDaoImpl, MongoDaoTyped};
 use millegrilles_common_rust::openssl::pkey::{PKey, Private};
 use millegrilles_common_rust::tokio::task::JoinSet;
 use millegrilles_common_rust::tracing::{debug, error, info, warn};
-use millegrilles_common_rust::v3::BackupService;
 use millegrilles_common_rust::v3::facades::message_inbound::{MessageInboundValidator, MessageValidated};
 use millegrilles_common_rust::v3::facades::message_outbound::MessageOutboundFacade;
 use millegrilles_common_rust::v3::impls::backup_restorer::RestorationState;
 use millegrilles_common_rust::v3::impls::config_service::ConfigServiceDbImpl;
 use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl;
+use millegrilles_common_rust::v3::{BackupService, PresenceService};
 use millegrilles_common_rust::{serde_json, tokio};
 use std::sync::Arc;
-use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageKind;
-use millegrilles_common_rust::constantes::*;
 
 
 pub struct MaitreDesClesCAServiceImpl {
@@ -86,7 +86,6 @@ impl MaitreDesClesCAServiceImpl {
         let incoming_clone = incoming.clone();
         join_set.spawn(async move {self_clone.process_requests_thread(incoming_clone).await});
 
-        //todo!()
         Ok(())
     }
 
@@ -98,7 +97,12 @@ impl MaitreDesClesCAServiceImpl {
         while let Some(result) = streamer.next().await {
             match result {
                 Ok(message) => {
-                    if let Err(e) = ticker_job_ca(self.mongo.as_ref(), self.backup.as_ref(), message).await {
+                    if let Err(e) = ticker_job_ca(
+                        self.mongo.as_ref(),
+                        self.backup.as_ref(),
+                        self.outbound.as_ref(),
+                        message
+                    ).await {
                         error!("Ticker job ca failed: {}", e);
                     }
                 }
@@ -230,9 +234,12 @@ impl MaitreDesClesCAServiceImpl {
 
 }
 
-async fn ticker_job_ca<M>(mongo: &M, backup: &dyn BackupService, trigger: MessageValidated) -> Result<(), CommonError>
-    where M: MongoDaoTyped
-{
+async fn ticker_job_ca<M>(
+    mongo: &M,
+    backup: &dyn BackupService,
+    presence: &dyn PresenceService,
+    trigger: MessageValidated
+) -> Result<(), CommonError> where M: MongoDaoTyped {
     // Ensure this is an authorized module
     if let Err(e) = validate_ticker(&trigger).await {
         error!("Invalid ticker message, rejecting: {}", e);
@@ -246,6 +253,11 @@ async fn ticker_job_ca<M>(mongo: &M, backup: &dyn BackupService, trigger: Messag
     let day = trigger_value.get_date().weekday();
 
     debug!("ticker_job_ca for h:{} m:{}",hour,minute);
+
+    // Emit domain presence
+    if let Err(e) = presence.emit_domain_presence(DOMAINE_NOM, None).await {
+        warn!("Error emitting domain presence: {}", e);
+    }
 
     if hour % 3 == 0 && minute == 39 {
         if let Err(e) = check_ca_keys_undecipherable_flag(mongo).await {

@@ -15,12 +15,13 @@ use crate::state::AppContext;
 use external::crypto::SymmetricEncryptionHandler;
 use millegrilles_common_rust::mongo_dao::MongoDaoImpl;
 use millegrilles_common_rust::tracing::{debug, info, warn};
-use millegrilles_common_rust::v3::ConfigService;
+use millegrilles_common_rust::v3::{ConfigService, PresenceService};
 use millegrilles_common_rust::v3::facades::message_outbound::MessageOutboundFacade;
 use millegrilles_common_rust::{rustls, tokio as tokio};
 use millegrilles_common_rust::{tracing_subscriber, tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt}};
 use millegrilles_common_rust::millegrilles_cryptographie::x509::parse_encrypted_private_key;
 use millegrilles_common_rust::openssl::pkey::{PKey, Private};
+use crate::constants::DOMAINE_NOM;
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {
@@ -85,6 +86,19 @@ fn init_resources() {
 async fn init_tasks(config: &dyn ConfigService, mongo: &MongoDaoImpl, outbound: &MessageOutboundFacade, decryption: &SymmetricEncryptionHandler) {
     // Initial tasks to run once for the symmetric keymaster
     symmetric_init_tasks(config, mongo, outbound, decryption).await;
+
+    // Wait for queues to emit initial domain presence
+    match outbound.wait_ready(Some(5_000)).await {
+        Ok(()) => {
+            if let Err(e) = outbound.emit_domain_presence(DOMAINE_NOM, None).await {
+                warn!("Error emitting initial domain presence: {}", e);
+            }
+        },
+        Err(e) => {
+            warn!("Error waiting for queues to be ready, not emitting inital domain presence: {:?}", e);
+        }
+    }
+
 }
 
 #[derive(Parser, Debug)]
