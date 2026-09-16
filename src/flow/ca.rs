@@ -392,8 +392,18 @@ async fn process_backup_messages(
         MessageKind::Commande => {
             match action.as_str() {
                 COMMANDE_DECLENCHER_BACKUP => trigger_complete_backup(outbound, backup, wrapper).await,
+                COMMANDE_REGENERER => {
+                    let response = ErrorMessage {
+                        ok: false,
+                        code: Some(1),
+                        err: Some("Unsupported command through web interface. Use the CLI (provided script).".to_string())
+                    };
+                    outbound.respond(wrapper.delivery_info, response).await
+                }
                 _ => {
-                    warn!("process_backup_messages (CA) Unsupported action type: {}", action);
+                    warn!("process_backup_messages (CA) Unsupported command type: {}", action);
+                    let response = ErrorMessage { ok: false, code: Some(404), err: Some("Unsupported command".to_string()) };
+                    outbound.respond(wrapper.delivery_info, response).await.ok();
                     Err(CommonError::Str("Bad message, unsupported action type"))
                 }
             }
