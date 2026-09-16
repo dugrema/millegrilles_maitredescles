@@ -253,6 +253,7 @@ async fn ticker_job_ca<M>(mongo: &M, backup: &dyn BackupService, trigger: Messag
         // Run complete backup once a week on Sunday at 7:04 UTC.
         // This concatenates all incremental files and rotates backup files. May produce final file.
         let complete = minute == 4 && hour == 7 && day == Weekday::Sun;
+        // let complete = true;
 
         if let Err(e) = backup.backup_domain(
             DOMAINE_NOM,
