@@ -1,7 +1,7 @@
 use crate::constants::*;
 use crate::external::crypto::SymmetricEncryptionHandler;
 use crate::models::{ErrorMessage, SymmetricKeyDecryptionRequest};
-use millegrilles_common_rust::constantes::{Securite, COMMANDE_AJOUTER_CLE_DOMAINES, COMMANDE_DECLENCHER_BACKUP, COMMANDE_TRANSFERT_CLE, COMMANDE_TRANSFERT_CLE_CA, MAITREDESCLES_REQUETE_DECHIFFRAGE_MESSAGE, MAITREDESCLES_REQUETE_DECHIFFRAGE_V2, REQUETE_CERT_MAITREDESCLES, COMMANDE_REGENERER};
+use millegrilles_common_rust::constantes::{Securite, COMMANDE_AJOUTER_CLE_DOMAINES, COMMANDE_DECLENCHER_BACKUP, COMMANDE_TRANSFERT_CLE, COMMANDE_TRANSFERT_CLE_CA, MAITREDESCLES_REQUETE_DECHIFFRAGE_MESSAGE, MAITREDESCLES_REQUETE_DECHIFFRAGE_V2, REQUETE_CERT_MAITREDESCLES, COMMANDE_REGENERER, COMMANDE_GLOBAL_DECLENCHER_BACKUP};
 use millegrilles_common_rust::error::Error as CommonError;
 use millegrilles_common_rust::generateur_messages::RoutageMessageAction;
 use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange};
@@ -40,6 +40,7 @@ pub fn init_ca_queues(mq: &MessagingServiceImpl) -> Result<(), CommonError> {
         routing_keys: vec![
             ConfigRoutingExchange { routing_key: format!("requete.{}.getNombreTransactions", DOMAINE_NOM), exchange: Securite::L2Prive },
             ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_DECLENCHER_BACKUP), exchange: Securite::L3Protege },
+            ConfigRoutingExchange { routing_key: COMMANDE_GLOBAL_DECLENCHER_BACKUP.to_string(), exchange: Securite::L3Protege },
             ConfigRoutingExchange { routing_key: format!("commande.{}.{}", DOMAINE_NOM, COMMANDE_REGENERER), exchange: Securite::L3Protege },
         ],
         ttl: Some(QUEUE_TTL_DEFAULT),

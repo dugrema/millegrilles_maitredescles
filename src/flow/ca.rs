@@ -429,6 +429,18 @@ async fn trigger_complete_backup(
     backup: &dyn BackupService,
     wrapper: MessageValidated
 ) -> Result<(), CommonError> {
+    // Verify authorization
+    let admin = wrapper.certificate.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)?;
+    if ! admin {
+        let response = ErrorMessage { ok: false, code: Some(401), err: Some("Must be admin to trigger".to_string()) };
+        outbound.respond(wrapper.delivery_info, response).await.ok();
+        return Err(CommonError::Str("Access denied, must be admin"))
+    } else {
+        let admin_username = wrapper.certificate.get_common_name().unwrap_or("NA".to_string());
+        let admin_user_id = wrapper.certificate.get_user_id()?.unwrap_or("NA".to_string());
+        info!("Backup triggered by command from {} (user_id {})", admin_username, admin_user_id);
+    }
+
     match backup.backup_domain(DOMAINE_NOM, NOM_COLLECTION_TRANSACTIONS_CA, false).await {
         Ok(_) => {
             outbound.respond(wrapper.delivery_info, ErrorMessage::ok()).await.ok();
