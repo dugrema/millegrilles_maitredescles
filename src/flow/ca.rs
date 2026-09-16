@@ -8,7 +8,6 @@ use crate::models::{ErrorMessage, RequeteClesNonDechiffrable, UndecipherableKeyC
 use millegrilles_common_rust::certificats::VerificateurPermissions;
 use millegrilles_common_rust::chiffrage_cle::CommandeAjouterCleDomaine;
 use millegrilles_common_rust::chrono::{Datelike, Timelike, Utc, Weekday};
-use millegrilles_common_rust::constantes::DELEGATION_GLOBALE_PROPRIETAIRE;
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::error::Error as CommonError;
 use millegrilles_common_rust::futures::StreamExt;
@@ -26,7 +25,7 @@ use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl
 use millegrilles_common_rust::v3::{BackupService, PresenceService};
 use millegrilles_common_rust::{serde_json, tokio};
 use std::sync::Arc;
-
+use millegrilles_common_rust::common_messages::BackupEvent;
 
 pub struct MaitreDesClesCAServiceImpl {
     // config: Arc<dyn ConfigService>,
@@ -272,17 +271,26 @@ async fn ticker_job_ca<M>(
         let complete = minute == 4 && hour == 7 && day == Weekday::Sun;
         // let complete = true;
 
-        if let Err(e) = backup.backup_domain(
+        match backup.backup_domain(
             DOMAINE_NOM,
             NOM_COLLECTION_TRANSACTIONS_CA,
             ! complete,  // Invert, the bool is for incremental backups (true == incremental)
         ).await {
-            error!("Error backing up domain: {}", e);
-        } else {
-            info!("Backup task completed");
-            match backup.transfer_backup_files_to_filehost(DOMAINE_NOM).await {
-                Ok(()) => info!("Backup files uploaded to filehost"),
-                Err(e) => error!("Error uploading backup files to filehost: {}", e)
+            Ok(result) => {
+                info!("Backup task completed");
+                match backup.transfer_backup_files_to_filehost(DOMAINE_NOM).await {
+                    Ok(()) => {
+                        info!("Backup files uploaded to filehost");
+                        // Emit the backup done event. This tells the filecontroler to sync backup files
+                        // across all filehosts.
+                        let version = match result { Some(result) => result.version, None => None };
+                        presence.emit_backup_event(BackupEvent::new_done(DOMAINE_NOM, version)).await.ok();
+                    },
+                    Err(e) => error!("Error uploading backup files to filehost: {}", e)
+                }
+            },
+            Err(e) => {
+                error!("Error backing up domain: {}", e);
             }
         }
     }
@@ -442,12 +450,28 @@ async fn trigger_complete_backup(
     }
 
     match backup.backup_domain(DOMAINE_NOM, NOM_COLLECTION_TRANSACTIONS_CA, false).await {
-        Ok(_) => {
+        Ok(result) => {
+            let version = match result {
+                Some(result) => {
+                    debug!("Backup done, version: {:?}", result.version);
+                    result.version
+                }
+                None => {
+                    debug!("Backup done, no results");
+                    None
+                }
+            };
             outbound.respond(wrapper.delivery_info, ErrorMessage::ok()).await.ok();
 
             // Try to sync files
-            if let Err(e) = backup.transfer_backup_files_to_filehost(DOMAINE_NOM).await {
-                error!("Error uploading backup files to filehost after manual backup: {}", e);
+            match backup.transfer_backup_files_to_filehost(DOMAINE_NOM).await {
+                Ok(()) => {
+                    // Emit the backup done event. This tells the filecontroler to sync backup files
+                    // across all filehosts.
+                    debug!("File transfer ok, indicating backup {:?} done via broadcast", version);
+                    outbound.emit_backup_event(BackupEvent::new_done(DOMAINE_NOM, version)).await.ok();
+                },
+                Err(e) => error!("Error uploading backup files to filehost after manual backup: {}", e)
             }
 
             Ok(())
