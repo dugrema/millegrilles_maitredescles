@@ -8,8 +8,9 @@ use millegrilles_common_rust::millegrilles_cryptographie::heapless;
 use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::{SignatureDomaines, SignatureDomainesVersion};
 use millegrilles_common_rust::mongo_dao::MongoDao;
 use millegrilles_common_rust::serde::Deserialize;
-use millegrilles_common_rust::v3::models::{BatchInsertions, TransactionOperationAggregator, TransactionWrapper};
+use millegrilles_common_rust::v3::models::{TransactionOperationAggregator, TransactionWrapper};
 use std::collections::HashMap;
+use millegrilles_common_rust::mongodb::options::{UpdateOneModel, WriteModel};
 
 /// New Key transaction version 1
 /// Legacy Transaction - ** OBSOLETE ** - Use to restore from backups only
@@ -38,7 +39,7 @@ pub struct TransactionCle {
     pub partition: Option<String>,
 }
 
-pub async fn legacy_transaction_cle(_mongo: &dyn MongoDao, wrapper: TransactionWrapper) -> Result<TransactionOperationAggregator, CommonError> {
+pub async fn legacy_transaction_cle(mongo: &dyn MongoDao, wrapper: TransactionWrapper) -> Result<TransactionOperationAggregator, CommonError> {
     let mut aggregator = TransactionOperationAggregator::new();
     aggregator.legacy = true;  // Toggles legacy mode for processing this batch
     let transaction_cle: TransactionCle = wrapper.message.deserialize()?;
@@ -74,25 +75,25 @@ pub async fn legacy_transaction_cle(_mongo: &dyn MongoDao, wrapper: TransactionW
         header: match transaction_cle.header.as_ref() { Some(value) => Some(value.as_str()), None => None },
     };
 
-    let batch_insertions = BatchInsertions::new(
-        NOM_COLLECTION_CA_CLES,
-        vec![bson::serialize_to_document(&insert_doc)?],
-    );
-    aggregator.batch_insertion(batch_insertions)?;
-
-    // let collection = mongo.get_collection(NOM_COLLECTION_CA_CLES)?;
-    // let ops = doc! {
-    //     "$setOnInsert": bson::serialize_to_document(&insert_doc)?,
-    // };
-    // let update_model = WriteModel::UpdateOne(
-    //     UpdateOneModel::builder()
-    //         .upsert(true)
-    //         .namespace(collection.namespace())
-    //         .filter(doc! {"cle_id": &key_id})
-    //         .update(ops)
-    //         .build()
+    // let batch_insertions = BatchInsertions::new(
+    //     NOM_COLLECTION_CA_CLES,
+    //     vec![bson::serialize_to_document(&insert_doc)?],
     // );
-    // aggregator.unordered = Some(vec![update_model]);
+    // aggregator.batch_insertion(batch_insertions)?;
+
+    let collection = mongo.get_collection(NOM_COLLECTION_CA_CLES)?;
+    let ops = doc! {
+        "$setOnInsert": bson::serialize_to_document(&insert_doc)?,
+    };
+    let update_model = WriteModel::UpdateOne(
+        UpdateOneModel::builder()
+            .upsert(true)
+            .namespace(collection.namespace())
+            .filter(doc! {"cle_id": &key_id})
+            .update(ops)
+            .build()
+    );
+    aggregator.unordered = Some(vec![update_model]);
 
     Ok(aggregator)
 }
