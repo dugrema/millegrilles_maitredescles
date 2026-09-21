@@ -125,6 +125,7 @@ impl AppContext {
             security.clone(),
             messaging.as_ref(),
             inbound.clone(),
+            filehost.clone(),
             ca_service.clone(),
             symmetric_service.clone(),
             shutdown_token.clone(),
@@ -170,7 +171,8 @@ async fn start_threads(
     join_set: &mut JoinSet<()>,
     security: Arc<SecurityServiceImpl>,
     messaging: &MessagingServiceImpl,
-    incoming: Arc<MessageInboundValidator>,
+    inbound: Arc<MessageInboundValidator>,
+    filehost: Arc<FilehostServiceImpl>,
     ca_service: Arc<MaitreDesClesCAServiceImpl>,
     symmetric_service: Arc<MaitreDesClesSymmetricServiceImpl>,
     shutdown_token: CancellationToken,
@@ -186,11 +188,13 @@ async fn start_threads(
     // Spawn other service maintenance threads
     let shutdown_token_clone = shutdown_token.clone();
     join_set.spawn(async move { security.run(shutdown_token_clone).await });
+    let shutdown_token_clone = shutdown_token.clone();
+    join_set.spawn(async move { filehost.run(shutdown_token_clone).await });
 
     if ! is_restoring {
         // Spawn consumer threads
-        ca_service.start(join_set, incoming.clone())?;
-        symmetric_service.start(join_set, incoming.clone())?;
+        ca_service.start(join_set, inbound.clone())?;
+        symmetric_service.start(join_set, inbound.clone())?;
     } else {
         let master_key = match master_key {
             Some(key) => key,
