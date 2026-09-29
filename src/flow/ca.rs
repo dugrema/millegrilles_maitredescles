@@ -218,6 +218,7 @@ impl MaitreDesClesCAServiceImpl {
             NOM_COLLECTION_TRANSACTIONS_CA,
             NOM_COLLECTION_TRACKING_CA,
             resume,
+            false,
             version,
             master_key,
         ).await?;
