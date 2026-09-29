@@ -78,11 +78,9 @@ impl AppContext {
 
         let filehost = Arc::new(FilehostServiceImpl::new(config.clone(), format.clone(), outbound.clone()));
 
-        // List data tables (exclusing redolog and tracking). They get truncated on restore (when not resuming).
+        // List data tables (excluding redolog and tracking). They get truncated on restore (when not resuming).
         let data_tables = vec![
             NOM_COLLECTION_CA_CLES.to_string(),
-            // NOM_COLLECTION_SYMMETRIQUE_CLES.to_string(),
-            // NOM_COLLECTION_CONFIGURATION.to_string(),
         ];
         let backup = Arc::new(DomainBackupServiceImpl::new(
             config.clone(),
@@ -130,6 +128,7 @@ impl AppContext {
             symmetric_service.clone(),
             shutdown_token.clone(),
             cli.restore,
+            cli.noresume,
             master_key,
         ).await?;
 
@@ -177,6 +176,7 @@ async fn start_threads(
     symmetric_service: Arc<MaitreDesClesSymmetricServiceImpl>,
     shutdown_token: CancellationToken,
     is_restoring: bool,
+    noresume: bool,
     master_key: Option<PKey<Private>>,
 ) -> Result<(), CommonError> {
 
@@ -203,7 +203,7 @@ async fn start_threads(
         info!("Not starting consumer threads - restoring from backup");
         let shutdown_token_clone = shutdown_token.clone();
         join_set.spawn(async move {
-            restore_from_backup(ca_service, symmetric_service, &master_key, shutdown_token_clone).await
+            restore_from_backup(ca_service, symmetric_service, &master_key, shutdown_token_clone, noresume).await
         });
     }
 

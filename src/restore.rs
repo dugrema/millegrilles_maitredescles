@@ -11,9 +11,10 @@ pub async fn restore_from_backup(
     ca_service: Arc<MaitreDesClesCAServiceImpl>,
     symmetric_service: Arc<MaitreDesClesSymmetricServiceImpl>,
     master_key: &PKey<Private>,
-    shutdown_token: CancellationToken
+    shutdown_token: CancellationToken,
+    noresume: bool,
 ) {
-    let return_code = match restore(ca_service.as_ref(), symmetric_service.as_ref(), master_key, true).await {
+    let return_code = match restore(ca_service.as_ref(), symmetric_service.as_ref(), master_key, !noresume).await {
         Ok(()) => {
             info!("Restoration process complete - shutting down");
             0

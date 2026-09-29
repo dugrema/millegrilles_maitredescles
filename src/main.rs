@@ -111,6 +111,10 @@ struct Cli {
     /// Path to the master key file
     #[arg(short, long)]
     capath: Option<String>,
+
+    /// Erases data tables and restores all records.
+    #[arg(long)]
+    noresume: bool,
 }
 
 /// Handle the master key and password prompt
