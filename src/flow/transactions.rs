@@ -40,7 +40,7 @@ impl KeyMasterTransactionService {
         }
     }
 
-    pub async fn process_value(&self, domain: &str, action: &str, value: Value) -> Result<(), Error> {
+    pub async fn process_value(&self, domain: &str, action: &str, value: Value) -> Result<String, Error> {
         self.ca.process_value(domain, action, value, None).await
     }
 }

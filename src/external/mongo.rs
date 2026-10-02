@@ -5,7 +5,6 @@ use crate::models::{DocumentCleRechiffrage, RecupererCleCa, ReponseClesNonDechif
 use millegrilles_common_rust::base64::{Engine as _, engine::general_purpose::STANDARD_NO_PAD as base64_nopad};
 use millegrilles_common_rust::bson::{Document, doc};
 use millegrilles_common_rust::common_messages::ResponseRequestDechiffrageV2Cle;
-use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::constantes::{CHAMP_CREATION, FIELD_BID, FIELD_DATE_PROCESSED, FIELD_PROCESSED, INDEX_BID, INDEX_DATE_PROCESSED, TRANSACTION_CHAMP_ID};
 use millegrilles_common_rust::error::{Error as CommonError, Error};
 use millegrilles_common_rust::millegrilles_cryptographie::heapless;
@@ -25,9 +24,8 @@ const KEY_CA: &str = "CA";
 pub const KEY_LOCAL: &str = "local";
 
 
-pub async fn create_index_mongodb_ca(db: &dyn MongoDao, config: &dyn ConfigMessages) -> Result<(), CommonError> {
+pub async fn create_index_mongodb_ca(db: &dyn MongoDao) -> Result<(), CommonError> {
     db.create_index(
-        config,
         NOM_COLLECTION_TRANSACTIONS_CA,
         vec!(
             ChampIndex { nom_champ: String::from(TRANSACTION_CHAMP_ID), direction: 1 },
@@ -39,7 +37,6 @@ pub async fn create_index_mongodb_ca(db: &dyn MongoDao, config: &dyn ConfigMessa
     ).await?;
 
     db.create_index(
-        config,
         NOM_COLLECTION_TRANSACTIONS_CA,
         vec!(
             ChampIndex { nom_champ: String::from(FIELD_PROCESSED), direction: 1 },
@@ -51,7 +48,6 @@ pub async fn create_index_mongodb_ca(db: &dyn MongoDao, config: &dyn ConfigMessa
     ).await?;
 
     db.create_index(
-        config,
         NOM_COLLECTION_TRACKING_CA,
         vec!(
             ChampIndex { nom_champ: String::from(FIELD_BID), direction: 1 },
@@ -63,7 +59,6 @@ pub async fn create_index_mongodb_ca(db: &dyn MongoDao, config: &dyn ConfigMessa
     ).await?;
 
     db.create_index(
-        config,
         NOM_COLLECTION_TRACKING_CA,
         vec!(
             ChampIndex { nom_champ: String::from(FIELD_DATE_PROCESSED), direction: 1 },
@@ -75,7 +70,6 @@ pub async fn create_index_mongodb_ca(db: &dyn MongoDao, config: &dyn ConfigMessa
     ).await?;
 
     db.create_index(
-        config,
         NOM_COLLECTION_CA_CLES,
         vec!(
             ChampIndex { nom_champ: String::from(CHAMP_CLE_ID), direction: 1 },
@@ -87,7 +81,6 @@ pub async fn create_index_mongodb_ca(db: &dyn MongoDao, config: &dyn ConfigMessa
     ).await?;
 
     db.create_index(
-        config,
         NOM_COLLECTION_CA_CLES,
         vec!(
             ChampIndex {nom_champ: String::from(CHAMP_NON_DECHIFFRABLE), direction: 1},
@@ -101,15 +94,15 @@ pub async fn create_index_mongodb_ca(db: &dyn MongoDao, config: &dyn ConfigMessa
     Ok(())
 }
 
-pub async fn create_index_mongodb_symmetric(db: &dyn MongoDao, config: &dyn ConfigMessages) -> Result<(), CommonError> {
-    db.create_index(config, NOM_COLLECTION_SYMMETRIQUE_CLES,
+pub async fn create_index_mongodb_symmetric(db: &dyn MongoDao) -> Result<(), CommonError> {
+    db.create_index(NOM_COLLECTION_SYMMETRIQUE_CLES,
         vec!(
             ChampIndex { nom_champ: String::from(CHAMP_CLE_ID), direction: 1 },
         ),
         Some(IndexOptions { nom_index: Some(String::from(INDEX_CLE_ID)), unique: true })
     ).await?;
 
-    db.create_index(config, NOM_COLLECTION_SYMMETRIQUE_CLES,
+    db.create_index(NOM_COLLECTION_SYMMETRIQUE_CLES,
         vec!(
             ChampIndex {nom_champ: String::from(CHAMP_NON_DECHIFFRABLE), direction: 1},
             ChampIndex {nom_champ: String::from(CHAMP_CREATION), direction: 1},
@@ -117,7 +110,7 @@ pub async fn create_index_mongodb_symmetric(db: &dyn MongoDao, config: &dyn Conf
         Some(IndexOptions { nom_index: Some(String::from(INDEX_NON_DECHIFFRABLES)), unique: false })
     ).await?;
 
-    db.create_index(config, NOM_COLLECTION_CONFIGURATION,
+    db.create_index(NOM_COLLECTION_CONFIGURATION,
         vec!(
             ChampIndex { nom_champ: String::from("type"), direction: 1 },
             ChampIndex { nom_champ: String::from("instance_id"), direction: 1 },

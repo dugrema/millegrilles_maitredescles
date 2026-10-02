@@ -59,7 +59,7 @@ impl MaitreDesClesSymmetricServiceImpl {
 
     pub async fn configure(&self, mq: &MessagingServiceImpl, config: &ConfigServiceDbImpl) -> Result<(), CommonError> {
         init_symmetric_queues(config, mq)?;
-        create_index_mongodb_symmetric(self.mongo.as_ref(), config.config.as_ref()).await?;
+        create_index_mongodb_symmetric(self.mongo.as_ref()).await?;
         Ok(())
     }
 
