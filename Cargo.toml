@@ -8,7 +8,6 @@ edition = "2024"
 [dependencies]
 # millegrilles_common_rust = { git = "https://github.com/dugrema/millegrilles_common_rust.git", tag = "2026.6-release" }
 millegrilles_common_rust = { git = "https://github.com/dugrema/millegrilles_common_rust.git", branch = "master" }
-# millegrilles_common_rust = { git = "https://github.com/dugrema/millegrilles_common_rust.git", branch = "tracing20260827" }
 # millegrilles_common_rust = { path = "/home/mathieu/RustroverProjects/millegrilles_common_rust" }
 
 serde = { version = "1.0.229", features = ["derive"] }
