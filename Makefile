@@ -3,7 +3,7 @@ NOM_APP=millegrilles_maitredescles
 VERSION?=2026.7
 BUILD_NUMBER?=local
 VBUILD=$(VERSION).$(BUILD_NUMBER)
-DOCKER_IMAGE?=registry.millegrilles.com:5000/millegrilles/maitredescles_rust
+DOCKER_IMAGE?=vmhost2.maple.maceroc.com/millegrilles/maitredescles_rust
 DOCKER_IMAGE_NO_PORT=$(shell echo $(DOCKER_IMAGE) | sed 's/:[0-9]*//')
 CATALOGUE_ARCHIVE_NAME=$(NOM_APP).$(VBUILD).tar.gz
 STAGING_DIR=package_staging
@@ -41,7 +41,7 @@ archive-build:
 package: docker-build archive-build
 
 deploy: package
-    echo "$(NEXUS_PASS)" | docker login ${DOCKER_REGISTRY_URL} -u $(NEXUS_USER) --password-stdin
+	echo "$(NEXUS_PASS)" | docker login ${DOCKER_REGISTRY_URL} -u $(NEXUS_USER) --password-stdin
 	docker push $(DOCKER_IMAGE):$(VBUILD)
 	echo "Pushing catalogue information to ${DEPLOY_RSYNC_WEBAPP_DEST}/$(NOM_APP)"
 	rsync target/release/$(CATALOGUE_ARCHIVE_NAME) ${DEPLOY_RSYNC_WEBAPP_DEST}/$(NOM_APP)
