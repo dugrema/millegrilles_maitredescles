@@ -1,8 +1,20 @@
 # Build stage
 FROM rust:1-trixie AS builder
 
+# Arguments for proxies
+ARG APT_PROXY
+ARG CARGO_REGISTRY_URL
+
 # Install build dependencies
-RUN apt-get update && apt-get install -y \
+# Install build dependencies
+RUN if [ -n "$APT_PROXY" ]; then \
+         echo "Acquire::http::Proxy \"$APT_PROXY\";" > /etc/apt/apt.conf.d/01proxy; \
+    fi && \
+    if [ -n "$CARGO_REGISTRY_URL" ]; then \
+        mkdir -p .cargo && \
+        echo -e "[registries.crates-io]\nreplace-with = \"nexus\"\n[registries.nexus]\nindex = \"$CARGO_REGISTRY_URL\"" > .cargo/config.toml.test; \
+    fi && \
+    apt-get update && apt-get install -y \
     build-essential \
     pkg-config \
     libssl-dev \
@@ -26,6 +38,7 @@ RUN touch src/main.rs && cargo tree && cargo build --release
 # Runtime stage
 FROM debian:trixie-slim
 
+ARG APT_PROXY
 ENV APP_FOLDER=/usr/src/app \
     RUST_LOG=warn \
     MG_MQ_HOST=mq \
@@ -36,7 +49,10 @@ ENV APP_FOLDER=/usr/src/app \
     MG_REDIS_PASSWORD_FILE=/run/secrets/passwd.redis.txt
 
 # Install runtime dependencies
-RUN mkdir -p /var/opt/millegrilles/archives && chown 1000:1000 /var/opt/millegrilles/archives && \
+RUN if [ -n "$APT_PROXY" ]; then \
+      echo "Acquire::http::Proxy \"$APT_PROXY\";" > /etc/apt/apt.conf.d/01proxy; \
+    fi && \
+    mkdir -p /var/opt/millegrilles/archives && chown 1000:1000 /var/opt/millegrilles/archives && \
     apt-get update && apt-get install -y ca-certificates libssl3 && apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 

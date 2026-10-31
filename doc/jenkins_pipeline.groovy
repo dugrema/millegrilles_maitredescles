@@ -3,10 +3,10 @@ pipeline {
 
     parameters {
         string(defaultValue: 'master', name: 'BRANCH')
-        string(defaultValue: '2026.3', name: 'VERSION')
+        string(defaultValue: '2026.7', name: 'VERSION')
         string(defaultValue: 'jenkins-maple', name: 'CREDENTIALS_ID')
         string(defaultValue: 'ssh://git.maple.maceroc.com/git/millegrilles_maitredescles', name: 'GIT_URL')
-        string(defaultValue: 'registry.millegrilles.com:5000/millegrilles/maitredescles_rust', name: 'DOCKER_IMAGE')
+        string(defaultValue: 'vmhost2.maple.maceroc.com/millegrilles/maitredescles_rust', name: 'DOCKER_IMAGE')
     }
 
     environment {
@@ -24,7 +24,13 @@ pipeline {
 
         stage('Build & Package & Deploy') {
             steps {
-                sh "make deploy"
+                withCredentials([usernamePassword(
+                    credentialsId: 'nexus-jenkins',
+                    usernameVariable: 'NEXUS_USER',
+                    passwordVariable: 'NEXUS_PASS'
+                )]) {
+                    sh "make deploy"
+                }
             }
         }
 
