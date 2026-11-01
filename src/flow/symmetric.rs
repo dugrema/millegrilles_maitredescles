@@ -9,7 +9,7 @@ use crate::models::{CommandeCleSymmetrique, CommandeRechiffrerBatchChiffree, Doc
 use millegrilles_common_rust::base64::{engine::general_purpose::STANDARD_NO_PAD as base64_nopad, Engine as _};
 use millegrilles_common_rust::certificats::VerificateurPermissions;
 use millegrilles_common_rust::chiffrage_cle::CommandeAjouterCleDomaine;
-use millegrilles_common_rust::chrono::{Timelike, Utc};
+use millegrilles_common_rust::chrono::{Duration, Timelike, Utc};
 use millegrilles_common_rust::common_messages::{ReponseRequeteDechiffrageV2, RequeteDechiffrage, ResponseRequestDechiffrageV2Cle};
 use millegrilles_common_rust::constantes::{DELEGATION_GLOBALE_PROPRIETAIRE, REQUETE_CERT_MAITREDESCLES, Securite};
 use millegrilles_common_rust::error::Error as CommonError;
@@ -751,13 +751,18 @@ async fn decrypt_symmetric_keys_from_ca(
     master_key: &PKey<Private>
 ) -> Result<(), CommonError> {
     let start = Utc::now();
-    let mut total_count: usize = 0;
+    let mut current_count: usize = 0;
 
     let collection_ca = mongo.get_collection_typed::<RowCleCaRef>(NOM_COLLECTION_CA_CLES)?;
     let collection_keys = mongo.get_collection(NOM_COLLECTION_SYMMETRIQUE_CLES)?;
+    let filter = doc!{ CHAMP_NON_DECHIFFRABLE: true };
+    let total_count = collection_ca.count_documents(filter.clone()).await?;
     let mut cursor = collection_ca
-        .find(doc!{CHAMP_NON_DECHIFFRABLE: true})
+        .find(filter)
         .await?;
+
+    let mut log_last_update = Utc::now();
+    let log_interval = Duration::seconds(1);
 
     const BATCH_SIZE: usize = 50;
     let mut keys: Vec<Document> = Vec::with_capacity(BATCH_SIZE);
@@ -793,9 +798,14 @@ async fn decrypt_symmetric_keys_from_ca(
         let new_key_doc = bson::serialize_to_document(&new_key_row)?;
         keys.push(new_key_doc);
         key_ids.push(key.cle_id.to_string());
-        total_count += 1;
+        current_count += 1;
 
-        if keys.len() % 200 == 0 {
+        if current_count % 200 == 0 {
+            if log_last_update < Utc::now() - log_interval {
+                log_last_update = Utc::now();
+                let pct = 100f64 * current_count as f64 / total_count as f64;
+                info!("Repaired keys count: {}/{} ({}%)", current_count, total_count, pct.round());
+            }
             // Save the keys
             collection_keys.insert_many(&keys).await?;
             keys.clear();
@@ -813,7 +823,7 @@ async fn decrypt_symmetric_keys_from_ca(
     }
 
     let duration = Utc::now().signed_duration_since(start);
-    info!("Re-encrypted {} keys in {} seconds", total_count, duration.num_seconds());
+    info!("Re-encrypted {} keys in {} seconds", current_count, duration.num_seconds());
 
     Ok(())
 }

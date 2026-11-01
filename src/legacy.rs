@@ -41,7 +41,7 @@ pub struct TransactionCle {
 
 pub async fn legacy_transaction_cle(mongo: &dyn MongoDao, wrapper: TransactionWrapper) -> Result<TransactionOperationAggregator, CommonError> {
     let mut aggregator = TransactionOperationAggregator::new();
-    aggregator.legacy = true;  // Toggles legacy mode for processing this batch
+    // aggregator.legacy = true;   // Toggles legacy mode for processing this batch
     let transaction_cle: TransactionCle = wrapper.message.deserialize()?;
 
     let hachage_bytes = transaction_cle.hachage_bytes.as_str();
