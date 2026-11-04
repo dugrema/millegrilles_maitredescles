@@ -5,7 +5,7 @@ use crate::external::mongo::*;
 use crate::external::mq::*;
 use crate::flow::maintenance::validate_ticker;
 use crate::models::{CommandCertificateRotation, CommandeRechiffrerBatchDechiffree, RowCleCaRef};
-use crate::models::{CommandeCleSymmetrique, CommandeRechiffrerBatchChiffree, DocumentCleRechiffrage, ErrorMessage, KeyDecryptionRefused, RowClePartition};
+use crate::models::{CommandeCleSymmetrique, CommandeRechiffrerBatchChiffree, DocumentCleRechiffrage, KeyDecryptionRefused, RowClePartition};
 use millegrilles_common_rust::base64::{engine::general_purpose::STANDARD_NO_PAD as base64_nopad, Engine as _};
 use millegrilles_common_rust::certificats::VerificateurPermissions;
 use millegrilles_common_rust::chiffrage_cle::CommandeAjouterCleDomaine;
@@ -33,6 +33,7 @@ use millegrilles_common_rust::bson::{doc, Document};
 use millegrilles_common_rust::millegrilles_cryptographie::x25519::dechiffrer_asymmetrique_ed25519;
 use millegrilles_common_rust::openssl::pkey::{PKey, Private};
 use millegrilles_common_rust::tokio_stream::StreamExt;
+use millegrilles_common_rust::v3::models::ErrorMessage;
 // #[async_trait]
 // pub trait MaitreDesClesSymmetricService {}
 
@@ -283,10 +284,10 @@ async fn get_keys<M>(
     let request: RequeteDechiffrage = match message.message.deserialize() {
         Ok(inner) => inner,
         Err(e) => {
-            info!("get_keys Error mapping to RequeteDechiffrage : {:?}", e);
+            warn!("get_keys Error mapping to RequeteDechiffrage : {:?}", e);
             outbound.respond(
                 message.delivery_info,
-                ErrorMessage { ok: false, code: None, err: Some("Invalid message format".to_string()) }
+                ErrorMessage::err_code(400, "Invalid message format")
             ).await?;
             return Ok(());
         }
@@ -303,11 +304,8 @@ async fn get_keys<M>(
     ).await {
         Ok(keys) => keys,
         Err(e) => {
-            let error_response = ErrorMessage {
-                ok: false,
-                code: None,
-                err: Some(format!("Error: {:?}", e)),
-            };
+            error!("Error in get_keys: {:?}", e);
+            let error_response = ErrorMessage::err_code(500, "Server error");
             outbound.respond(message.delivery_info, error_response).await?;
             return Ok(());
         }
@@ -561,18 +559,21 @@ async fn route_instance_command(
         }
     };
 
+    let delivery_info = message.delivery_info.clone();
     let result = match action.as_str() {
         COMMANDE_CLE_SYMMETRIQUE => repair_symmetric_key(config, outbound, decryption, mongo, message).await,
         COMMANDE_RECHIFFRER_BATCH => save_key_batch(chiffrage, decryption, outbound, mongo, message).await,
         COMMAND_CERTIFICATE_ROTATION => certificate_rotation(decryption, outbound, mongo, message).await,
         _ => {
             warn!("process_newkeys_thread Unsupported action type: {}", action);
+            outbound.respond(delivery_info, ErrorMessage::err_code(404, "Unknown action")).await.ok();
             return
         }
     };
 
     if let Err(e) = result {
         error!("process_newkeys_thread Error: {:?}", e);
+        outbound.respond(delivery_info, ErrorMessage::err_code(500, "Server error")).await.ok();
     }
 }
 

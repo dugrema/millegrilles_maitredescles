@@ -1,6 +1,6 @@
 use crate::constants::*;
 use crate::external::crypto::SymmetricEncryptionHandler;
-use crate::models::{ErrorMessage, SymmetricKeyDecryptionRequest};
+use crate::models::SymmetricKeyDecryptionRequest;
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::error::Error as CommonError;
 use millegrilles_common_rust::generateur_messages::RoutageMessageAction;
@@ -10,7 +10,7 @@ use millegrilles_common_rust::tracing::debug;
 use millegrilles_common_rust::v3::ConfigService;
 use millegrilles_common_rust::v3::facades::message_outbound::MessageOutboundFacade;
 use millegrilles_common_rust::v3::impls::messaging_service::MessagingServiceImpl;
-use millegrilles_common_rust::v3::models::ConfigQueueV3;
+use millegrilles_common_rust::v3::models::{ConfigQueueV3, ErrorMessage};
 
 pub const QUEUE_CA_NEWKEYS: &str = "ca/newkeys";
 pub const QUEUE_CA_BACKUP: &str = "ca/backup";

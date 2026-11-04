@@ -69,16 +69,16 @@ impl<'a> TryFrom<RowCleCaRef<'a>> for RecupererCleCa {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ErrorMessage {
-    pub ok: bool,
-    pub code: Option<u16>,
-    pub err: Option<String>,
-}
-
-impl ErrorMessage {
-    pub fn ok() -> Self { Self { ok: true, code: None, err: None } }
-}
+// #[derive(Clone, Debug, Serialize, Deserialize)]
+// pub struct ErrorMessage {
+//     pub ok: bool,
+//     pub code: Option<u16>,
+//     pub err: Option<String>,
+// }
+//
+// impl ErrorMessage {
+//     pub fn ok() -> Self { Self { ok: true, code: None, err: None } }
+// }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct KeyDecryptionRefused {
