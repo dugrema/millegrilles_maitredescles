@@ -1,5 +1,5 @@
 # Build stage
-FROM rust:1-trixie AS builder
+FROM nexus.maple.maceroc.com/docker_proxy/rust:1-trixie AS builder
 
 # Arguments for proxies
 ARG APT_PROXY
@@ -36,7 +36,7 @@ COPY . .
 RUN touch src/main.rs && cargo tree && cargo build --release
 
 # Runtime stage
-FROM debian:trixie-slim
+FROM nexus.maple.maceroc.com/docker_proxy/debian:trixie-slim
 
 ARG APT_PROXY
 ENV APP_FOLDER=/usr/src/app \
