@@ -2688,8 +2688,8 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "millegrilles_common_rust"
-version = "2026.7.13"
-source = "git+https://git.maple.maceroc.com/millegrilles_common_rust.git?branch=master#00e8b0808e7a428673a2f6f4e4bf6f592c102ab2"
+version = "2026.7.14"
+source = "git+https://git.maple.maceroc.com/millegrilles_common_rust.git?tag=2026.7-release#ce88e391fa72e0d70f7058aa9cd15d593c571212"
 dependencies = [
  "async-compression",
  "async-trait",
@@ -2731,7 +2731,7 @@ dependencies = [
 [[package]]
 name = "millegrilles_cryptographie"
 version = "2026.7.1"
-source = "git+https://git.maple.maceroc.com/millegrilles_cryptographie.git?branch=master#78e1d1bfa0dbc56ea080389efc725699ce78fd28"
+source = "git+https://git.maple.maceroc.com/millegrilles_cryptographie.git?tag=2026.7-release#78e1d1bfa0dbc56ea080389efc725699ce78fd28"
 dependencies = [
  "base64 0.23.1",
  "blake2",
