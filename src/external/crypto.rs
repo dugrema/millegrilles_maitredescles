@@ -1,13 +1,13 @@
 use crate::models::{CleInterneChiffree, DocumentCleRechiffrage};
 use millegrilles_common_rust::certificats::VerificateurPermissions;
-use millegrilles_common_rust::chacha20poly1305::aead::{Aead, OsRng};
-use millegrilles_common_rust::chacha20poly1305::{AeadCore, KeyInit, XChaCha20Poly1305};
+use millegrilles_common_rust::chacha20poly1305::aead::{Aead, Nonce};
+use millegrilles_common_rust::chacha20poly1305::{ChaCha20Poly1305, KeyInit, XChaCha20Poly1305};
 use millegrilles_common_rust::constantes::RolesCertificats;
 use millegrilles_common_rust::error::Error as CommonError;
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::CleSecrete;
 use millegrilles_common_rust::millegrilles_cryptographie::x25519::{CleSecreteX25519, chiffrer_asymmetrique_ed25519, dechiffrer_asymmetrique_ed25519};
 use millegrilles_common_rust::millegrilles_cryptographie::x509::EnveloppePrivee;
-use millegrilles_common_rust::multibase;
+use millegrilles_common_rust::{multibase, rand};
 use millegrilles_common_rust::multibase::Base;
 use millegrilles_common_rust::openssl::pkey::{PKey, Public};
 use std::fmt::{Debug, Formatter};
@@ -134,7 +134,9 @@ impl SymmetricEncryptionHandler {
                     // let key = XChaCha20Poly1305::generate_key(&mut OsRng);
                     // let cipher = XChaCha20Poly1305::new(&inner.0[0..32]);
                     let cipher = XChaCha20Poly1305::new((&inner.0).into());
-                    let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
+                    let mut nonce: [u8; 24] = [0u8; 24];
+                    rand::fill(&mut nonce[..]);
+                    let nonce = Nonce::<XChaCha20Poly1305>::from(nonce);
                     let ciphertext = match cipher.encrypt(&nonce, cle) {
                         Ok(inner) => inner,
                         Err(e) => Err(format!("maitredescles_volatil chiffrer_cle_secrete Erreur encrypt {:?}", e))?
@@ -155,12 +157,15 @@ impl SymmetricEncryptionHandler {
     pub fn decrypt(&self, cle: CleInterneChiffree) -> Result<CleSecreteX25519, CommonError> {
         let nonce = multibase::decode(cle.nonce)?;
         let cle_chiffree = multibase::decode(cle.cle)?;
+        let mut nonce_bytes: [u8; 24] = [0u8; 24];
+        nonce_bytes.copy_from_slice(&nonce.1[0..24]);
+        let nonce = Nonce::<XChaCha20Poly1305>::from(nonce_bytes);
 
         let guard = self.cle_symmetrique.lock().expect("lock");
         match guard.as_ref() {
             Some(inner) => {
                 let cipher = XChaCha20Poly1305::new((&inner.0).into());
-                let cle_secrete = match cipher.decrypt((&nonce.1[..]).into(), &cle_chiffree.1[..]) {
+                let cle_secrete = match cipher.decrypt(&nonce, &cle_chiffree.1[..]) {
                     Ok(inner) => {
                         let mut buffer = [0u8; 32];
                         buffer.copy_from_slice(&inner[0..32]);
